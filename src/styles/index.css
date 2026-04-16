@@ -1,0 +1,136 @@
+@import "tailwindcss";
+
+@theme {
+  --color-charcoal: #1a1a2e;
+  --color-charcoal-light: #2a2a42;
+  --color-charcoal-lighter: #3a3a55;
+  --color-gold: #d4a574;
+  --color-gold-light: #e8c9a0;
+  --color-gold-dark: #b8895c;
+  --color-ivory: #faf8f5;
+  --color-ivory-dark: #f0ece6;
+  --color-terracotta: #c17c4e;
+  --color-terracotta-light: #d4956a;
+  --color-terracotta-dark: #a66838;
+  --color-warm-shadow: rgba(26, 26, 46, 0.15);
+  --color-warm-shadow-md: rgba(26, 26, 46, 0.1);
+  --font-serif: Georgia, "Times New Roman", serif;
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+* {
+  -webkit-tap-highlight-color: transparent;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: var(--font-sans);
+  background-color: #faf8f5;
+  color: #1a1a2e;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #d4a574;
+  border-radius: 4px;
+}
+
+/* Receipt styling */
+.receipt-border {
+  border: 2px dashed #d4a574;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 1px,
+    rgba(212, 165, 116, 0.03) 1px,
+    rgba(212, 165, 116, 0.03) 2px
+  );
+}
+
+.receipt-tear-top {
+  background-image: radial-gradient(circle at 8px -1px, transparent 8px, #faf8f5 8px);
+  background-size: 16px 12px;
+  background-position: -8px 0;
+  height: 12px;
+}
+
+.receipt-tear-bottom {
+  background-image: radial-gradient(circle at 8px 13px, transparent 8px, #faf8f5 8px);
+  background-size: 16px 12px;
+  background-position: -8px 0;
+  height: 12px;
+}
+
+/* Card depth shadows */
+.card-shadow {
+  box-shadow:
+    0 2px 8px rgba(26, 26, 46, 0.06),
+    0 8px 24px rgba(26, 26, 46, 0.08);
+}
+
+.card-shadow-lg {
+  box-shadow:
+    0 4px 12px rgba(26, 26, 46, 0.08),
+    0 16px 40px rgba(26, 26, 46, 0.12);
+}
+
+/* Warm gradient backgrounds */
+.warm-gradient {
+  background: linear-gradient(135deg, #1a1a2e 0%, #2a2a42 50%, #1a1a2e 100%);
+}
+
+.gold-gradient {
+  background: linear-gradient(135deg, #d4a574 0%, #c17c4e 100%);
+}
+
+/* Calendar dot */
+.cal-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #d4a574;
+}
+
+/* Time carousel card */
+.time-card {
+  min-width: 280px;
+  scroll-snap-align: center;
+}
+
+/* Horizontal scroll snap */
+.scroll-snap-x {
+  scroll-snap-type: x mandatory;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Pill nav */
+.nav-pill {
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+}
+
+/* Elegant input */
+.elegant-input {
+  background: rgba(212, 165, 116, 0.08);
+  border: 1px solid rgba(212, 165, 116, 0.2);
+  transition: all 0.3s ease;
+}
+
+.elegant-input:focus {
+  background: rgba(212, 165, 116, 0.12);
+  border-color: #d4a574;
+  outline: none;
+}
