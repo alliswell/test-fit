@@ -93,6 +93,13 @@ const SPEC_COMPONENTS = {
     switch_double:         { name: "Double-Pole Switch",              symbol: "switch",         color: "#C8A060", letter: "S2", unitCost: 260, mount: "inwall" },
     switch_dimmer:         { name: "Dimmer Switch",                   symbol: "switch",         color: "#C8A060", letter: "DM", unitCost: 320, mount: "inwall" },
     panel_board:           { name: "Panel Board",                     symbol: "panel",          color: "#E05050", letter: "P", unitCost: 2800, mount: "inwall" },
+    // Lighting
+    light_can_4:    { name: "4\" Recessed Can",    symbol: "recessed",   color: "#E8D070", letter: null, unitCost: 280, size: 4,  mount: "ceiling" },
+    light_can_6:    { name: "6\" Recessed Can",    symbol: "recessed",   color: "#E8D070", letter: null, unitCost: 340, size: 6,  mount: "ceiling" },
+    light_pendant:  { name: "Pendant Light",        symbol: "pendant",    color: "#E8D070", letter: "P",  unitCost: 450,           mount: "ceiling" },
+    light_linear_2: { name: "Linear Fixture 2'",    symbol: "linear_lt",  color: "#E8D070", letter: null, unitCost: 320, ftLen: 2, mount: "ceiling" },
+    light_linear_4: { name: "Linear Fixture 4'",    symbol: "linear_lt",  color: "#E8D070", letter: null, unitCost: 480, ftLen: 4, mount: "ceiling" },
+    light_sconce:   { name: "Wall Sconce",          symbol: "sconce",     color: "#E8D070", letter: "W",  unitCost: 380,           mount: "inwall"  },
   },
   av: {
     wall_speaker: { name: "Wall Speaker", icon: "🔊", unitCost: 480 },
@@ -121,6 +128,15 @@ const SPEC_LAYERS = {
   it: { name: "IT / Network", color: "#4080E0" }, 
   mep: { name: "MEP / Plumbing", color: "#50A070" },
   security: { name: "Security", color: "#9A4A9A" } 
+};
+
+// Pick bidirectional resize cursor based on wall angle
+const wallResizeCursor = (x1, y1, x2, y2) => {
+  const a = (Math.atan2(y2 - y1, x2 - x1) * 180 / Math.PI % 180 + 180) % 180;
+  if (a < 22.5 || a >= 157.5) return "ns-resize";
+  if (a < 67.5)  return "nesw-resize";
+  if (a < 112.5) return "ew-resize";
+  return "nwse-resize";
 };
 
 // CAD-style crosshair cursor (data URI)
@@ -329,6 +345,7 @@ export default function TestfitTool() {
   const gs = 20;
   const [showGrid, setShowGrid] = useState(true);
   const [showDims, setShowDims] = useState(true);
+  const [zoneEdge, setZoneEdge] = useState(null); // { id, edge, cursor } for rect-zone edge hover
   const [doorWidth, setDoorWidth] = useState(36);
   const [windowWidth, setWindowWidth] = useState(36);
   const [columnSize, setColumnSize] = useState(12); // inches
@@ -399,6 +416,65 @@ export default function TestfitTool() {
     a.click();
     URL.revokeObjectURL(url);
   }, [getProjectData, projectName]);
+
+  const exportPng = useCallback(() => {
+    const svg = cvs.current;
+    if (!svg) return;
+    const rect = svg.getBoundingClientRect();
+    const W = Math.round(rect.width), H = Math.round(rect.height);
+    const scale = 2; // 2× for retina
+    const serializer = new XMLSerializer();
+    // Inline all styles so the cloned SVG is self-contained
+    const clone = svg.cloneNode(true);
+    clone.setAttribute("width", W);
+    clone.setAttribute("height", H);
+    // Embed the monospace font as a data-uri stub so text is crisp
+    const svgStr = serializer.serializeToString(clone);
+    const blob = new Blob([svgStr], { type: "image/svg+xml;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement("canvas");
+      canvas.width = W * scale; canvas.height = H * scale;
+      const ctx = canvas.getContext("2d");
+      ctx.scale(scale, scale);
+      // Background fill matching current theme
+      ctx.fillStyle = themeMode === "dark" ? "#1A1812" : "#FAFAF8";
+      ctx.fillRect(0, 0, W, H);
+      ctx.drawImage(img, 0, 0, W, H);
+      URL.revokeObjectURL(url);
+      canvas.toBlob(pngBlob => {
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(pngBlob);
+        a.download = (projectName || "testfit").replace(/[^a-zA-Z0-9-_ ]/g, "") + ".png";
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+      }, "image/png");
+    };
+    img.onerror = () => URL.revokeObjectURL(url);
+    img.src = url;
+  }, [cvs, projectName, themeMode]);
+
+  const exportPdf = useCallback(() => {
+    const svg = cvs.current;
+    if (!svg) return;
+    const rect = svg.getBoundingClientRect();
+    const W = Math.round(rect.width), H = Math.round(rect.height);
+    const serializer = new XMLSerializer();
+    const clone = svg.cloneNode(true);
+    clone.setAttribute("width", W);
+    clone.setAttribute("height", H);
+    const svgStr = serializer.serializeToString(clone);
+    const bgColor = themeMode === "dark" ? "#1A1812" : "#FAFAF8";
+    const win = window.open("", "_blank", "width=1200,height=800");
+    if (!win) { alert("Allow pop-ups to export PDF"); return; }
+    win.document.write(`<!DOCTYPE html><html><head><title>${projectName || "TestFit"}</title>
+<style>*{margin:0;padding:0;box-sizing:border-box}body{background:${bgColor}}
+@media print{body{margin:0}img{width:100%;height:auto;display:block;page-break-inside:avoid}}</style>
+</head><body><img src="data:image/svg+xml;charset=utf-8,${encodeURIComponent(svgStr)}" style="width:100%;height:auto"/></body></html>`);
+    win.document.close();
+    win.onload = () => { win.focus(); win.print(); };
+  }, [cvs, projectName, themeMode]);
 
   const importProject = useCallback((file) => {
     const reader = new FileReader();
@@ -609,7 +685,7 @@ export default function TestfitTool() {
       // In BUILD mode, only allow building objects
       for (const n of nodes) if (dst(pos.x, pos.y, n.x, n.y) < 10) return { type: "node", id: n.id };
       for (let i = columns.length - 1; i >= 0; i--) { const col = columns[i]; const r = inToPx(col.size) / 2; if (dst(pos.x, pos.y, col.x, col.y) < r + 4) return { type: "column", id: col.id }; }
-      for (let i = markers.length - 1; i >= 0; i--) { const p = markers[i]; if (p.layer === "power" && (p.componentType?.startsWith("outlet_") || p.componentType?.startsWith("switch_") || p.componentType === "panel_board") && dst(pos.x, pos.y, p.x, p.y) < 14) return { type: "marker", id: p.id }; }
+      for (let i = markers.length - 1; i >= 0; i--) { const p = markers[i]; if (p.layer === "power" && (p.componentType?.startsWith("outlet_") || p.componentType?.startsWith("switch_") || p.componentType === "panel_board" || p.componentType?.startsWith("light_")) && dst(pos.x, pos.y, p.x, p.y) < 16) return { type: "marker", id: p.id }; }
       for (let i = doors.length - 1; i >= 0; i--) { const d = doors[i]; if (dst(pos.x, pos.y, d.x, d.y) < inToPx(d.width) / 2 + 4) return { type: "door", id: d.id }; }
       for (let i = windows.length - 1; i >= 0; i--) { const w = windows[i]; if (dst(pos.x, pos.y, w.x, w.y) < inToPx(w.width) / 2 + 4) return { type: "window", id: w.id }; }
       for (let i = walls.length - 1; i >= 0; i--) { const w = walls[i], c = wc(w); if (c && ptSeg(pos.x, pos.y, c.x1, c.y1, c.x2, c.y2) < 10) return { type: "wall", id: w.id }; }
@@ -732,8 +808,8 @@ export default function TestfitTool() {
     }
     if (tool === "outlet") {
       const nid = uid();
-      const isCeiling = outletType === "outlet_ceiling";
-      const wallSnap = !isCeiling; // outlets, switches, and panel all snap to walls
+      const isCeiling = outletType === "outlet_ceiling" || (outletType.startsWith("light_") && outletType !== "light_sconce");
+      const wallSnap = !isCeiling; // wall-mounted types snap to walls
       const snap = wallSnap ? snapToWall(pos.x, pos.y, Infinity) : null;
       const ox = snap ? snap.x : sx, oy = snap ? snap.y : sy;
       const angleRad = snap ? (snap.angle * Math.PI / 180) : 0;
@@ -977,7 +1053,7 @@ export default function TestfitTool() {
               const p1 = z.points[ei], p2 = z.points[ej];
               const edx = p2.x - p1.x, edy = p2.y - p1.y;
               const elen = Math.hypot(edx, edy) || 1;
-              setDrag({ type: "zone-edge", id: hit.id, edgeIndex: ei, ox: pos.x, oy: pos.y, p1x: p1.x, p1y: p1.y, p2x: p2.x, p2y: p2.y, nx: -edy / elen, ny: edx / elen });
+              setDrag({ type: "zone-edge", id: hit.id, edgeIndex: ei, ox: pos.x, oy: pos.y, p1x: p1.x, p1y: p1.y, p2x: p2.x, p2y: p2.y, nx: -edy / elen, ny: edx / elen, cursor: wallResizeCursor(p1.x, p1.y, p2.x, p2.y) });
             }
           }
         }
@@ -1002,6 +1078,8 @@ export default function TestfitTool() {
           else if (z.points) {
             const c = polyCentroid(z.points);
             setDrag({ type: "zone", id: hit.id, ox: pos.x - c.x, oy: pos.y - c.y, lastX: sn(pos.x - (pos.x - c.x), snapGrid), lastY: sn(pos.y - (pos.y - c.y), snapGrid) });
+          } else if (zoneEdge && zoneEdge.id === hit.id) {
+            setResize({ id: hit.id, edge: zoneEdge.edge });
           } else {
             setDrag({ type: "zone", id: hit.id, ox: pos.x - z.x, oy: pos.y - z.y });
           }
@@ -1025,7 +1103,7 @@ export default function TestfitTool() {
         }
       }
     }
-  }, [tool, activeZoneType, activeSpecLayer, s2c, findNear, findDimSnap, hitTest, walls, wc, zones, markers, doors, windows, columns, viewOff, drawChain, commitWallSegment, spaceHeld, doorWidth, windowWidth, columnSize, columnShape, snapToWall, snapGrid, activeComponentType, selectedIds, bgImage, bgOffset, gn, calibrationLine, drawDim, dims, nodes, pxPerFoot]);
+  }, [tool, activeZoneType, activeSpecLayer, s2c, findNear, findDimSnap, hitTest, walls, wc, zones, markers, doors, windows, columns, viewOff, drawChain, commitWallSegment, spaceHeld, doorWidth, windowWidth, columnSize, columnShape, snapToWall, snapGrid, activeComponentType, selectedIds, bgImage, bgOffset, gn, calibrationLine, drawDim, dims, nodes, pxPerFoot, zoneEdge]);
 
   const onMove = useCallback((e) => {
     if (panning && panSt) { setViewOff({ x: e.clientX - panSt.x, y: e.clientY - panSt.y }); return; }
@@ -1072,14 +1150,38 @@ export default function TestfitTool() {
       else setGhostPos({ x: sx, y: sy, angle: 0, snapped: false });
     }
     if (tool === "outlet") {
-      if (outletType === "outlet_ceiling") {
+      const isCeiling = outletType === "outlet_ceiling" || (outletType.startsWith("light_") && outletType !== "light_sconce");
+      if (isCeiling) {
         setGhostPos({ x: sx, y: sy, angle: 0, snapped: false });
       } else {
-        // all wall-mounted types (outlets, switches, panel) snap to walls
         const snap = snapToWall(pos.x, pos.y, Infinity);
         if (snap) setGhostPos({ x: snap.x, y: snap.y, angle: snap.angle * Math.PI / 180, snapped: true });
         else setGhostPos({ x: sx, y: sy, angle: 0, snapped: false });
       }
+    }
+
+    // Zone edge detection — drives resize cursor and onDown decision
+    if (!drag && !resize) {
+      let fe = null;
+      for (const z of zones) {
+        if (z.points) continue;
+        const T = 12 / zoom;
+        if (pos.x < z.x - T || pos.x > z.x + z.w + T || pos.y < z.y - T || pos.y > z.y + z.h + T) continue;
+        const inX = pos.x >= z.x && pos.x <= z.x + z.w;
+        const inY = pos.y >= z.y && pos.y <= z.y + z.h;
+        if (!inX || !inY) continue;
+        const nL = pos.x - z.x < T, nR = z.x + z.w - pos.x < T;
+        const nT = pos.y - z.y < T, nB = z.y + z.h - pos.y < T;
+        if (nT && nL) { fe = { id: z.id, edge: "nw", cursor: "nwse-resize" }; break; }
+        if (nT && nR) { fe = { id: z.id, edge: "ne", cursor: "nesw-resize" }; break; }
+        if (nB && nL) { fe = { id: z.id, edge: "sw", cursor: "nesw-resize" }; break; }
+        if (nB && nR) { fe = { id: z.id, edge: "se", cursor: "nwse-resize" }; break; }
+        if (nT)       { fe = { id: z.id, edge: "n",  cursor: "ns-resize"   }; break; }
+        if (nB)       { fe = { id: z.id, edge: "s",  cursor: "ns-resize"   }; break; }
+        if (nL)       { fe = { id: z.id, edge: "w",  cursor: "ew-resize"   }; break; }
+        if (nR)       { fe = { id: z.id, edge: "e",  cursor: "ew-resize"   }; break; }
+      }
+      setZoneEdge(fe);
     }
 
     if (drag) {
@@ -1188,8 +1290,9 @@ export default function TestfitTool() {
       else if (drag.type === "marker") {
         const dragMarker = markers.find(x => x.id === drag.id);
         const ct = dragMarker?.componentType;
-        const isWallOutlet = dragMarker?.layer === "power" && ct && ct !== "outlet_ceiling" &&
-          (ct.startsWith("outlet_") || ct.startsWith("switch_") || ct === "panel_board");
+        const isCeilingMount = ct === "outlet_ceiling" || (ct?.startsWith("light_") && ct !== "light_sconce");
+        const isWallOutlet = dragMarker?.layer === "power" && ct && !isCeilingMount &&
+          (ct.startsWith("outlet_") || ct.startsWith("switch_") || ct === "panel_board" || ct === "light_sconce");
         if (isWallOutlet) {
           const snap = snapToWall(pos.x, pos.y, Infinity);
           if (snap) setMarkers(p => p.map(x => x.id === drag.id ? { ...x, x: snap.x, y: snap.y, angle: snap.angle * Math.PI / 180 } : x));
@@ -1227,8 +1330,20 @@ export default function TestfitTool() {
       }
       return;
     }
-    if (resize) setZones(p => p.map(z => z.id !== resize.id ? z : { ...z, w: Math.max(40, sn(pos.x - z.x, snapGrid)), h: Math.max(40, sn(pos.y - z.y, snapGrid)) }));
-  }, [panning, panSt, drawChain, drag, resize, s2c, findNear, findDimSnap, walls, wc, tool, snapToWall, snapGrid, marquee, calibrationLine, dims, drawDim]);
+    if (resize) {
+      const { id: rid, edge } = resize;
+      setZones(p => p.map(z => {
+        if (z.id !== rid || z.points) return z;
+        let { x, y, w, h } = z;
+        const px = sn(pos.x, snapGrid), py = sn(pos.y, snapGrid);
+        if (edge.includes("e")) w = Math.max(40, px - x);
+        if (edge.includes("s")) h = Math.max(40, py - y);
+        if (edge.includes("w")) { const nx = Math.min(px, x + w - 40); w = w + x - nx; x = nx; }
+        if (edge.includes("n")) { const ny = Math.min(py, y + h - 40); h = h + y - ny; y = ny; }
+        return { ...z, x, y, w, h };
+      }));
+    }
+  }, [panning, panSt, drawChain, drag, resize, s2c, findNear, findDimSnap, walls, wc, tool, snapToWall, snapGrid, marquee, calibrationLine, dims, drawDim, zones, zoom]);
 
   const onUp = useCallback((e) => {
     // Finish marquee selection
@@ -1830,6 +1945,51 @@ export default function TestfitTool() {
         <text x={0} y={ph / 2 + 9} textAnchor="middle" fontSize={selected ? 8 : 7} fill={color} fontWeight="bold" style={{ pointerEvents: "none" }}>PANEL</text>
       </g>;
     }
+    if (symbol === "recessed") {
+      const sz = compData.size || 4; // inches
+      const rPx = (sz / 12) * pxPerFoot / 2;
+      const rv = Math.max(rPx, selected ? 10 : 8);
+      return <g style={{ cursor: tool === "select" ? "pointer" : "default" }}>
+        <circle cx={marker.x} cy={marker.y} r={rv + 5} fill="transparent" />
+        <circle cx={marker.x} cy={marker.y} r={rv} fill={color + "18"} stroke={color} strokeWidth={strokeW} style={{ pointerEvents: "none" }} />
+        <circle cx={marker.x} cy={marker.y} r={rv * 0.45} fill={color + "55"} stroke={color} strokeWidth={0.75} style={{ pointerEvents: "none" }} />
+        {/* X cross inside */}
+        <line x1={marker.x - rv * 0.6} y1={marker.y - rv * 0.6} x2={marker.x + rv * 0.6} y2={marker.y + rv * 0.6} stroke={color} strokeWidth={0.75} style={{ pointerEvents: "none" }} />
+        <line x1={marker.x + rv * 0.6} y1={marker.y - rv * 0.6} x2={marker.x - rv * 0.6} y2={marker.y + rv * 0.6} stroke={color} strokeWidth={0.75} style={{ pointerEvents: "none" }} />
+      </g>;
+    }
+    if (symbol === "pendant") {
+      return <g style={{ cursor: tool === "select" ? "pointer" : "default" }}>
+        <circle cx={marker.x} cy={marker.y} r={r + 5} fill="transparent" />
+        <circle cx={marker.x} cy={marker.y} r={r} fill={color + "18"} stroke={color} strokeWidth={strokeW} style={{ pointerEvents: "none" }} />
+        <circle cx={marker.x} cy={marker.y} r={3} fill={color} style={{ pointerEvents: "none" }} />
+        <line x1={marker.x} y1={marker.y - r} x2={marker.x} y2={marker.y - r - 8} stroke={color} strokeWidth={1} style={{ pointerEvents: "none" }} />
+        <line x1={marker.x - 4} y1={marker.y - r - 8} x2={marker.x + 4} y2={marker.y - r - 8} stroke={color} strokeWidth={1.5} style={{ pointerEvents: "none" }} />
+      </g>;
+    }
+    if (symbol === "linear_lt") {
+      const ftLen = compData.ftLen || 4;
+      const lenPx = ftLen * pxPerFoot;
+      const thk = selected ? 5 : 4;
+      const angle = marker.angle || 0;
+      return <g transform={`translate(${marker.x},${marker.y}) rotate(${angle * 180 / Math.PI})`} style={{ cursor: tool === "select" ? "pointer" : "default" }}>
+        <rect x={-lenPx / 2 - 4} y={-thk - 4} width={lenPx + 8} height={thk * 2 + 8} fill="transparent" />
+        <rect x={-lenPx / 2} y={-thk / 2} width={lenPx} height={thk} fill={color + "40"} stroke={color} strokeWidth={selected ? 1.5 : 1} rx={1} style={{ pointerEvents: "none" }} />
+        <text x={0} y={thk / 2 + 9} textAnchor="middle" fontSize={7} fill={color} fontWeight="bold" style={{ pointerEvents: "none" }}>{ftLen}'</text>
+      </g>;
+    }
+    if (symbol === "sconce") {
+      const angleDeg = (marker.angle || 0) * 180 / Math.PI;
+      return <g transform={`translate(${marker.x},${marker.y}) rotate(${angleDeg})`} style={{ cursor: tool === "select" ? "pointer" : "default" }}>
+        <circle cx={0} cy={0} r={r + 5} fill="transparent" />
+        {/* Wall plate */}
+        <rect x={-r * 0.5} y={-r} width={r} height={r * 2} fill={color + "18"} stroke={color} strokeWidth={strokeW} rx={1} style={{ pointerEvents: "none" }} />
+        {/* Light cone */}
+        <line x1={0} y1={-r * 0.6} x2={r * 1.4} y2={-r * 1.2} stroke={color} strokeWidth={0.75} style={{ pointerEvents: "none" }} />
+        <line x1={0} y1={r * 0.6} x2={r * 1.4} y2={r * 1.2} stroke={color} strokeWidth={0.75} style={{ pointerEvents: "none" }} />
+        <circle cx={r * 0.4} cy={0} r={2.5} fill={color} style={{ pointerEvents: "none" }} />
+      </g>;
+    }
     return null;
   };
 
@@ -1982,6 +2142,9 @@ export default function TestfitTool() {
         <button style={S.smBtn} onClick={() => setShowDims(d => !d)}>{showDims ? "Dims ✓" : "Dims"}</button>
         <button style={S.smBtn} onClick={() => setShowGrid(g => !g)}>{showGrid ? "Grid ✓" : "Grid"}</button>
         <button style={S.smBtn} onClick={() => setThemeMode(m => m === "dark" ? "light" : "dark")}>{themeMode === "dark" ? "Light" : "Dark"}</button>
+        <div style={{ width: 1, height: 20, background: T.border, margin: "0 6px" }} />
+        <button style={S.smBtn} onClick={exportPng}>PNG</button>
+        <button style={S.smBtn} onClick={exportPdf}>PDF</button>
         <div style={{ width: 1, height: 20, background: T.border, margin: "0 6px" }} />
         <button style={S.smBtn} onClick={exportProject}>Save</button>
         <button style={S.smBtn} onClick={() => loadRef.current?.click()}>Load</button>
@@ -2300,7 +2463,7 @@ export default function TestfitTool() {
           </div>}
 
           <svg ref={cvs} width="100%" height="100%"
-            style={{ cursor: (panning || spaceHeld) ? "grab" : isWallTool(tool) ? cadCrosshair(T.crosshairColor) : (tool === "zone" || tool === "marker" || tool === "door" || tool === "window" || tool === "column" || tool === "calibrate" || tool === "dim" || tool === "outlet") ? cadCrosshair(T.crosshairColor) : "default", userSelect: "none" }}
+            style={{ cursor: (panning || spaceHeld) ? "grabbing" : resize ? ({ n:"ns-resize",s:"ns-resize",e:"ew-resize",w:"ew-resize",ne:"nesw-resize",sw:"nesw-resize",nw:"nwse-resize",se:"nwse-resize" }[resize.edge] || "nwse-resize") : (drag?.type === "zone-edge" && drag.cursor) ? drag.cursor : zoneEdge ? zoneEdge.cursor : cadCrosshair(T.crosshairColor), userSelect: "none" }}
             onMouseDown={onDown} onMouseMove={onMove} onMouseUp={onUp} onMouseLeave={onUp} onWheel={onWheel}>
             <defs>
               <filter id="glow-budget" x="-50%" y="-50%" width="200%" height="200%">
@@ -2501,7 +2664,7 @@ export default function TestfitTool() {
                   {/* Pass 2: edge lines + hit-detection + dims — always on top of all fills */}
                   {wallData.map(({ w, c, wk, sel, halfT, edgeColor, edgeW, mN1, mN2, segPts, glowEffect }) =>
                     <g key={"s"+w.id} filter={glowEffect ? "url(#glow-budget)" : undefined}>
-                      <line x1={c.x1} y1={c.y1} x2={c.x2} y2={c.y2} stroke="transparent" strokeWidth={halfT * 2 + 6} style={{ cursor: tool === "select" ? "move" : "inherit" }} />
+                      <line x1={c.x1} y1={c.y1} x2={c.x2} y2={c.y2} stroke="transparent" strokeWidth={halfT * 2 + 6} style={{ cursor: tool === "select" ? wallResizeCursor(c.x1, c.y1, c.x2, c.y2) : "inherit" }} />
                       {segPts.map((sp, i) => <g key={i} style={{ pointerEvents: "none" }}>
                         <line x1={sp.sL.x} y1={sp.sL.y} x2={sp.eL.x} y2={sp.eL.y} stroke={edgeColor} strokeWidth={edgeW} strokeDasharray={sel ? null : wk.dash} />
                         <line x1={sp.sR.x} y1={sp.sR.y} x2={sp.eR.x} y2={sp.eR.y} stroke={edgeColor} strokeWidth={edgeW} strokeDasharray={sel ? null : wk.dash} />
@@ -2520,16 +2683,15 @@ export default function TestfitTool() {
                 if (z.points) { const pts = z.points.map(p => `${p.x},${p.y}`).join(" "); const c = polyCentroid(z.points); const sf = Math.round(polyArea(z.points) / (pxPerFoot * pxPerFoot));
                   return <g key={z.id} filter={glowEffect ? "url(#glow-budget)" : undefined}><polygon points={pts} fill={lib.color + "25"} stroke={sel ? T.nodeFill : lib.color + "88"} strokeWidth={sel ? 2 : 1} strokeDasharray={sel ? "none" : "4 2"} strokeLinejoin="round" />
                     <text x={c.x} y={c.y - 4} textAnchor="middle" fill={lib.color + "CC"} fontSize={10} fontFamily="inherit" fontWeight={500} style={{ pointerEvents: "none" }}>{z.label}</text>
-                    {showDims && <text x={c.x} y={c.y + 10} textAnchor="middle" fill={lib.color + "44"} fontSize={11} fontFamily="inherit" fontWeight={600} style={{ pointerEvents: "none" }}>{sf} sf</text>}
-                    {sel && z.points.map((p, i) => { const j = (i + 1) % z.points.length; const p2 = z.points[j]; return <line key={"e" + i} x1={p.x} y1={p.y} x2={p2.x} y2={p2.y} stroke="transparent" strokeWidth={14} style={{ cursor: "move" }} />; })}
+                    <text x={c.x} y={c.y + 14} textAnchor="middle" fill={lib.color + "BB"} fontSize={13} fontFamily="inherit" fontWeight={700} style={{ pointerEvents: "none" }}>{sf} sf</text>
+                    {sel && z.points.map((p, i) => { const j = (i + 1) % z.points.length; const p2 = z.points[j]; return <line key={"e" + i} x1={p.x} y1={p.y} x2={p2.x} y2={p2.y} stroke="transparent" strokeWidth={14} style={{ cursor: wallResizeCursor(p.x, p.y, p2.x, p2.y) }} />; })}
                     {sel && z.points.map((p, i) => <g key={i}><circle cx={p.x} cy={p.y} r={7} fill={lib.color} stroke={T.nodeFill} strokeWidth={2} style={{ cursor: "move" }} /><circle cx={p.x} cy={p.y} r={3} fill={T.nodeFill} style={{ cursor: "move", pointerEvents: "none" }} /></g>)}
                   </g>; }
                 return <g key={z.id} filter={glowEffect ? "url(#glow-budget)" : undefined}><rect x={z.x} y={z.y} width={z.w} height={z.h} fill={lib.color + "25"} stroke={sel ? T.nodeFill : lib.color + "88"} strokeWidth={sel ? 2 : 1} strokeDasharray={sel ? "none" : "4 2"} rx={3} />
                   <text x={z.x + 8} y={z.y + 16} fill={lib.color + "CC"} fontSize={10} fontFamily="inherit" fontWeight={500} style={{ pointerEvents: "none" }}>{z.label}</text>
+                  <text x={z.x + z.w / 2} y={z.y + z.h / 2 + 7} textAnchor="middle" fill={lib.color + "BB"} fontSize={13} fontFamily="inherit" fontWeight={700} style={{ pointerEvents: "none" }}>{Math.round(ftN(z.w) * ftN(z.h))} sf</text>
                   {showDims && <><text x={z.x + z.w / 2} y={z.y + z.h + 14} textAnchor="middle" fill={T.dimText} fontSize={9} fontFamily="inherit" style={{ pointerEvents: "none" }}>{ft(z.w)}</text>
-                    <text x={z.x + z.w + 14} y={z.y + z.h / 2} textAnchor="middle" dominantBaseline="middle" fill={T.dimText} fontSize={9} fontFamily="inherit" transform={`rotate(90,${z.x + z.w + 14},${z.y + z.h / 2})`} style={{ pointerEvents: "none" }}>{ft(z.h)}</text>
-                    <text x={z.x + z.w / 2} y={z.y + z.h / 2 + 4} textAnchor="middle" fill={lib.color + "44"} fontSize={11} fontFamily="inherit" fontWeight={600} style={{ pointerEvents: "none" }}>{Math.round(ftN(z.w) * ftN(z.h))} sf</text></>}
-                  {sel && <rect x={z.x + z.w - 8} y={z.y + z.h - 8} width={8} height={8} fill={T.nodeFill} rx={1} cursor="se-resize" onMouseDown={e => { e.stopPropagation(); setResize({ id: z.id }); }} />}
+                    <text x={z.x + z.w + 14} y={z.y + z.h / 2} textAnchor="middle" dominantBaseline="middle" fill={T.dimText} fontSize={9} fontFamily="inherit" transform={`rotate(90,${z.x + z.w + 14},${z.y + z.h / 2})`} style={{ pointerEvents: "none" }}>{ft(z.h)}</text></>}
                 </g>;
               })}
 
@@ -2738,7 +2900,7 @@ export default function TestfitTool() {
                 const l = SPEC_LAYERS[p.layer]; 
                 const ct = p.componentType;
                 const isOutletInBuild = mode === "build" && p.layer === "power" &&
-                  (ct?.startsWith("outlet_") || ct?.startsWith("switch_") || ct === "panel_board");
+                  (ct?.startsWith("outlet_") || ct?.startsWith("switch_") || ct === "panel_board" || ct?.startsWith("light_"));
                 if (!l || (!visibleLayers[p.layer] && mode !== "budget" && !isOutletInBuild)) return null; 
                 const compData = SPEC_COMPONENTS[p.layer]?.[p.componentType];
                 const sel = (selectedId === p.id && selType === "marker") || selectedIds.includes(p.id);
@@ -3249,9 +3411,60 @@ export default function TestfitTool() {
                   })()}
                 </div>
 
+                {/* Lighting section */}
+                <div style={{ fontSize: 9, color: T.textMuted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 5, fontWeight: 600 }}>Lighting</div>
+                {(() => {
+                  const LIGHT_OPTS = [
+                    { key: "light_can_4",    label: "4\"\nCan",      color: "#E8D070", sym: "can"    },
+                    { key: "light_can_6",    label: "6\"\nCan",      color: "#E8D070", sym: "can6"   },
+                    { key: "light_pendant",  label: "Pendant",       color: "#E8D070", sym: "pend"   },
+                    { key: "light_linear_2", label: "Linear\n2\'",   color: "#E8D070", sym: "lin2"   },
+                    { key: "light_linear_4", label: "Linear\n4\'",   color: "#E8D070", sym: "lin4"   },
+                    { key: "light_sconce",   label: "Sconce",        color: "#E8D070", sym: "sconce" },
+                  ];
+                  return <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 5, marginBottom: 14 }}>
+                    {LIGHT_OPTS.map(({ key: lKey, label, color, sym }) => {
+                      const isSel = outletType === lKey;
+                      const isCan = sym === "can" || sym === "can6";
+                      const isLin = sym === "lin2" || sym === "lin4";
+                      const isPend = sym === "pend";
+                      const isSconce = sym === "sconce";
+                      const bigCan = sym === "can6";
+                      return <button key={lKey} onClick={() => setOutletType(lKey)} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 5, padding: "8px 4px", background: isSel ? color + "22" : "transparent", border: "1.5px solid " + (isSel ? color : T.border), borderRadius: 6, cursor: "pointer", fontFamily: "inherit", transition: "all 0.12s ease" }}>
+                        <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+                          {isCan && <>
+                            <circle cx="14" cy="14" r={bigCan ? 9 : 7} stroke={color} strokeWidth="1.5"/>
+                            <circle cx="14" cy="14" r={bigCan ? 5 : 3.5} stroke={color} strokeWidth="1"/>
+                            <line x1="10" y1="10" x2="18" y2="18" stroke={color} strokeWidth="1"/>
+                            <line x1="18" y1="10" x2="10" y2="18" stroke={color} strokeWidth="1"/>
+                          </>}
+                          {isPend && <>
+                            <line x1="14" y1="2" x2="14" y2="8" stroke={color} strokeWidth="1.5"/>
+                            <line x1="8" y1="2" x2="20" y2="2" stroke={color} strokeWidth="1.5"/>
+                            <circle cx="14" cy="14" r="6" stroke={color} strokeWidth="1.5"/>
+                            <circle cx="14" cy="14" r="2" fill={color}/>
+                          </>}
+                          {isLin && <>
+                            <rect x={sym === "lin4" ? "3" : "6"} y="11" width={sym === "lin4" ? "22" : "16"} height="6" rx="1" stroke={color} strokeWidth="1.5"/>
+                            <line x1="14" y1="2" x2="14" y2="11" stroke={color} strokeWidth="1" strokeDasharray="2 2"/>
+                          </>}
+                          {isSconce && <>
+                            <rect x="10" y="6" width="8" height="16" rx="1" stroke={color} strokeWidth="1.5"/>
+                            <line x1="10" y1="10" x2="4" y2="7"  stroke={color} strokeWidth="1"/>
+                            <line x1="10" y1="14" x2="3" y2="14" stroke={color} strokeWidth="1"/>
+                            <line x1="10" y1="18" x2="4" y2="21" stroke={color} strokeWidth="1"/>
+                          </>}
+                        </svg>
+                        <span style={{ fontSize: 8, color: isSel ? color : T.textMuted, textAlign: "center", lineHeight: 1.3, whiteSpace: "pre-line" }}>{label}</span>
+                      </button>;
+                    })}
+                  </div>;
+                })()}
+
                 <div style={{ fontSize: 10, color: T.textMuted, marginBottom: 4 }}>Est. {$(active?.unitCost || 0)}{outletType.startsWith("outlet_") ? " / outlet" : ""}</div>
                 <div style={{ fontSize: 10, color: "#5A5448", fontStyle: "italic" }}>Click to place · Shift+click to keep placing</div>
-                {outletType !== "outlet_ceiling" && <div style={{ fontSize: 9, color: "#5A5448", marginTop: 3, fontStyle: "italic" }}>Snaps to nearest wall</div>}
+                {outletType !== "outlet_ceiling" && !outletType.startsWith("light_can") && !outletType.startsWith("light_pendant") && !outletType.startsWith("light_linear") && <div style={{ fontSize: 9, color: "#5A5448", marginTop: 3, fontStyle: "italic" }}>Snaps to nearest wall</div>}
+                {(outletType.startsWith("light_can") || outletType.startsWith("light_pendant") || outletType.startsWith("light_linear")) && <div style={{ fontSize: 9, color: "#5A5448", marginTop: 3, fontStyle: "italic" }}>Ceiling mount · free placement</div>}
               </>;
             })()}
             {mode === "zone" && tool === "zone" && (() => { const zt = ZONE_LIBRARY[activeZoneType]; return <>
