@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from "react";
-import { MousePointer2, X, Plus, DoorOpen, Ruler } from "lucide-react";
+import { MousePointer2, X, Plus, DoorOpen, Ruler, Box, LayoutDashboard, RotateCcw } from "lucide-react";
 import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "../app/components/ui/tooltip";
+import TestFit3D from "./testfit3d";
 
 // Custom wall and window icons
 const WallIcon = () => (
@@ -92,7 +93,7 @@ const SPEC_COMPONENTS = {
     switch_single:         { name: "Single-Pole Switch",              symbol: "switch",         color: "#C8A060", letter: "S", unitCost: 180, mount: "inwall"  },
     switch_double:         { name: "Double-Pole Switch",              symbol: "switch",         color: "#C8A060", letter: "S2", unitCost: 260, mount: "inwall" },
     switch_dimmer:         { name: "Dimmer Switch",                   symbol: "switch",         color: "#C8A060", letter: "DM", unitCost: 320, mount: "inwall" },
-    panel_board:           { name: "Panel Board",                     symbol: "panel",          color: "#E05050", letter: "P", unitCost: 2800, mount: "inwall" },
+    panel_board:           { name: "Electrical Panel",                symbol: "panel",          color: "#E05050", letter: "P", unitCost: 2800, mount: "inwall" },
     // Lighting
     light_can_4:    { name: "4\" Recessed Can",    symbol: "recessed",   color: "#E8D070", letter: null, unitCost: 280, size: 4,  mount: "ceiling" },
     light_can_6:    { name: "6\" Recessed Can",    symbol: "recessed",   color: "#E8D070", letter: null, unitCost: 340, size: 6,  mount: "ceiling" },
@@ -149,19 +150,49 @@ const WALL_KINDS = {
   pony:     { label: "Pony",     color: "#C8A060", dash: null,  thickness: 3.5, thin: true },
 };
 
+// Slider + inline number input — replaces both button grids and static range+span combos
+function SliderInput({ value, min, max, step = 1, onChange, accent = "#9A9488", textColor = "#E8E0D0", bgColor = "#2A2826", borderColor = "#3A3830", unit = '"', disabled = false }) {
+  const [editing, setEditing] = useState(false);
+  const [raw, setRaw] = useState(String(value ?? ""));
+  useEffect(() => { if (!editing) setRaw(String(value ?? "")); }, [value, editing]);
+  const commit = () => {
+    const v = Math.min(max, Math.max(min, parseInt(raw) || min));
+    onChange(v);
+    setEditing(false);
+  };
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+      <input type="range" min={min} max={max} step={step} value={value ?? min} disabled={disabled}
+        onChange={e => onChange(parseInt(e.target.value))}
+        style={{ flex: 1, accentColor: accent, height: 4, cursor: "pointer", opacity: disabled ? 0.4 : 1 }} />
+      {editing ? (
+        <input type="number" min={min} max={max} value={raw}
+          onChange={e => setRaw(e.target.value)}
+          onBlur={commit}
+          onKeyDown={e => { if (e.key === "Enter") commit(); if (e.key === "Escape") { setEditing(false); setRaw(String(value ?? "")); } }}
+          autoFocus
+          style={{ width: 44, fontSize: 12, fontWeight: 600, color: textColor, background: bgColor, border: "1px solid " + borderColor, borderRadius: 4, padding: "2px 4px", textAlign: "center", fontFamily: "inherit" }}
+        />
+      ) : (
+        <span onClick={() => { if (!disabled) { setRaw(String(value ?? "")); setEditing(true); } }}
+          title={disabled ? undefined : "Click to type exact value"}
+          style={{ fontSize: 12, fontWeight: 600, color: disabled ? borderColor : textColor, minWidth: "36px", textAlign: "right", cursor: disabled ? "default" : "text", borderBottom: disabled ? "none" : "1px dashed " + borderColor, paddingBottom: 1 }}
+        >{disabled ? "—" : (value ?? "—")}{disabled ? "" : unit}</span>
+      )}
+    </div>
+  );
+}
+
 const DOOR_WIDTHS = [36, 48, 60];
 const DOOR_TYPES = ["Wood", "Glass", "Metal", "Case Opening"];
 const WINDOW_WIDTHS = [24, 36, 48, 60];
 const WINDOW_TYPES = ["Window", "Cut Opening"];
 
-const WALL_MATERIALS = ["Drywall", "Brick", "CMU / Block", "Glass", "Wood Stud", "Metal Stud", "Concrete", "Plaster", "Other"];
+const WALL_MATERIALS = ["Drywall", "Brick", "CMU / Block", "Concrete", "Plaster", "Other"];
 const WALL_MATERIAL_HATCHES = {
   "Drywall":     "mat-drywall",
   "Brick":       "mat-brick",
   "CMU / Block": "mat-cmu",
-  "Glass":       "mat-glass",
-  "Wood Stud":   "mat-wood-stud",
-  "Metal Stud":  "mat-metal-stud",
   "Concrete":    "mat-concrete",
   "Plaster":     "mat-plaster",
   "Other":       "mat-other",
@@ -185,15 +216,19 @@ const parseDimInput = (str, ppf) => {
 // d1/n1/h1 = direction, left-normal, half-thickness for wall 1 (direction pointing away from junction)
 // d2/n2/h2 = same for wall 2
 // side = +1 for left edge, -1 for right edge
+// 2D line–line intersection: point P moving in direction pd meets point Q moving in direction qd.
+// Returns the intersection, falling back to P when parallel or |t| exceeds cap.
+const lineInt = (px, py, pdx, pdy, qx, qy, qdx, qdy, cap) => {
+  const den = pdx * qdy - pdy * qdx;
+  if (Math.abs(den) < 0.001) return { x: px, y: py };
+  const t = ((qx - px) * qdy - (qy - py) * qdx) / den;
+  if (cap != null && Math.abs(t) > cap) return { x: px, y: py };
+  return { x: px + pdx * t, y: py + pdy * t };
+};
 const wallMiterPt = (jx, jy, d1x, d1y, n1x, n1y, h1, d2x, d2y, n2x, n2y, h2, side) => {
   const Px = jx + n1x * h1 * side, Py = jy + n1y * h1 * side;
   const Qx = jx + n2x * h2 * side, Qy = jy + n2y * h2 * side;
-  const denom = d1x * d2y - d1y * d2x; // 2D cross product d1 × d2
-  if (Math.abs(denom) < 0.001) return { x: Px, y: Py }; // parallel — use simple offset
-  const t = ((Qx - Px) * d2y - (Qy - Py) * d2x) / denom;
-  const maxDist = Math.max(h1, h2) * 6; // cap extreme miters (very acute angles)
-  if (Math.abs(t) > maxDist) return { x: Px, y: Py };
-  return { x: Px + d1x * t, y: Py + d1y * t };
+  return lineInt(Px, Py, d1x, d1y, Qx, Qy, d2x, d2y, Math.max(h1, h2) * 6);
 };
 const dst = (ax, ay, bx, by) => Math.sqrt((bx - ax) ** 2 + (by - ay) ** 2);
 const ptSeg = (px, py, x1, y1, x2, y2) => {
@@ -330,12 +365,14 @@ export default function TestfitTool() {
     setSelectedId(null); setSelType(null);
   }, []);
 
-  // tool: select, pan, wall, wall_demo, wall_new, zone, marker, door, window, calibrate
+  // tool: select, pan, wall, zone, marker, door, window, column, calibrate
   const [tool, setTool] = useState("select");
   const [activeZoneType, setActiveZoneType] = useState("entry");
   const [activeSpecLayer, setActiveSpecLayer] = useState("power");
   const [activeComponentType, setActiveComponentType] = useState("duplex_outlet");
   const [visibleLayers, setVisibleLayers] = useState({ power: true, av: true, it: true, mep: true, security: true });
+  const [visibleBuildElectrical, setVisibleBuildElectrical] = useState(true);
+  const [visibleBuildLighting, setVisibleBuildLighting] = useState(true);
   const [selectedIds, setSelectedIds] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const [selType, setSelType] = useState(null);
@@ -346,11 +383,17 @@ export default function TestfitTool() {
   const [showGrid, setShowGrid] = useState(true);
   const [showDims, setShowDims] = useState(true);
   const [zoneEdge, setZoneEdge] = useState(null); // { id, edge, cursor } for rect-zone edge hover
+  const [view3d, setView3d] = useState(false);
+  const [ceilingHeight, setCeilingHeight] = useState(108); // 9'-0" in inches
+  const controls3dRef = useRef(null);
+  const [show3dLabels, setShow3dLabels] = useState(false);
+  const [show3dDims,   setShow3dDims]   = useState(false);
   const [doorWidth, setDoorWidth] = useState(36);
   const [windowWidth, setWindowWidth] = useState(36);
   const [columnSize, setColumnSize] = useState(12); // inches
   const [columnShape, setColumnShape] = useState("circle"); // circle or square
   const [wallMaterial, setWallMaterial] = useState("Drywall");
+  const [wallKind, setWallKind] = useState("existing"); // "existing" | "demo" | "new" | "pony"
   const [wallPaintColor, setWallPaintColor] = useState("#E8E0D0");
   const [wallPaintFinish, setWallPaintFinish] = useState("");
   const [wallNotes, setWallNotes] = useState("");
@@ -369,6 +412,11 @@ export default function TestfitTool() {
   const [zoneNotes, setZoneNotes] = useState("");
   const [markerNotes, setMarkerNotes] = useState("");
   const [outletType, setOutletType] = useState("outlet_duplex");
+  const [outletIsNew, setOutletIsNew] = useState(false);
+  const [lightingType, setLightingType] = useState("light_can_4");
+  const [lightingIsNew, setLightingIsNew] = useState(false);
+  const [htrackAngle, setHtrackAngle] = useState(0); // degrees, 0/45/90/135
+  const [rotatingMarker, setRotatingMarker] = useState(null); // { id, cx, cy }
   const [clipboard, setClipboard] = useState(null); // { walls, nodes, doors, windows, columns, markers, zones }
   const [pasteOffset, setPasteOffset] = useState(0); // increments each paste
   const [dims, setDims] = useState([]); // [{id, x1, y1, x2, y2, offset}]
@@ -393,8 +441,8 @@ export default function TestfitTool() {
   const [hoverNid, setHoverNid] = useState(null);
   const [ghostPos, setGhostPos] = useState(null);
 
-  // Dynamic snap grid: quarter-foot at 200%+ zoom, full foot otherwise
-  const snapGrid = zoom >= 2 ? pxPerFoot / 4 : pxPerFoot;
+  // Dynamic snap grid: 1" at 300%+, 3" at 150%+, 1' otherwise
+  const snapGrid = zoom >= 3 ? pxPerFoot / 12 : zoom >= 1.5 ? pxPerFoot / 4 : pxPerFoot;
   const cvs = useRef(null);
   const fRef = useRef(null);
   const loadRef = useRef(null);
@@ -573,8 +621,7 @@ export default function TestfitTool() {
     return best;
   }, [walls, wc]);
 
-  const wallKindForTool = (t) => t === "wall_demo" ? "demo" : t === "wall_new" ? "new" : t === "wall_pony" ? "pony" : "existing";
-  const isWallTool = (t) => t === "wall" || t === "wall_demo" || t === "wall_new" || t === "wall_pony";
+  const isWallTool = (t) => t === "wall";
 
   // Save/Load
   const save = useCallback(async () => {
@@ -685,7 +732,33 @@ export default function TestfitTool() {
       // In BUILD mode, only allow building objects
       for (const n of nodes) if (dst(pos.x, pos.y, n.x, n.y) < 10) return { type: "node", id: n.id };
       for (let i = columns.length - 1; i >= 0; i--) { const col = columns[i]; const r = inToPx(col.size) / 2; if (dst(pos.x, pos.y, col.x, col.y) < r + 4) return { type: "column", id: col.id }; }
-      for (let i = markers.length - 1; i >= 0; i--) { const p = markers[i]; if (p.layer === "power" && (p.componentType?.startsWith("outlet_") || p.componentType?.startsWith("switch_") || p.componentType === "panel_board" || p.componentType?.startsWith("light_")) && dst(pos.x, pos.y, p.x, p.y) < 16) return { type: "marker", id: p.id }; }
+      for (let i = markers.length - 1; i >= 0; i--) {
+        const p = markers[i];
+        if (p.layer !== "power") continue;
+        const ct = p.componentType;
+        const isHtrack = ct === "htrack_4" || ct === "htrack_8" || ct === "htrack";
+        if (isHtrack) {
+          // Rectangle hit — transform click into local track frame
+          const ftLen = ct === "htrack_8" ? 8 : 4;
+          const lenPx = ftLen * pxPerFoot, widPx = 0.25 * pxPerFoot;
+          const angle = p.angle || 0;
+          const ddx = pos.x - p.x, ddy = pos.y - p.y;
+          const lx = ddx * Math.cos(-angle) - ddy * Math.sin(-angle);
+          const ly = ddx * Math.sin(-angle) + ddy * Math.cos(-angle);
+          if (Math.abs(lx) <= lenPx / 2 + 8 && Math.abs(ly) <= widPx / 2 + 8) return { type: "marker", id: p.id };
+        } else if (ct?.startsWith("light_linear")) {
+          // Rectangle hit for linear fixtures
+          const ftLen = ct === "light_linear_4" ? 4 : 2;
+          const lenPx = ftLen * pxPerFoot, widPx = 8;
+          const angle = p.angle || 0;
+          const ddx = pos.x - p.x, ddy = pos.y - p.y;
+          const lx = ddx * Math.cos(-angle) - ddy * Math.sin(-angle);
+          const ly = ddx * Math.sin(-angle) + ddy * Math.cos(-angle);
+          if (Math.abs(lx) <= lenPx / 2 + 8 && Math.abs(ly) <= widPx / 2 + 8) return { type: "marker", id: p.id };
+        } else if (ct?.startsWith("outlet_") || ct?.startsWith("switch_") || ct === "panel_board" || ct?.startsWith("light_") || ct === "tstat" || ct === "sconce_prewire" || ct === "pendent_prewire") {
+          if (dst(pos.x, pos.y, p.x, p.y) < 16) return { type: "marker", id: p.id };
+        }
+      }
       for (let i = doors.length - 1; i >= 0; i--) { const d = doors[i]; if (dst(pos.x, pos.y, d.x, d.y) < inToPx(d.width) / 2 + 4) return { type: "door", id: d.id }; }
       for (let i = windows.length - 1; i >= 0; i--) { const w = windows[i]; if (dst(pos.x, pos.y, w.x, w.y) < inToPx(w.width) / 2 + 4) return { type: "window", id: w.id }; }
       for (let i = walls.length - 1; i >= 0; i--) { const w = walls[i], c = wc(w); if (c && ptSeg(pos.x, pos.y, c.x1, c.y1, c.x2, c.y2) < 10) return { type: "wall", id: w.id }; }
@@ -750,20 +823,19 @@ export default function TestfitTool() {
         // First click: start chain — also snap to wall body for start point
         const startNode = findNear(sx, sy);
         const startWallSnap = !startNode ? snapToWall(sx, sy, SNAP_R) : null;
-        setDrawChain({ lastNodeId: startNode?.id || null, lastX: startNode?.x ?? (startWallSnap?.x ?? sx), lastY: startNode?.y ?? (startWallSnap?.y ?? sy) });
+        setDrawChain({ lastNodeId: startNode?.id || null, lastX: startNode?.x ?? (startWallSnap?.x ?? sx), lastY: startNode?.y ?? (startWallSnap?.y ?? sy), history: [] });
       } else {
         // Subsequent click: commit segment and continue
         if (dst(drawChain.lastX, drawChain.lastY, tx, ty) > 8) {
-          const result = commitWallSegment(drawChain.lastNodeId, drawChain.lastX, drawChain.lastY, tx, ty, wallKindForTool(tool));
+          const result = commitWallSegment(drawChain.lastNodeId, drawChain.lastX, drawChain.lastY, tx, ty, wallKind);
           if (result) {
-            // If we connected to an existing node, finish the chain and switch to select
+            // If we connected to an existing node, finish the chain (stay in wall tool)
             if (near) {
               setDrawChain(null);
               setCursorPos(null);
               setDimInput("");
-              setT("select");
             } else {
-              setDrawChain({ lastNodeId: result.nodeId, lastX: result.x, lastY: result.y });
+              setDrawChain({ lastNodeId: result.nodeId, lastX: result.x, lastY: result.y, history: [...(drawChain.history || []), { lastNodeId: drawChain.lastNodeId, lastX: drawChain.lastX, lastY: drawChain.lastY }] });
             }
           }
         }
@@ -808,12 +880,22 @@ export default function TestfitTool() {
     }
     if (tool === "outlet") {
       const nid = uid();
-      const isCeiling = outletType === "outlet_ceiling" || (outletType.startsWith("light_") && outletType !== "light_sconce");
+      const isCeiling = outletType === "outlet_ceiling" || outletType === "pendent_prewire" || outletType.startsWith("htrack_") || (outletType.startsWith("light_") && outletType !== "light_sconce");
       const wallSnap = !isCeiling; // wall-mounted types snap to walls
       const snap = wallSnap ? snapToWall(pos.x, pos.y, Infinity) : null;
       const ox = snap ? snap.x : sx, oy = snap ? snap.y : sy;
-      const angleRad = snap ? (snap.angle * Math.PI / 180) : 0;
-      setMarkers(p => [...p, { id: nid, layer: "power", componentType: outletType, x: ox, y: oy, angle: angleRad, label: SPEC_COMPONENTS.power[outletType].name, notes: "" }]);
+      const angleRad = outletType.startsWith("htrack_") ? (htrackAngle * Math.PI / 180) : (snap ? (snap.angle * Math.PI / 180) : 0);
+      setMarkers(p => [...p, { id: nid, layer: "power", componentType: outletType, x: ox, y: oy, angle: angleRad, isNew: outletIsNew, label: SPEC_COMPONENTS.power[outletType].name, notes: "" }]);
+      if (e.shiftKey) { setSelectedId(null); setSelType(null); } else { setSelectedId(nid); setSelType("marker"); setTool("select"); setGhostPos(null); }
+      return;
+    }
+    if (tool === "lighting") {
+      const nid = uid();
+      const isCeiling = lightingType !== "light_sconce" && lightingType !== "sconce_prewire";
+      const snap = isCeiling ? null : snapToWall(pos.x, pos.y, Infinity);
+      const ox = snap ? snap.x : sx, oy = snap ? snap.y : sy;
+      const angleRad = lightingType.startsWith("htrack_") ? (htrackAngle * Math.PI / 180) : (snap ? (snap.angle * Math.PI / 180) : 0);
+      setMarkers(p => [...p, { id: nid, layer: "power", componentType: lightingType, x: ox, y: oy, angle: angleRad, isNew: lightingIsNew, label: SPEC_COMPONENTS.power[lightingType].name, notes: "" }]);
       if (e.shiftKey) { setSelectedId(null); setSelType(null); } else { setSelectedId(nid); setSelType("marker"); setTool("select"); setGhostPos(null); }
       return;
     }
@@ -1014,14 +1096,43 @@ export default function TestfitTool() {
             if (c) {
               const n1 = gn(w.n1), n2 = gn(w.n2);
               if (n1 && n2) {
-                // Find doors/windows attached to this wall
+                // Items on the dragged wall itself — parametric t keeps them on centerline
+                // even when snap grid causes slight wall rotation.
+                const doorIds = new Set(doors.map(d => d.id));
                 const attachedItems = [];
+                const wdxA = c.x2 - c.x1, wdyA = c.y2 - c.y1, wlen2A = wdxA * wdxA + wdyA * wdyA;
+                const itemIds = new Set();
                 [...doors, ...windows].forEach(item => {
                   if (ptSeg(item.x, item.y, c.x1, c.y1, c.x2, c.y2) < 8) {
-                    attachedItems.push({ id: item.id, x: item.x, y: item.y, isDoor: doors.some(d => d.id === item.id) });
+                    const t = wlen2A > 0 ? ((item.x - c.x1) * wdxA + (item.y - c.y1) * wdyA) / wlen2A : 0;
+                    attachedItems.push({ id: item.id, t, isDoor: doorIds.has(item.id) });
+                    itemIds.add(item.id);
                   }
                 });
-                setDrag({ type: "wall", id: hit.id, ox: pos.x, oy: pos.y, n1x: n1.x, n1y: n1.y, n2x: n2.x, n2y: n2.y, attached: attachedItems });
+                // Items on adjacent walls — when this wall translates, shared nodes move,
+                // causing adjacent walls to skew. Reposition items along the new skewed wall.
+                const adjacentAttached = [];
+                [{ nodeId: w.n1, isN1W: true }, { nodeId: w.n2, isN1W: false }].forEach(({ nodeId, isN1W }) => {
+                  walls.forEach(adjW => {
+                    if (adjW.id === w.id) return;
+                    if (adjW.n1 !== nodeId && adjW.n2 !== nodeId) return;
+                    const adjC = wc(adjW);
+                    if (!adjC) return;
+                    const sharedIsN1ofAdj = adjW.n1 === nodeId;
+                    const otherX = sharedIsN1ofAdj ? adjC.x2 : adjC.x1;
+                    const otherY = sharedIsN1ofAdj ? adjC.y2 : adjC.y1;
+                    const adjDx = adjC.x2 - adjC.x1, adjDy = adjC.y2 - adjC.y1, adjLen2 = adjDx * adjDx + adjDy * adjDy;
+                    [...doors, ...windows].forEach(item => {
+                      if (itemIds.has(item.id)) return;
+                      if (ptSeg(item.x, item.y, adjC.x1, adjC.y1, adjC.x2, adjC.y2) < 8) {
+                        const t = adjLen2 > 0 ? ((item.x - adjC.x1) * adjDx + (item.y - adjC.y1) * adjDy) / adjLen2 : 0;
+                        adjacentAttached.push({ id: item.id, t, isDoor: doorIds.has(item.id), isN1W, sharedIsN1WA: sharedIsN1ofAdj, otherX, otherY });
+                        itemIds.add(item.id);
+                      }
+                    });
+                  });
+                });
+                setDrag({ type: "wall", id: hit.id, ox: pos.x, oy: pos.y, n1x: n1.x, n1y: n1.y, n2x: n2.x, n2y: n2.y, attached: attachedItems, adjacentAttached });
               }
             }
           }
@@ -1150,9 +1261,20 @@ export default function TestfitTool() {
       else setGhostPos({ x: sx, y: sy, angle: 0, snapped: false });
     }
     if (tool === "outlet") {
-      const isCeiling = outletType === "outlet_ceiling" || (outletType.startsWith("light_") && outletType !== "light_sconce");
+      const isCeiling = outletType === "outlet_ceiling" || outletType === "pendent_prewire" || outletType.startsWith("htrack_");
       if (isCeiling) {
-        setGhostPos({ x: sx, y: sy, angle: 0, snapped: false });
+        const angle = outletType.startsWith("htrack_") ? (htrackAngle * Math.PI / 180) : 0;
+        setGhostPos({ x: sx, y: sy, angle, snapped: false });
+      } else {
+        const snap = snapToWall(pos.x, pos.y, Infinity);
+        if (snap) setGhostPos({ x: snap.x, y: snap.y, angle: snap.angle * Math.PI / 180, snapped: true });
+        else setGhostPos({ x: sx, y: sy, angle: 0, snapped: false });
+      }
+    }
+    if (tool === "lighting") {
+      if (lightingType !== "light_sconce" && lightingType !== "sconce_prewire") {
+        const angle = lightingType.startsWith("htrack_") ? (htrackAngle * Math.PI / 180) : 0;
+        setGhostPos({ x: sx, y: sy, angle, snapped: false });
       } else {
         const snap = snapToWall(pos.x, pos.y, Infinity);
         if (snap) setGhostPos({ x: snap.x, y: snap.y, angle: snap.angle * Math.PI / 180, snapped: true });
@@ -1182,6 +1304,15 @@ export default function TestfitTool() {
         if (nR)       { fe = { id: z.id, edge: "e",  cursor: "ew-resize"   }; break; }
       }
       setZoneEdge(fe);
+    }
+
+    if (rotatingMarker) {
+      const dx = pos.x - rotatingMarker.cx;
+      const dy = pos.y - rotatingMarker.cy;
+      let angle = Math.atan2(dy, dx) + Math.PI / 2;
+      if (e.shiftKey) angle = Math.round(angle / (Math.PI / 4)) * (Math.PI / 4);
+      setMarkers(prev => prev.map(m => m.id === rotatingMarker.id ? { ...m, angle } : m));
+      return;
     }
 
     if (drag) {
@@ -1241,18 +1372,35 @@ export default function TestfitTool() {
           const n1NewY = sn(drag.n1y + dy, snapGrid);
           const n2NewX = sn(drag.n2x + dx, snapGrid);
           const n2NewY = sn(drag.n2y + dy, snapGrid);
-          // Actual snapped delta for attached items
-          const sdx = n1NewX - drag.n1x, sdy = n1NewY - drag.n1y;
           setNodes(prev => prev.map(n => {
             if (n.id === w.n1) return { ...n, x: n1NewX, y: n1NewY };
             if (n.id === w.n2) return { ...n, x: n2NewX, y: n2NewY };
             return n;
           }));
-          // Move attached doors/windows
+          // Items on the dragged wall — parametric reposition keeps them on the centerline.
           if (drag.attached?.length) {
+            const newAngle = Math.atan2(n2NewY - n1NewY, n2NewX - n1NewX) * 180 / Math.PI;
             drag.attached.forEach(item => {
-              if (item.isDoor) setDoors(p => p.map(d => d.id === item.id ? { ...d, x: item.x + sdx, y: item.y + sdy } : d));
-              else setWindows(p => p.map(ww => ww.id === item.id ? { ...ww, x: item.x + sdx, y: item.y + sdy } : ww));
+              const nx = n1NewX + item.t * (n2NewX - n1NewX);
+              const ny = n1NewY + item.t * (n2NewY - n1NewY);
+              if (item.isDoor) setDoors(p => p.map(d => d.id === item.id ? { ...d, x: nx, y: ny, angle: newAngle } : d));
+              else setWindows(p => p.map(ww => ww.id === item.id ? { ...ww, x: nx, y: ny, angle: newAngle } : ww));
+            });
+          }
+          // Items on adjacent walls that skew because a shared node moved.
+          if (drag.adjacentAttached?.length) {
+            drag.adjacentAttached.forEach(item => {
+              const movingX = item.isN1W ? n1NewX : n2NewX;
+              const movingY = item.isN1W ? n1NewY : n2NewY;
+              const ax = item.sharedIsN1WA ? movingX : item.otherX;
+              const ay = item.sharedIsN1WA ? movingY : item.otherY;
+              const bx = item.sharedIsN1WA ? item.otherX : movingX;
+              const by = item.sharedIsN1WA ? item.otherY : movingY;
+              const nx = ax + item.t * (bx - ax);
+              const ny = ay + item.t * (by - ay);
+              const newAngle = Math.atan2(by - ay, bx - ax) * 180 / Math.PI;
+              if (item.isDoor) setDoors(p => p.map(d => d.id === item.id ? { ...d, x: nx, y: ny, angle: newAngle } : d));
+              else setWindows(p => p.map(ww => ww.id === item.id ? { ...ww, x: nx, y: ny, angle: newAngle } : ww));
             });
           }
         }
@@ -1290,9 +1438,9 @@ export default function TestfitTool() {
       else if (drag.type === "marker") {
         const dragMarker = markers.find(x => x.id === drag.id);
         const ct = dragMarker?.componentType;
-        const isCeilingMount = ct === "outlet_ceiling" || (ct?.startsWith("light_") && ct !== "light_sconce");
+        const isCeilingMount = ct === "outlet_ceiling" || ct === "pendent_prewire" || ct?.startsWith("htrack_") || (ct?.startsWith("light_") && ct !== "light_sconce");
         const isWallOutlet = dragMarker?.layer === "power" && ct && !isCeilingMount &&
-          (ct.startsWith("outlet_") || ct.startsWith("switch_") || ct === "panel_board" || ct === "light_sconce");
+          (ct.startsWith("outlet_") || ct.startsWith("switch_") || ct === "panel_board" || ct === "light_sconce" || ct === "sconce_prewire" || ct === "tstat");
         if (isWallOutlet) {
           const snap = snapToWall(pos.x, pos.y, Infinity);
           if (snap) setMarkers(p => p.map(x => x.id === drag.id ? { ...x, x: snap.x, y: snap.y, angle: snap.angle * Math.PI / 180 } : x));
@@ -1343,7 +1491,7 @@ export default function TestfitTool() {
         return { ...z, x, y, w, h };
       }));
     }
-  }, [panning, panSt, drawChain, drag, resize, s2c, findNear, findDimSnap, walls, wc, tool, snapToWall, snapGrid, marquee, calibrationLine, dims, drawDim, zones, zoom]);
+  }, [panning, panSt, drawChain, drag, resize, s2c, findNear, findDimSnap, walls, wc, tool, snapToWall, snapGrid, marquee, calibrationLine, dims, drawDim, zones, zoom, rotatingMarker, outletType, lightingType, htrackAngle]);
 
   const onUp = useCallback((e) => {
     // Finish marquee selection
@@ -1434,7 +1582,7 @@ export default function TestfitTool() {
       setSelectedId(tgt); setSelType("node");
     }
     // No re-clipping on zone drag/vertex drag end — user controls shape manually
-    setDrag(null); setResize(null); setPanning(false); setPanSt(null); setHoverNid(null);
+    setDrag(null); setResize(null); setPanning(false); setPanSt(null); setHoverNid(null); setRotatingMarker(null);
   }, [drag, resize, hoverNid, marquee, selectedIds, selectedId, mode, nodes, walls, doors, windows, zones, markers]);
 
   // Smooth zoom centered on cursor
@@ -1599,18 +1747,29 @@ export default function TestfitTool() {
           setDimInput(prev => prev.slice(0, -1));
           return;
         }
+        if ((key === "Backspace" || key === "u" || key === "U") && dimInput === "") {
+          e.preventDefault();
+          const hist = drawChain.history || [];
+          if (hist.length > 0) {
+            undo();
+            setDrawChain({ ...hist[hist.length - 1], history: hist.slice(0, -1) });
+          } else {
+            setDrawChain(null); setCursorPos(null); setDimInput("");
+          }
+          return;
+        }
         if (key === "Enter" && dimInput !== "" && cursorPos) {
           const lockedDist = parseDimInput(dimInput, pxPerFoot);
           if (lockedDist !== null) {
             const angle = Math.atan2(cursorPos.y - drawChain.lastY, cursorPos.x - drawChain.lastX);
             const lx = drawChain.lastX + Math.cos(angle) * lockedDist;
             const ly = drawChain.lastY + Math.sin(angle) * lockedDist;
-            const result = commitWallSegment(drawChain.lastNodeId, drawChain.lastX, drawChain.lastY, lx, ly, wallKindForTool(tool));
+            const result = commitWallSegment(drawChain.lastNodeId, drawChain.lastX, drawChain.lastY, lx, ly, wallKind);
             setDimInput("");
             if (result) {
               const near = findNear(lx, ly, [drawChain.lastNodeId]);
-              if (near) { setDrawChain(null); setCursorPos(null); setT("select"); }
-              else { setDrawChain({ lastNodeId: result.nodeId, lastX: result.x, lastY: result.y }); }
+              if (near) { setDrawChain(null); setCursorPos(null); }
+              else { setDrawChain({ lastNodeId: result.nodeId, lastX: result.x, lastY: result.y, history: [...(drawChain.history || []), { lastNodeId: drawChain.lastNodeId, lastX: drawChain.lastX, lastY: drawChain.lastY }] }); }
             }
           }
           return;
@@ -1678,23 +1837,32 @@ export default function TestfitTool() {
       if (k === "V" || k === "H") { setT(k === "V" ? "select" : "pan"); }
       else if (mode === "build" && { W: "wall", C: "column" }[k]) { setT({ W: "wall", C: "column" }[k]); }
       else if (mode === "build" && k === "E") { setT("outlet"); }
+      else if (mode === "build" && k === "L") { setT("lighting"); }
       else if (k === "M") { setT("dim"); setDrawDim(null); }
       else if (mode === "zone" && k === "Z") { setT("zone"); }
       else if (mode === "itmep" && k === "P") { setT("marker"); }
       if (k === "D" && !e.ctrlKey) setShowDims(d => !d);
       if (k === "G") setShowGrid(g => !g);
+      if (k === "R" && ((tool === "outlet" && outletType.startsWith("htrack_")) || (tool === "lighting" && lightingType.startsWith("htrack_")))) { setHtrackAngle(a => (a + 45) % 180); }
       if (k === "F" && selDoor) updDoor({ flipped: !selDoor.flipped });
       if (k === "R" && selDoor) updDoor({ hingeRight: !selDoor.hingeRight });
       if (k === "R" && selWindow) updWindow({ angle: (selWindow.angle + 90) % 360 });
       if ((k === "DELETE" || k === "BACKSPACE") && (selectedId || selectedIds.length > 0)) { e.preventDefault(); delSel(); }
-      if (k === "ESCAPE") { setSelectedId(null); setSelType(null); setDrawChain(null); setDrawPolyZone(null); setCursorPos(null); setDimInput(""); setDrawDim(null); }
+      if (k === "ESCAPE") {
+        if (drawChain || drawPolyZone || drawDim) {
+          setDrawChain(null); setDrawPolyZone(null); setCursorPos(null); setDimInput(""); setDrawDim(null);
+        } else {
+          setSelectedId(null); setSelType(null); setSelectedIds([]);
+        }
+      }
       if (e.key === "0" || e.key === "Home") { e.preventDefault(); fitAll(); }
+      if (e.key === "`") { e.preventDefault(); setView3d(v => !v); }
     };
     const up = (e) => { if (e.key === " ") setSpaceHeld(false); };
     window.addEventListener("keydown", down);
     window.addEventListener("keyup", up);
     return () => { window.removeEventListener("keydown", down); window.removeEventListener("keyup", up); };
-  }, [selectedId, selectedIds, selType, delSel, selDoor, selWindow, undo, redo, fitAll, dimInput, cursorPos, drawChain, pxPerFoot, commitWallSegment, tool, findNear, walls, nodes, doors, windows, columns, markers, zones, clipboard, pasteOffset]);
+  }, [selectedId, selectedIds, selType, delSel, selDoor, selWindow, undo, redo, fitAll, dimInput, cursorPos, drawChain, pxPerFoot, commitWallSegment, tool, findNear, walls, nodes, doors, windows, columns, markers, zones, clipboard, pasteOffset, outletType, htrackAngle, lightingType]);
 
   const $ = (n) => "$" + n.toLocaleString();
   const font = "'SF Mono','Consolas','Monaco',monospace";
@@ -2005,9 +2173,9 @@ export default function TestfitTool() {
 
   const S = {
     root: { display: "flex", flexDirection: "column", height: "100vh", fontFamily: font, fontSize: 11, background: T.bg0, color: T.text, overflow: "hidden" },
-    bar: { display: "flex", alignItems: "center", background: T.bg2, borderBottom: "1px solid " + T.border, padding: "0 16px", height: "48px", flexShrink: 0, gap: "8px" },
+    bar: { display: "flex", alignItems: "center", background: T.bg2, borderBottom: "1px solid " + T.border, padding: "0 12px", height: "44px", flexShrink: 0, gap: "6px" },
     mbtn: (a, c) => ({
-      padding: "8px 20px",
+      padding: "7px 14px",
       background: a ? c + "20" : "transparent",
       color: a ? T.textBright : T.textMuted,
       border: a ? "2px solid " + c + "60" : "2px solid transparent",
@@ -2020,8 +2188,8 @@ export default function TestfitTool() {
       transition: "all 0.15s ease"
     }),
     main: { display: "flex", flex: 1, overflow: "hidden" },
-    side: { width: "280px", background: T.bg1, borderRight: "1px solid " + T.bg3, display: "flex", flexDirection: "column", flexShrink: 0 },
-    body: { flex: 1, overflow: "auto", padding: "16px" },
+    side: { width: "220px", background: T.bg1, borderRight: "1px solid " + T.bg3, display: "flex", flexDirection: "column", flexShrink: 0 },
+    body: { flex: 1, overflow: "auto", padding: "12px" },
     cv: { flex: 1, position: "relative", overflow: "hidden", background: T.canvas },
     sb: { position: "absolute", bottom: 0, left: 0, right: 0, background: T.bg1, borderTop: "1px solid " + T.bg3, padding: "4px 12px", display: "flex", justifyContent: "space-between", fontSize: "10px", color: T.textDim, zIndex: 10 },
     btn: (a, c) => ({
@@ -2060,15 +2228,15 @@ export default function TestfitTool() {
     }),
     det: {
       position: "absolute",
-      top: "16px",
-      right: "16px",
-      width: "260px",
-      maxHeight: "calc(100vh - 140px)",
+      top: "12px",
+      right: "12px",
+      width: "220px",
+      maxHeight: "calc(100vh - 120px)",
       overflow: "auto",
       background: T.panelBg,
       border: "1px solid " + T.border,
       borderRadius: "8px",
-      padding: "16px",
+      padding: "12px",
       zIndex: 10,
       backdropFilter: "blur(12px)",
       boxShadow: T.panelShadow
@@ -2078,9 +2246,9 @@ export default function TestfitTool() {
     del: { background: T.delBg, border: "none", borderRadius: "5px", padding: "8px 12px", color: T.delText, fontSize: "10px", fontFamily: "inherit", cursor: "pointer", width: "100%", marginTop: "10px", fontWeight: 500, transition: "all 0.15s ease" },
     cr: { display: "flex", justifyContent: "space-between", padding: "6px 0", borderBottom: "1px solid " + T.bg3 + "33", fontSize: "10px" },
     ct: { display: "flex", justifyContent: "space-between", padding: "10px 0", borderTop: "1.5px solid " + T.border, marginTop: "8px", fontWeight: 600, color: T.textBright, fontSize: "13px" },
-    sec: { marginBottom: "20px" },
+    sec: { marginBottom: "14px" },
     sh: { fontSize: "10px", color: T.textMuted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: "8px", fontWeight: 600 },
-    smBtn: { padding: "6px 12px", background: "transparent", color: T.accent, border: "1.5px solid " + T.bg3, borderRadius: "5px", cursor: "pointer", fontSize: "10px", fontFamily: "inherit", transition: "all 0.15s ease", fontWeight: 500 },
+    smBtn: { padding: "5px 9px", background: "transparent", color: T.accent, border: "1.5px solid " + T.bg3, borderRadius: "5px", cursor: "pointer", fontSize: "10px", fontFamily: "inherit", transition: "all 0.15s ease", fontWeight: 500 },
     bg: { position: "absolute", bottom: "56px", left: "16px", display: "flex", gap: "8px", alignItems: "center", background: T.panelBg, border: "1px solid " + T.border, borderRadius: "6px", padding: "6px 12px", zIndex: 10, fontSize: "10px", backdropFilter: "blur(12px)", boxShadow: T.panelShadow },
     floatingToolbar: {
       position: "absolute",
@@ -2142,10 +2310,10 @@ export default function TestfitTool() {
         <button style={S.smBtn} onClick={() => setShowDims(d => !d)}>{showDims ? "Dims ✓" : "Dims"}</button>
         <button style={S.smBtn} onClick={() => setShowGrid(g => !g)}>{showGrid ? "Grid ✓" : "Grid"}</button>
         <button style={S.smBtn} onClick={() => setThemeMode(m => m === "dark" ? "light" : "dark")}>{themeMode === "dark" ? "Light" : "Dark"}</button>
-        <div style={{ width: 1, height: 20, background: T.border, margin: "0 6px" }} />
+        <div style={{ width: 1, height: 20, background: T.border, margin: "0 3px" }} />
         <button style={S.smBtn} onClick={exportPng}>PNG</button>
         <button style={S.smBtn} onClick={exportPdf}>PDF</button>
-        <div style={{ width: 1, height: 20, background: T.border, margin: "0 6px" }} />
+        <div style={{ width: 1, height: 20, background: T.border, margin: "0 3px" }} />
         <button style={S.smBtn} onClick={exportProject}>Save</button>
         <button style={S.smBtn} onClick={() => loadRef.current?.click()}>Load</button>
         <button style={S.smBtn} onClick={() => { if (walls.length || zones.length || markers.length) { if (confirm("New project?")) newProject(); } else newProject(); }}>New</button>
@@ -2223,12 +2391,60 @@ export default function TestfitTool() {
                 </select>
               </div>
               <div style={S.sec}>
+                <div style={S.sh}>Ceiling Height</div>
+                <select value={ceilingHeight} onChange={e => setCeilingHeight(Number(e.target.value))} style={{ ...S.inp, padding: "6px 10px", fontSize: 10 }}>
+                  {[84, 96, 108, 120, 132, 144].map(h => (
+                    <option key={h} value={h}>{Math.floor(h / 12)}'-{h % 12 ? h % 12 + '"' : '0"'}</option>
+                  ))}
+                </select>
+              </div>
+              <div style={S.sec}>
                 <div style={S.sh}>Summary</div>
                 {Object.entries(cost.wallFt).map(([k, v]) => <div key={k} style={S.cr}><span style={{ color: v.color, fontWeight: 500 }}>{v.label}</span><span style={{ fontWeight: 500 }}>{ft(v.ft)}</span></div>)}
                 {Object.keys(cost.wallFt).length === 0 && <div style={{ color: T.textFaint, fontSize: 10, padding: "8px 0", fontStyle: "italic" }}>No walls yet</div>}
                 <div style={{ ...S.cr, color: T.accent, borderBottom: "none" }}><span>Doors</span><span>{doors.length}</span></div>
                 <div style={{ ...S.cr, color: T.accent, borderBottom: "none" }}><span>Windows</span><span>{windows.length}</span></div>
                 <div style={{ ...S.cr, color: T.accent, borderBottom: "none", paddingBottom: 0 }}><span>Columns</span><span>{columns.length}</span></div>
+                {(() => {
+                  const pm = markers.filter(m => m.layer === "power");
+                  if (!pm.length) return null;
+
+                  // Group by componentType + isNew
+                  const groups = {};
+                  pm.forEach(m => {
+                    const compData = SPEC_COMPONENTS.power[m.componentType];
+                    if (!compData) return;
+                    const isLighting = m.componentType?.startsWith("light_") || m.componentType?.startsWith("htrack_") || m.componentType === "sconce_prewire" || m.componentType === "pendent_prewire";
+                    const key = m.componentType + (m.isNew ? "_new" : "_ab");
+                    if (!groups[key]) groups[key] = { name: compData.name, isNew: !!m.isNew, isLighting, color: isLighting ? "#E8D070" : "#50C878", ids: [] };
+                    groups[key].ids.push(m.id);
+                  });
+
+                  const elecGroups = Object.values(groups).filter(g => !g.isLighting);
+                  const ltGroups   = Object.values(groups).filter(g =>  g.isLighting);
+
+                  const SummaryRow = ({ group }) => {
+                    const isGroupSel = group.ids.length > 0 && group.ids.every(id => selectedIds.includes(id));
+                    const rowColor = group.isNew ? "#50A0E0" : group.color;
+                    return <div
+                      style={{ ...S.cr, cursor: "pointer", background: isGroupSel ? T.selBg : "transparent", borderRadius: 4, transition: "all 0.12s ease" }}
+                      onClick={() => { setSelectedIds(group.ids); setSelectedId(group.ids[0]); setSelType("marker"); setT("select"); }}>
+                      <span style={{ color: rowColor, fontWeight: 500 }}>{group.ids.length}× {group.name}</span>
+                      <span style={{ fontSize: 9, color: group.isNew ? "#50A0E0" : T.textMuted, fontStyle: "italic" }}>{group.isNew ? "new" : "existing"}</span>
+                    </div>;
+                  };
+
+                  return <>
+                    {elecGroups.length > 0 && <>
+                      <div style={{ marginTop: 6, paddingTop: 6, borderTop: "1px solid " + T.border, fontSize: 8, color: T.textMuted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 4, fontWeight: 600 }}>Electrical</div>
+                      {elecGroups.map((g, i) => <SummaryRow key={i} group={g} />)}
+                    </>}
+                    {ltGroups.length > 0 && <>
+                      <div style={{ marginTop: 6, paddingTop: 6, borderTop: "1px solid " + T.border, fontSize: 8, color: T.textMuted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 4, fontWeight: 600 }}>Lighting</div>
+                      {ltGroups.map((g, i) => <SummaryRow key={i} group={g} />)}
+                    </>}
+                  </>;
+                })()}
               </div>
             </>}
 
@@ -2262,7 +2478,7 @@ export default function TestfitTool() {
             {mode === "itmep" && <>
               <div style={S.sec}>
                 <div style={S.sh}>Component Layers</div>
-                {Object.entries(SPEC_LAYERS).map(([k, l]) => <div key={k} style={{ 
+                {Object.entries(SPEC_LAYERS).filter(([k]) => k !== "power").map(([k, l]) => <div key={k} style={{
                   ...S.lr, 
                   background: activeSpecLayer === k ? l.color + "20" : "transparent",
                   border: activeSpecLayer === k ? "2px solid " + l.color + "60" : "2px solid transparent",
@@ -2279,7 +2495,7 @@ export default function TestfitTool() {
               <div style={S.sec}>
                 <div style={S.sh}>Placed Components ({markers.length})</div>
                 {markers.length === 0 && <div style={{ color: T.textFaint, fontSize: 10, padding: "8px 0", fontStyle: "italic" }}>No components placed yet</div>}
-                {Object.entries(SPEC_LAYERS).map(([layerKey, layer]) => {
+                {Object.entries(SPEC_LAYERS).filter(([k]) => k !== "power").map(([layerKey, layer]) => {
                   const layerMarkers = markers.filter(m => m.layer === layerKey);
                   if (layerMarkers.length === 0) return null;
                   // Group markers by componentType
@@ -2438,12 +2654,62 @@ export default function TestfitTool() {
               </div>
             </>}
           </div>
+          {/* ── Build mode visibility toggles — pinned to sidebar bottom ── */}
+          {mode === "build" && (
+            <div style={{ borderTop: "1px solid " + T.bg3, padding: "10px 12px", background: T.bg1, flexShrink: 0 }}>
+              <div style={{ fontSize: 9, color: T.textDim, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6, fontWeight: 600 }}>Visibility</div>
+              {[
+                { key: "elec",  label: "Electrical", color: "#50C878", visible: visibleBuildElectrical, toggle: () => setVisibleBuildElectrical(v => !v), count: markers.filter(m => m.layer === "power" && !m.componentType?.startsWith("light_") && !m.componentType?.startsWith("htrack_") && m.componentType !== "sconce_prewire" && m.componentType !== "pendent_prewire").length },
+                { key: "light", label: "Lighting",   color: "#E8D070", visible: visibleBuildLighting,   toggle: () => setVisibleBuildLighting(v => !v),   count: markers.filter(m => m.layer === "power" && (m.componentType?.startsWith("light_") || m.componentType?.startsWith("htrack_") || m.componentType === "sconce_prewire" || m.componentType === "pendent_prewire")).length },
+              ].map(({ key, label, color, visible, toggle, count }) => (
+                <div key={key} style={{ ...S.lr, padding: "5px 4px", borderRadius: 6, marginBottom: 1 }}>
+                  <div style={S.chk(visible, color)} onClick={toggle}>{visible && "✓"}</div>
+                  <span style={{ color: visible ? T.accent : T.textMuted, flex: 1, fontSize: 11 }}>{label}</span>
+                  <span style={{ color: visible ? color : T.accentDim, fontSize: 10, fontWeight: 500 }}>{count}</span>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* ── Canvas ──────────────────────────────────────────────── */}
         <div style={S.cv}>
-          {drawChain && <div style={{ position: "absolute", top: "16px", left: "50%", transform: "translateX(-50%)", background: T.panelBg, border: "1px solid " + T.border, borderRadius: "6px", padding: "6px 14px", fontSize: "10px", color: MODES[mode].color, zIndex: 10, backdropFilter: "blur(12px)", boxShadow: T.panelShadow, fontWeight: 500 }}>
-            Click points · Double-click to finish · Shift: H/V · Type length to lock
+          {/* 2D/3D toggle button */}
+          <button
+            onClick={() => setView3d(v => !v)}
+            title={view3d ? "Switch to 2D (` key)" : "Switch to 3D (` key)"}
+            style={{ position: "absolute", bottom: 36, right: 12, zIndex: 20, display: "flex", alignItems: "center", gap: 5, padding: "5px 10px", fontSize: 11, fontWeight: 600, borderRadius: 6, border: "1px solid " + T.border, background: view3d ? T.accent : T.panelBg, color: view3d ? "#fff" : T.textMuted, cursor: "pointer", backdropFilter: "blur(8px)", boxShadow: T.panelShadow, userSelect: "none" }}
+          >
+            {view3d ? <LayoutDashboard size={13} /> : <Box size={13} />}
+            {view3d ? "2D" : "3D"}
+          </button>
+
+          {/* Reset camera button — icon only, sits left of the toggle */}
+          {view3d && (
+            <button
+              onClick={() => controls3dRef.current?.reset()}
+              title="Reset camera view"
+              style={{ position: "absolute", bottom: 36, right: 76, zIndex: 20, display: "flex", alignItems: "center", justifyContent: "center", padding: "6px 8px", borderRadius: 6, border: "1px solid " + T.border, background: T.panelBg, color: T.textMuted, cursor: "pointer", backdropFilter: "blur(8px)", boxShadow: T.panelShadow, userSelect: "none" }}
+            >
+              <RotateCcw size={14} />
+            </button>
+          )}
+
+          {view3d && (
+            <TestFit3D
+              walls={walls} nodes={nodes} doors={doors} windows={windows}
+              columns={columns} zones={zones} markers={markers} dims={dims}
+              pxPerFoot={pxPerFoot} ceilingHeight={ceilingHeight} T={T} themeMode={themeMode}
+              controlsRef={controls3dRef} mode={mode}
+              selectedId={selectedId} selType={selType}
+              show3dLabels={show3dLabels} setShow3dLabels={setShow3dLabels}
+              show3dDims={show3dDims}     setShow3dDims={setShow3dDims}
+              onSelect={(id, type) => { setSelectedId(id); setSelType(type); }}
+            />
+          )}
+
+          {drawChain && !view3d && <div style={{ position: "absolute", top: "16px", left: "50%", transform: "translateX(-50%)", background: T.panelBg, border: "1px solid " + T.border, borderRadius: "6px", padding: "6px 14px", fontSize: "10px", color: MODES[mode].color, zIndex: 10, backdropFilter: "blur(12px)", boxShadow: T.panelShadow, fontWeight: 500 }}>
+            Click to place · Double-click to finish · Shift: 45° snap · Type length to lock
           </div>}
           
           <style>{`@keyframes _blink{0%,100%{opacity:1}50%{opacity:0}}`}</style>
@@ -2463,7 +2729,7 @@ export default function TestfitTool() {
           </div>}
 
           <svg ref={cvs} width="100%" height="100%"
-            style={{ cursor: (panning || spaceHeld) ? "grabbing" : resize ? ({ n:"ns-resize",s:"ns-resize",e:"ew-resize",w:"ew-resize",ne:"nesw-resize",sw:"nesw-resize",nw:"nwse-resize",se:"nwse-resize" }[resize.edge] || "nwse-resize") : (drag?.type === "zone-edge" && drag.cursor) ? drag.cursor : zoneEdge ? zoneEdge.cursor : cadCrosshair(T.crosshairColor), userSelect: "none" }}
+            style={{ cursor: (panning || spaceHeld) ? "grabbing" : resize ? ({ n:"ns-resize",s:"ns-resize",e:"ew-resize",w:"ew-resize",ne:"nesw-resize",sw:"nesw-resize",nw:"nwse-resize",se:"nwse-resize" }[resize.edge] || "nwse-resize") : (drag?.type === "zone-edge" && drag.cursor) ? drag.cursor : zoneEdge ? zoneEdge.cursor : cadCrosshair(T.crosshairColor), userSelect: "none", display: view3d ? "none" : undefined }}
             onMouseDown={onDown} onMouseMove={onMove} onMouseUp={onUp} onMouseLeave={onUp} onWheel={onWheel}>
             <defs>
               <filter id="glow-budget" x="-50%" y="-50%" width="200%" height="200%">
@@ -2476,65 +2742,65 @@ export default function TestfitTool() {
               {/* === Kind-based fallback hatches (used when no material is set) === */}
               {/* Existing: masonry cross-hatch */}
               <pattern id="hatch-existing" patternUnits="userSpaceOnUse" width="8" height="8">
-                <line x1="0" y1="0" x2="8" y2="8" stroke="#9A9488" strokeWidth="0.6" opacity="0.7"/>
-                <line x1="8" y1="0" x2="0" y2="8" stroke="#9A9488" strokeWidth="0.6" opacity="0.7"/>
+                <line x1="0" y1="0" x2="8" y2="8" stroke="#9A9488" strokeWidth="0.6" opacity="0.35"/>
+                <line x1="8" y1="0" x2="0" y2="8" stroke="#9A9488" strokeWidth="0.6" opacity="0.35"/>
               </pattern>
               {/* Demo: cross-hatch red */}
               <pattern id="hatch-demo" patternUnits="userSpaceOnUse" width="8" height="8">
-                <line x1="0" y1="0" x2="8" y2="8" stroke="#E05050" strokeWidth="0.6" opacity="0.5"/>
-                <line x1="8" y1="0" x2="0" y2="8" stroke="#E05050" strokeWidth="0.6" opacity="0.5"/>
+                <line x1="0" y1="0" x2="8" y2="8" stroke="#E05050" strokeWidth="0.6" opacity="0.35"/>
+                <line x1="8" y1="0" x2="0" y2="8" stroke="#E05050" strokeWidth="0.6" opacity="0.35"/>
               </pattern>
               {/* New: single 45° hatch blue */}
               <pattern id="hatch-new" patternUnits="userSpaceOnUse" width="8" height="8">
-                <line x1="0" y1="8" x2="8" y2="0" stroke="#50A0E0" strokeWidth="0.6" opacity="0.5"/>
+                <line x1="0" y1="8" x2="8" y2="0" stroke="#50A0E0" strokeWidth="0.6" opacity="0.3"/>
               </pattern>
               {/* Pony: lighter single hatch tan */}
               <pattern id="hatch-pony" patternUnits="userSpaceOnUse" width="6" height="6">
-                <line x1="0" y1="6" x2="6" y2="0" stroke="#C8A060" strokeWidth="0.5" opacity="0.5"/>
+                <line x1="0" y1="6" x2="6" y2="0" stroke="#C8A060" strokeWidth="0.5" opacity="0.3"/>
               </pattern>
 
               {/* === Material-specific hatch patterns === */}
               {/* Drywall: very faint, nearly plain — light stipple */}
               <pattern id="mat-drywall" patternUnits="userSpaceOnUse" width="12" height="12">
-                <circle cx="6" cy="6" r="0.5" fill="#9A9488" opacity="0.35"/>
+                <circle cx="6" cy="6" r="0.5" fill="#9A9488" opacity="0.25"/>
               </pattern>
               {/* Brick: classic 45° parallel lines */}
               <pattern id="mat-brick" patternUnits="userSpaceOnUse" width="6" height="6">
-                <line x1="0" y1="6" x2="6" y2="0" stroke="#9A9488" strokeWidth="0.8" opacity="0.75"/>
+                <line x1="0" y1="6" x2="6" y2="0" stroke="#9A9488" strokeWidth="0.8" opacity="0.45"/>
               </pattern>
               {/* CMU / Concrete Block: double cross-hatch with dots at intersections */}
               <pattern id="mat-cmu" patternUnits="userSpaceOnUse" width="8" height="8">
-                <line x1="0" y1="0" x2="8" y2="8" stroke="#9A9488" strokeWidth="0.65" opacity="0.7"/>
-                <line x1="8" y1="0" x2="0" y2="8" stroke="#9A9488" strokeWidth="0.65" opacity="0.7"/>
-                <circle cx="4" cy="4" r="0.8" fill="#9A9488" opacity="0.6"/>
+                <line x1="0" y1="0" x2="8" y2="8" stroke="#9A9488" strokeWidth="0.65" opacity="0.4"/>
+                <line x1="8" y1="0" x2="0" y2="8" stroke="#9A9488" strokeWidth="0.65" opacity="0.4"/>
+                <circle cx="4" cy="4" r="0.8" fill="#9A9488" opacity="0.4"/>
               </pattern>
               {/* Glass: wide-spaced thin diagonals */}
               <pattern id="mat-glass" patternUnits="userSpaceOnUse" width="14" height="14">
-                <line x1="0" y1="14" x2="14" y2="0" stroke="#9A9488" strokeWidth="0.5" opacity="0.45"/>
+                <line x1="0" y1="14" x2="14" y2="0" stroke="#9A9488" strokeWidth="0.5" opacity="0.35"/>
               </pattern>
               {/* Wood Stud: X diagonals (lumber cross) */}
               <pattern id="mat-wood-stud" patternUnits="userSpaceOnUse" width="20" height="20">
-                <line x1="0" y1="0" x2="20" y2="20" stroke="#9A9488" strokeWidth="0.7" opacity="0.65"/>
-                <line x1="20" y1="0" x2="0" y2="20" stroke="#9A9488" strokeWidth="0.7" opacity="0.65"/>
+                <line x1="0" y1="0" x2="20" y2="20" stroke="#9A9488" strokeWidth="0.7" opacity="0.4"/>
+                <line x1="20" y1="0" x2="0" y2="20" stroke="#9A9488" strokeWidth="0.7" opacity="0.4"/>
               </pattern>
               {/* Metal Stud: paired parallel diagonal lines (double-line grouping) */}
               <pattern id="mat-metal-stud" patternUnits="userSpaceOnUse" width="10" height="10">
-                <line x1="0" y1="10" x2="10" y2="0" stroke="#9A9488" strokeWidth="0.7" opacity="0.7"/>
-                <line x1="2" y1="10" x2="10" y2="2" stroke="#9A9488" strokeWidth="0.7" opacity="0.7"/>
+                <line x1="0" y1="10" x2="10" y2="0" stroke="#9A9488" strokeWidth="0.7" opacity="0.4"/>
+                <line x1="2" y1="10" x2="10" y2="2" stroke="#9A9488" strokeWidth="0.7" opacity="0.4"/>
               </pattern>
               {/* Concrete: tight cross-hatch */}
               <pattern id="mat-concrete" patternUnits="userSpaceOnUse" width="5" height="5">
-                <line x1="0" y1="0" x2="5" y2="5" stroke="#9A9488" strokeWidth="0.5" opacity="0.55"/>
-                <line x1="5" y1="0" x2="0" y2="5" stroke="#9A9488" strokeWidth="0.5" opacity="0.55"/>
+                <line x1="0" y1="0" x2="5" y2="5" stroke="#9A9488" strokeWidth="0.5" opacity="0.4"/>
+                <line x1="5" y1="0" x2="0" y2="5" stroke="#9A9488" strokeWidth="0.5" opacity="0.4"/>
               </pattern>
               {/* Plaster: fine single diagonals */}
               <pattern id="mat-plaster" patternUnits="userSpaceOnUse" width="7" height="7">
-                <line x1="0" y1="7" x2="7" y2="0" stroke="#9A9488" strokeWidth="0.5" opacity="0.5"/>
+                <line x1="0" y1="7" x2="7" y2="0" stroke="#9A9488" strokeWidth="0.5" opacity="0.35"/>
               </pattern>
               {/* Other: alternating diagonal bands (plywood-like) */}
               <pattern id="mat-other" patternUnits="userSpaceOnUse" width="12" height="12">
-                <line x1="0" y1="12" x2="12" y2="0" stroke="#9A9488" strokeWidth="0.6" opacity="0.55"/>
-                <line x1="-3" y1="12" x2="9" y2="0" stroke="#9A9488" strokeWidth="0.6" opacity="0.55"/>
+                <line x1="0" y1="12" x2="12" y2="0" stroke="#9A9488" strokeWidth="0.6" opacity="0.4"/>
+                <line x1="-3" y1="12" x2="9" y2="0" stroke="#9A9488" strokeWidth="0.6" opacity="0.4"/>
               </pattern>
             </defs>
             <g transform={`translate(${viewOff.x},${viewOff.y}) scale(${zoom})`}>
@@ -2565,19 +2831,35 @@ export default function TestfitTool() {
                     })}
                   </g>
 
-                  {/* Quarter-foot subdivisions when zoomed in 200% or more */}
-                  {zoom >= 2 && <g opacity={0.15}>
+                  {/* 3" (quarter-foot) subdivisions at 150%+ */}
+                  {zoom >= 1.5 && <g opacity={0.15}>
                     {Array.from({ length: (endI - startI) * 4 + 1 }, (_, i) => {
                       const pos = (startI * 4 + i) * (pxPerFoot / 4);
                       if (Math.abs(pos % pxPerFoot) < 0.1) return null;
-                      return <line key={"vi" + (startI * 4 + i)} x1={pos} y1={minY} x2={pos} y2={maxY}
+                      return <line key={"vi3" + (startI * 4 + i)} x1={pos} y1={minY} x2={pos} y2={maxY}
                         stroke={T.gridSub} strokeWidth={0.4} />;
                     })}
                     {Array.from({ length: (endJ - startJ) * 4 + 1 }, (_, i) => {
                       const pos = (startJ * 4 + i) * (pxPerFoot / 4);
                       if (Math.abs(pos % pxPerFoot) < 0.1) return null;
-                      return <line key={"hi" + (startJ * 4 + i)} x1={minX} y1={pos} x2={maxX} y2={pos}
+                      return <line key={"hi3" + (startJ * 4 + i)} x1={minX} y1={pos} x2={maxX} y2={pos}
                         stroke={T.gridSub} strokeWidth={0.4} />;
+                    })}
+                  </g>}
+
+                  {/* 1" subdivisions at 300%+ */}
+                  {zoom >= 3 && <g opacity={0.1}>
+                    {Array.from({ length: (endI - startI) * 12 + 1 }, (_, i) => {
+                      const pos = (startI * 12 + i) * (pxPerFoot / 12);
+                      if (Math.abs(pos % (pxPerFoot / 4)) < 0.1) return null;
+                      return <line key={"vi1" + (startI * 12 + i)} x1={pos} y1={minY} x2={pos} y2={maxY}
+                        stroke={T.gridSub} strokeWidth={0.25} />;
+                    })}
+                    {Array.from({ length: (endJ - startJ) * 12 + 1 }, (_, i) => {
+                      const pos = (startJ * 12 + i) * (pxPerFoot / 12);
+                      if (Math.abs(pos % (pxPerFoot / 4)) < 0.1) return null;
+                      return <line key={"hi1" + (startJ * 12 + i)} x1={minX} y1={pos} x2={maxX} y2={pos}
+                        stroke={T.gridSub} strokeWidth={0.25} />;
                     })}
                   </g>}
                 </>;
@@ -2590,13 +2872,22 @@ export default function TestfitTool() {
                 // Helper: compute miter corners per-side at an endpoint
                 const getMiterSides = (w, c, nx, ny, halfT, nid, dirX, dirY) => {
                   const jx = nid === w.n1 ? c.x1 : c.x2, jy = nid === w.n1 ? c.y1 : c.y2;
-                  const others = (nodeWallsMap[nid] || []).filter(ow => ow.id !== w.id);
+                  // Find neighbors by node ID or by endpoint proximity (handles coincident-but-unshared nodes)
+                  const PROX = 6;
+                  const nodeConns = nodeWallsMap[nid] || [];
+                  const others = walls.filter(ow => {
+                    if (ow.id === w.id) return false;
+                    if (nodeConns.some(x => x.id === ow.id)) return true;
+                    const oc2 = wc(ow); if (!oc2) return false;
+                    return dst(oc2.x1, oc2.y1, jx, jy) < PROX || dst(oc2.x2, oc2.y2, jx, jy) < PROX;
+                  });
                   const myAngle = Math.atan2(dirY, dirX);
                   const norm = a => ((a - myAngle) % (2*Math.PI) + 2*Math.PI) % (2*Math.PI);
                   const info = others.map(ow => {
                     const oc = wc(ow); if (!oc) return null;
-                    const odx = ow.n1 === nid ? oc.x2 - oc.x1 : oc.x1 - oc.x2;
-                    const ody = ow.n1 === nid ? oc.y2 - oc.y1 : oc.y1 - oc.y2;
+                    const atN1 = ow.n1 === nid || dst(oc.x1, oc.y1, jx, jy) < PROX;
+                    const odx = atN1 ? oc.x2 - oc.x1 : oc.x1 - oc.x2;
+                    const ody = atN1 ? oc.y2 - oc.y1 : oc.y1 - oc.y2;
                     const olen = Math.hypot(odx, ody) || 1;
                     const oux = odx/olen, ouy = ody/olen;
                     const owk = WALL_KINDS[ow.kind || "existing"];
@@ -2606,11 +2897,19 @@ export default function TestfitTool() {
                   }).filter(Boolean);
                   const lN = info.filter(o => o.na > 0.02 && o.na < Math.PI - 0.02).sort((a,b) => a.na - b.na)[0];
                   const rN = info.filter(o => o.na > Math.PI + 0.02).sort((a,b) => b.na - a.na)[0];
-                  return {
-                    L: lN ? wallMiterPt(jx,jy,dirX,dirY,nx,ny,halfT,lN.oux,lN.ouy,lN.onx,lN.ony,lN.oHalfT, 1) : {x:jx+nx*halfT, y:jy+ny*halfT},
-                    R: rN ? wallMiterPt(jx,jy,dirX,dirY,nx,ny,halfT,rN.oux,rN.ouy,rN.onx,rN.ony,rN.oHalfT,-1) : {x:jx-nx*halfT, y:jy-ny*halfT},
-                    openL: !lN, openR: !rN,
-                  };
+                  // Cap prevents runaway miters at very acute angles (6× the larger half-thickness)
+                  const cap = Math.max(halfT, (lN ?? rN)?.oHalfT ?? halfT) * 6;
+                  const Lpt = lN
+                    ? wallMiterPt(jx,jy,dirX,dirY,nx,ny,halfT,lN.oux,lN.ouy,lN.onx,lN.ony,lN.oHalfT, 1)
+                    : rN
+                      ? lineInt(jx+nx*halfT,jy+ny*halfT,dirX,dirY, jx-rN.onx*rN.oHalfT,jy-rN.ony*rN.oHalfT,rN.oux,rN.ouy,cap)
+                      : {x:jx+nx*halfT, y:jy+ny*halfT};
+                  const Rpt = rN
+                    ? wallMiterPt(jx,jy,dirX,dirY,nx,ny,halfT,rN.oux,rN.ouy,rN.onx,rN.ony,rN.oHalfT,-1)
+                    : lN
+                      ? lineInt(jx-nx*halfT,jy-ny*halfT,dirX,dirY, jx+lN.onx*lN.oHalfT,jy+lN.ony*lN.oHalfT,lN.oux,lN.ouy,cap)
+                      : {x:jx-nx*halfT, y:jy-ny*halfT};
+                  return { L: Lpt, R: Rpt, openL: !lN, openR: !rN, free: others.length === 0 };
                 };
 
                 // Compute geometry for all walls once
@@ -2629,7 +2928,7 @@ export default function TestfitTool() {
                   const segs = []; let tS = 0; merged.forEach(cu => { if (cu.t0 > tS) segs.push({t0:tS,t1:cu.t0}); tS = cu.t1; }); if (tS < 1) segs.push({t0:tS,t1:1});
                   const hatchId = w.material && WALL_MATERIAL_HATCHES[w.material] ? WALL_MATERIAL_HATCHES[w.material] : ({demo:"hatch-demo",new:"hatch-new",pony:"hatch-pony"}[w.kind] ?? "hatch-existing");
                   const edgeColor = sel ? T.nodeFill : wk.color;
-                  const edgeW = sel ? 1.5 : 1;
+                  const edgeW = sel ? 2 : 1.5;
                   const mN1 = getMiterSides(w, c, nx, ny, halfT, w.n1,  ux,  uy);
                   const mN2 = getMiterSides(w, c, nx, ny, halfT, w.n2, -ux, -uy);
                   // Pre-compute segment corner points
@@ -2646,31 +2945,29 @@ export default function TestfitTool() {
                   return { w, c, wk, sel, halfT, nx, ny, dx, dy, hatchId, edgeColor, edgeW, mN1, mN2, segs, segPts, glowEffect: mode === "budget" && sel };
                 }).filter(Boolean);
 
-                // Sort fills: walls with more open ends (terminators) first, through-walls last.
-                // This ensures through-walls always overwrite terminators' hatch at overlaps.
+                // Terminators (more open ends) render first; through-walls render last so their
+                // canvas fill buries any junction edge bleed from the walls they cross.
                 const openCount = d => (d.mN1.openL?1:0)+(d.mN1.openR?1:0)+(d.mN2.openL?1:0)+(d.mN2.openR?1:0);
-                const fillOrder = [...wallData].sort((a, b) => openCount(b) - openCount(a));
+                const fillOrder = [...wallData].sort((a, b) => openCount(a) - openCount(b));
 
                 return <>
-                  {/* Pass 1: fills — solid background eraser + hatch. Through-walls render last so their hatch wins at T/X overlaps. */}
-                  {fillOrder.map(({ w, wk, sel, hatchId, edgeColor, segPts, glowEffect }) =>
+                  {fillOrder.map(({ w, wk, sel, hatchId, edgeColor, edgeW, mN1, mN2, segPts, glowEffect }) =>
                     <g key={"f"+w.id} style={{ pointerEvents: "none" }} filter={glowEffect ? "url(#glow-budget)" : undefined}>
                       {segPts.map((sp, i) => <g key={i}>
                         <polygon points={sp.pts} fill={T.canvas} stroke="none" />
+                        <line x1={sp.sL.x} y1={sp.sL.y} x2={sp.eL.x} y2={sp.eL.y} stroke={edgeColor} strokeWidth={edgeW} strokeLinecap="butt" strokeDasharray={sel ? undefined : wk.dash} />
+                        <line x1={sp.sR.x} y1={sp.sR.y} x2={sp.eR.x} y2={sp.eR.y} stroke={edgeColor} strokeWidth={edgeW} strokeLinecap="butt" strokeDasharray={sel ? undefined : wk.dash} />
+                        {sp.isFirst && mN1.free && <line x1={sp.sL.x} y1={sp.sL.y} x2={sp.sR.x} y2={sp.sR.y} stroke={edgeColor} strokeWidth={edgeW} strokeLinecap="square" />}
+                        {sp.isLast  && mN2.free && <line x1={sp.eL.x} y1={sp.eL.y} x2={sp.eR.x} y2={sp.eR.y} stroke={edgeColor} strokeWidth={edgeW} strokeLinecap="square" />}
+                        {!sel && <polygon points={sp.pts} fill={wk.color + "18"} stroke="none" />}
                         <polygon points={sp.pts} fill={sel ? edgeColor + "22" : `url(#${hatchId})`} stroke="none" />
                       </g>)}
                     </g>
                   )}
-                  {/* Pass 2: edge lines + hit-detection + dims — always on top of all fills */}
-                  {wallData.map(({ w, c, wk, sel, halfT, edgeColor, edgeW, mN1, mN2, segPts, glowEffect }) =>
+                  {/* Pass 2: hit-detection + dims only */}
+                  {wallData.map(({ w, c, sel, halfT, glowEffect }) =>
                     <g key={"s"+w.id} filter={glowEffect ? "url(#glow-budget)" : undefined}>
                       <line x1={c.x1} y1={c.y1} x2={c.x2} y2={c.y2} stroke="transparent" strokeWidth={halfT * 2 + 6} style={{ cursor: tool === "select" ? wallResizeCursor(c.x1, c.y1, c.x2, c.y2) : "inherit" }} />
-                      {segPts.map((sp, i) => <g key={i} style={{ pointerEvents: "none" }}>
-                        <line x1={sp.sL.x} y1={sp.sL.y} x2={sp.eL.x} y2={sp.eL.y} stroke={edgeColor} strokeWidth={edgeW} strokeDasharray={sel ? null : wk.dash} />
-                        <line x1={sp.sR.x} y1={sp.sR.y} x2={sp.eR.x} y2={sp.eR.y} stroke={edgeColor} strokeWidth={edgeW} strokeDasharray={sel ? null : wk.dash} />
-                        {sp.isFirst && mN1.openL && mN1.openR && <line x1={sp.sL.x} y1={sp.sL.y} x2={sp.sR.x} y2={sp.sR.y} stroke={edgeColor} strokeWidth={edgeW} />}
-                        {sp.isLast  && mN2.openL && mN2.openR && <line x1={sp.eL.x} y1={sp.eL.y} x2={sp.eR.x} y2={sp.eR.y} stroke={edgeColor} strokeWidth={edgeW} />}
-                      </g>)}
                       {showDims && <WallDim w={w} hi={sel} />}
                     </g>
                   )}
@@ -2704,16 +3001,16 @@ export default function TestfitTool() {
                       return { x: drawChain.lastX + Math.cos(angle) * lockedDist, y: drawChain.lastY + Math.sin(angle) * lockedDist, snap: false };
                     })()
                   : cursorPos;
-                const pwk = WALL_KINDS[wallKindForTool(tool)];
+                const pwk = WALL_KINDS[wallKind];
                 const pdx = effectiveCursor.x - drawChain.lastX, pdy = effectiveCursor.y - drawChain.lastY;
                 const pLen = Math.hypot(pdx, pdy);
                 if (pLen < 2) return null;
-                const pThicknessIn = wallKindForTool(tool) === "pony" ? ponyDepth : (pwk.thickness || 5);
+                const pThicknessIn = wallKind === "pony" ? ponyDepth : (pwk.thickness || 5);
                 const pHalfT = (pThicknessIn / 12) * pxPerFoot / 2;
                 const pnx = -pdy / pLen, pny = pdx / pLen;
                 const ax = drawChain.lastX, ay = drawChain.lastY, bx = effectiveCursor.x, by = effectiveCursor.y;
                 const pts = `${ax+pnx*pHalfT},${ay+pny*pHalfT} ${bx+pnx*pHalfT},${by+pny*pHalfT} ${bx-pnx*pHalfT},${by-pny*pHalfT} ${ax-pnx*pHalfT},${ay-pny*pHalfT}`;
-                const hId = { demo: "hatch-demo", new: "hatch-new", pony: "hatch-pony" }[wallKindForTool(tool)] ?? "hatch-existing";
+                const hId = (wallMaterial && WALL_MATERIAL_HATCHES[wallMaterial]) ? WALL_MATERIAL_HATCHES[wallMaterial] : ({ demo: "hatch-demo", new: "hatch-new", pony: "hatch-pony" }[wallKind] ?? "hatch-existing");
                 const segLen = dst(ax, ay, bx, by);
                 // Angle arc data
                 const curAngle = Math.atan2(by - ay, bx - ax);
@@ -2754,16 +3051,17 @@ export default function TestfitTool() {
               })()}
 
               {/* Nodes */}
-              {mode === "build" && nodes.map(n => { 
-                const isSel = (selectedId === n.id && selType === "node") || selectedIds.includes(n.id); 
-                const isHov = hoverNid === n.id; 
-                const cn = nodeConns[n.id] || 0; 
-                const r = isSel ? 7 : isHov ? 6 : cn > 1 ? 5 : 4;
-                const showNode = isSel || isHov || (isWallTool(tool) || tool === "select");
+              {mode === "build" && nodes.map(n => {
+                const isSel = (selectedId === n.id && selType === "node") || selectedIds.includes(n.id);
+                const isHov = hoverNid === n.id;
+                const cn = nodeConns[n.id] || 0;
+                // Only show nodes when: selected, hovered, or actively drawing a wall chain
+                const showNode = isSel || isHov || (drawChain && isWallTool(tool));
                 if (!showNode) return null;
+                const r = isSel ? 5 : isHov ? 4.5 : cn > 1 ? 3 : 2.5;
                 return <g key={n.id}><circle cx={n.x} cy={n.y} r={12} fill="transparent" style={{ cursor: "crosshair" }} />
-                  <circle cx={n.x} cy={n.y} r={r} fill={isSel ? T.nodeFill : isHov ? "#50C878" : T.nodeStroke} stroke={isSel ? T.nodeFill : isHov ? "#50C878" : "#9A9488"} strokeWidth={isSel ? 2 : 1.5} style={{ pointerEvents: "none" }} />
-                  {isHov && !isSel && <circle cx={n.x} cy={n.y} r={r + 4} fill="none" stroke="#50C87844" strokeWidth={2} style={{ pointerEvents: "none" }} />}
+                  <circle cx={n.x} cy={n.y} r={r} fill={isSel ? T.nodeFill : isHov ? "#50C878" : T.nodeStroke} stroke={isSel ? T.nodeFill : isHov ? "#50C87888" : "transparent"} strokeWidth={isSel ? 1.5 : 1} style={{ pointerEvents: "none" }} />
+                  {isHov && !isSel && <circle cx={n.x} cy={n.y} r={r + 5} fill="none" stroke="#50C87833" strokeWidth={1.5} style={{ pointerEvents: "none" }} />}
                 </g>;
               })}
 
@@ -2895,32 +3193,73 @@ export default function TestfitTool() {
                 </g>;
               })()}
 
+              {/* Lighting ghost */}
+              {tool === "lighting" && ghostPos && (() => {
+                const ghostMarker = { x: ghostPos.x, y: ghostPos.y, layer: "power", componentType: lightingType, angle: ghostPos.angle || 0 };
+                const compData = SPEC_COMPONENTS.power[lightingType];
+                return <g style={{ pointerEvents: "none", opacity: 0.5 }}>
+                  <MarkerSymbol marker={ghostMarker} selected={false} />
+                  {ghostPos.snapped && <circle cx={ghostPos.x} cy={ghostPos.y} r={15} fill="none" stroke={compData?.color} strokeWidth={1} strokeDasharray="3 3" />}
+                </g>;
+              })()}
+
               {/* Markers (top) */}
               {markers.map(p => {
                 const l = SPEC_LAYERS[p.layer]; 
                 const ct = p.componentType;
-                const isOutletInBuild = mode === "build" && p.layer === "power" &&
-                  (ct?.startsWith("outlet_") || ct?.startsWith("switch_") || ct === "panel_board" || ct?.startsWith("light_"));
-                if (!l || (!visibleLayers[p.layer] && mode !== "budget" && !isOutletInBuild)) return null; 
+                const isBuildLighting = ct?.startsWith("light_") || ct?.startsWith("htrack_") || ct === "sconce_prewire" || ct === "pendent_prewire";
+                const isBuildElec = !isBuildLighting && (ct?.startsWith("outlet_") || ct?.startsWith("switch_") || ct === "panel_board" || ct === "tstat");
+                const isOutletInBuild = mode === "build" && p.layer === "power" && (isBuildElec || isBuildLighting);
+                // In build mode, power items are hidden by their own visibility flags
+                if (mode === "build" && p.layer === "power") {
+                  if (isBuildElec && !visibleBuildElectrical) return null;
+                  if (isBuildLighting && !visibleBuildLighting) return null;
+                }
+                if (!l || (!visibleLayers[p.layer] && mode !== "budget" && !isOutletInBuild)) return null;
                 const compData = SPEC_COMPONENTS[p.layer]?.[p.componentType];
                 const sel = (selectedId === p.id && selType === "marker") || selectedIds.includes(p.id);
-                const glowEffect = (mode === "budget" || mode === "itmep") && sel;
+                const glowEffect = sel && (mode === "budget" || mode === "itmep" || (mode === "build" && selectedIds.length > 1));
                 
+                const rotHandle = sel && selectedIds.length <= 1 && tool === "select" ? (() => {
+                  const HANDLE_R = 22 / zoom;
+                  const angle = p.angle || 0;
+                  const hx = p.x + Math.cos(angle - Math.PI / 2) * HANDLE_R;
+                  const hy = p.y + Math.sin(angle - Math.PI / 2) * HANDLE_R;
+                  return <g
+                    onMouseDown={ev => {
+                      ev.stopPropagation();
+                      setRotatingMarker({ id: p.id, cx: p.x, cy: p.y });
+                    }}>
+                    <line x1={p.x} y1={p.y} x2={hx} y2={hy} stroke="#50A0E0" strokeWidth={1.5 / zoom} strokeDasharray={`${3/zoom} ${2/zoom}`} style={{ pointerEvents: "none" }} />
+                    <circle cx={hx} cy={hy} r={5 / zoom} fill="#50A0E0" stroke="#fff" strokeWidth={1.5 / zoom} style={{ cursor: "grab" }} />
+                  </g>;
+                })() : null;
+
                 // Use custom symbol if available, otherwise use icon
                 if (compData?.symbol) {
                   return <g key={p.id} filter={glowEffect ? "url(#glow-budget)" : undefined}>
                     <MarkerSymbol marker={p} selected={sel} />
                     {sel && <text x={p.x} y={p.y + 24} textAnchor="middle" fontSize={9} fill={compData.color} fontFamily="inherit" style={{ pointerEvents: "none" }}>{p.label}</text>}
+                    {p.isNew && <g style={{ pointerEvents: "none" }}>
+                      <rect x={p.x - 10} y={p.y - 22} width={20} height={9} rx={2.5} fill="#50A0E0" opacity={0.92} />
+                      <text x={p.x} y={p.y - 15} textAnchor="middle" fontSize={5.5} fill="#fff" fontWeight="bold" letterSpacing="0.04em" style={{ pointerEvents: "none" }}>NEW</text>
+                    </g>}
+                    {rotHandle}
                   </g>;
                 }
-                
+
                 // Fallback to icon rendering
                 const icon = compData?.icon || "📍";
                 return <g key={p.id} filter={glowEffect ? "url(#glow-budget)" : undefined}>
                   <circle cx={p.x} cy={p.y} r={sel ? 11 : 9} fill={l.color + "30"} stroke={l.color} strokeWidth={sel ? 2.5 : 1.5} />
                   <text x={p.x} y={p.y + 4} textAnchor="middle" fontSize={11} fill={l.color} style={{ pointerEvents: "none" }}>{icon}</text>
                   {sel && <text x={p.x} y={p.y + 24} textAnchor="middle" fontSize={9} fill={l.color} fontFamily="inherit" style={{ pointerEvents: "none" }}>{p.label}</text>}
-                </g>; 
+                  {p.isNew && <g style={{ pointerEvents: "none" }}>
+                    <rect x={p.x - 10} y={p.y - 22} width={20} height={9} rx={2.5} fill="#50A0E0" opacity={0.92} />
+                    <text x={p.x} y={p.y - 15} textAnchor="middle" fontSize={5.5} fill="#fff" fontWeight="bold" letterSpacing="0.04em" style={{ pointerEvents: "none" }}>NEW</text>
+                  </g>}
+                  {rotHandle}
+                </g>;
               })}
 
               {/* Marquee selection box */}
@@ -2962,8 +3301,8 @@ export default function TestfitTool() {
             {selectedIds.length <= 1 && selNode && <><div style={{ fontSize: 11, color: T.textBright, marginBottom: 6, fontWeight: 600 }}>Node · {wallsAt(selNode.id).length} walls</div><button style={S.del} onClick={delSel}>Delete Node + Walls</button></>}
             {selectedIds.length <= 1 && selWall && (() => { const wk = WALL_KINDS[selWall.kind || "existing"]; return <>
               <div style={{ fontSize: 12, color: wk.color, marginBottom: 10, fontWeight: 600 }}>{wk.label} Wall · {ft(wl(selWall))}</div>
-              <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
-                {Object.entries(WALL_KINDS).map(([k, v]) => <button key={k} style={{ padding: "6px 10px", background: (selWall.kind || "existing") === k ? v.color + "40" : "transparent", color: (selWall.kind || "existing") === k ? T.textBright : v.color, border: "1.5px solid " + v.color + "50", borderRadius: 5, fontSize: 9, cursor: "pointer", fontFamily: "inherit", flex: 1, fontWeight: 500, transition: "all 0.12s ease" }}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginBottom: 10 }}>
+                {Object.entries(WALL_KINDS).map(([k, v]) => <button key={k} style={{ padding: "6px 8px", background: (selWall.kind || "existing") === k ? v.color + "40" : "transparent", color: (selWall.kind || "existing") === k ? T.textBright : v.color, border: "1.5px solid " + v.color + "50", borderRadius: 5, fontSize: 9, cursor: "pointer", fontFamily: "inherit", fontWeight: 500, transition: "all 0.12s ease" }}
                   onClick={() => updWall({ kind: k })}>{v.label}</button>)}
               </div>
               <div style={{ marginBottom: 8 }}><div style={S.lbl}>Material</div>
@@ -2988,16 +3327,10 @@ export default function TestfitTool() {
               </div>
               {(selWall.kind === "pony") && <>
                 <div style={{ marginBottom: 8 }}><div style={S.lbl}>Height (inches)</div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <input type="range" min="12" max="60" value={selWall.ponyHeight || 42} onChange={e => updWall({ ponyHeight: parseInt(e.target.value) })} style={{ flex: 1, accentColor: "#C8A060", height: 4 }} />
-                    <span style={{ fontSize: 12, fontWeight: 600, color: T.textBright, minWidth: "32px" }}>{selWall.ponyHeight || 42}"</span>
-                  </div>
+                  <SliderInput value={selWall.ponyHeight || 42} min={12} max={60} onChange={v => updWall({ ponyHeight: v })} accent="#C8A060" textColor={T.textBright} bgColor={T.bg2} borderColor={T.border} />
                 </div>
                 <div style={{ marginBottom: 8 }}><div style={S.lbl}>Depth (inches)</div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <input type="range" min="3" max="12" value={selWall.ponyDepth || 6} onChange={e => updWall({ ponyDepth: parseInt(e.target.value) })} style={{ flex: 1, accentColor: "#C8A060", height: 4 }} />
-                    <span style={{ fontSize: 12, fontWeight: 600, color: T.textBright, minWidth: "32px" }}>{selWall.ponyDepth || 6}"</span>
-                  </div>
+                  <SliderInput value={selWall.ponyDepth || 6} min={3} max={12} onChange={v => updWall({ ponyDepth: v })} accent="#C8A060" textColor={T.textBright} bgColor={T.bg2} borderColor={T.border} />
                 </div>
               </>}
               <div style={{ marginBottom: 8 }}><div style={S.lbl}>Notes</div><textarea style={{ ...S.inp, height: 72, resize: "vertical" }} value={selWall.notes || ""} onChange={e => updWall({ notes: e.target.value })} placeholder="Load-bearing, plumbing chase..." /></div>
@@ -3005,15 +3338,12 @@ export default function TestfitTool() {
             {selectedIds.length <= 1 && selDoor && <>
               <div style={{ fontSize: 12, color: "#C8A060", marginBottom: 10, fontWeight: 600 }}>{selDoor.doorType || "Wood"} Door · {selDoor.width}"</div>
               <div style={{ marginBottom: 8 }}><div style={S.lbl}>Type</div>
-                <div style={{ display: "flex", gap: 6 }}>
-                  {DOOR_TYPES.map(t => <button key={t} style={{ padding: "6px 10px", background: (selDoor.doorType || "Wood") === t ? T.border + "60" : "transparent", color: (selDoor.doorType || "Wood") === t ? T.textBright : T.textMuted, border: "1.5px solid " + T.border, borderRadius: 5, fontSize: 9, cursor: "pointer", fontFamily: "inherit", flex: 1, fontWeight: 500, transition: "all 0.12s ease" }}
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+                  {DOOR_TYPES.map(t => <button key={t} style={{ padding: "6px 8px", background: (selDoor.doorType || "Wood") === t ? T.border + "60" : "transparent", color: (selDoor.doorType || "Wood") === t ? T.textBright : T.textMuted, border: "1.5px solid " + T.border, borderRadius: 5, fontSize: 9, cursor: "pointer", fontFamily: "inherit", fontWeight: 500, transition: "all 0.12s ease" }}
                     onClick={() => updDoor({ doorType: t })}>{t}</button>)}
                 </div>
               </div>
-              <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
-                {DOOR_WIDTHS.map(w => <button key={w} style={{ padding: "6px 10px", background: selDoor.width === w ? T.border + "60" : "transparent", color: selDoor.width === w ? T.textBright : T.textMuted, border: "1.5px solid " + T.border, borderRadius: 5, fontSize: 9, cursor: "pointer", fontFamily: "inherit", flex: 1, fontWeight: 500, transition: "all 0.12s ease" }}
-                  onClick={() => updDoor({ width: w })}>{w}"</button>)}
-              </div>
+              <div style={{ marginBottom: 10 }}><SliderInput value={selDoor.width} min={24} max={96} onChange={w => updDoor({ width: w })} accent="#C8A060" textColor={T.textBright} bgColor={T.bg2} borderColor={T.border} /></div>
               {(selDoor.doorType || "Wood") !== "Case Opening" && <div style={{ display: "flex", gap: 6, marginBottom: 6 }}>
                 <button style={{ ...S.inp, cursor: "pointer", textAlign: "center", color: "#C8A060", fontSize: 10, flex: 1, fontWeight: 500 }} onClick={() => updDoor({ flipped: !selDoor.flipped })}>In/Out (F)</button>
                 <button style={{ ...S.inp, cursor: "pointer", textAlign: "center", color: "#C8A060", fontSize: 10, flex: 1, fontWeight: 500 }} onClick={() => updDoor({ hingeRight: !selDoor.hingeRight })}>Hinge (R)</button>
@@ -3028,22 +3358,9 @@ export default function TestfitTool() {
                     onClick={() => updWindow({ type: t })}>{t}</button>)}
                 </div>
               </div>
-              <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
-                {WINDOW_WIDTHS.map(w => <button key={w} style={{ padding: "6px 10px", background: selWindow.width === w ? T.border + "60" : "transparent", color: selWindow.width === w ? T.textBright : T.textMuted, border: "1.5px solid " + T.border, borderRadius: 5, fontSize: 9, cursor: "pointer", fontFamily: "inherit", flex: 1, fontWeight: 500, transition: "all 0.12s ease" }}
-                  onClick={() => updWindow({ width: w })}>{w}"</button>)}
-              </div>
-              <div style={{ marginBottom: 8 }}><div style={S.lbl}>Height (inches)</div>
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <input type="range" min="12" max="96" value={selWindow.height || 48} onChange={e => updWindow({ height: parseInt(e.target.value) })} style={{ flex: 1, accentColor: accent, height: 4 }} />
-                  <span style={{ fontSize: 12, fontWeight: 600, color: T.textBright, minWidth: "32px" }}>{selWindow.height || 48}"</span>
-                </div>
-              </div>
-              <div style={{ marginBottom: 8 }}><div style={S.lbl}>Sill Height (inches)</div>
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <input type="range" min="0" max="60" value={selWindow.sill ?? 30} onChange={e => updWindow({ sill: parseInt(e.target.value) })} style={{ flex: 1, accentColor: accent, height: 4 }} />
-                  <span style={{ fontSize: 12, fontWeight: 600, color: T.textBright, minWidth: "32px" }}>{selWindow.sill ?? 30}"</span>
-                </div>
-              </div>
+              <div style={{ marginBottom: 10 }}><SliderInput value={selWindow.width} min={12} max={96} onChange={w => updWindow({ width: w })} accent={accent} textColor={T.textBright} bgColor={T.bg2} borderColor={T.border} /></div>
+              <div style={{ marginBottom: 8 }}><div style={S.lbl}>Height (inches)</div><SliderInput value={selWindow.height || 48} min={12} max={96} onChange={v => updWindow({ height: v })} accent={accent} textColor={T.textBright} bgColor={T.bg2} borderColor={T.border} /></div>
+              <div style={{ marginBottom: 8 }}><div style={S.lbl}>Sill Height (inches)</div><SliderInput value={selWindow.sill ?? 30} min={0} max={60} onChange={v => updWindow({ sill: v })} accent={accent} textColor={T.textBright} bgColor={T.bg2} borderColor={T.border} /></div>
               <button style={S.del} onClick={delSel}>Delete</button>
             </>; })()}
             {selectedIds.length <= 1 && selColumn && <>
@@ -3055,13 +3372,7 @@ export default function TestfitTool() {
                   <button style={{ ...S.inp, cursor: "pointer", textAlign: "center", color: selColumn.shape === "square" ? T.textBright : T.textMuted, background: selColumn.shape === "square" ? T.border + "60" : "transparent", fontSize: 10, flex: 1, fontWeight: 500 }} onClick={() => updColumn({ shape: "square" })}>■ Square</button>
                 </div>
               </div>
-              <div style={{ marginBottom: 8 }}>
-                <div style={S.lbl}>Size (inches)</div>
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <input type="range" min="6" max="36" value={selColumn.size} onChange={e => updColumn({ size: parseInt(e.target.value) })} style={{ flex: 1, accentColor: "#9A9488", height: 4 }} />
-                  <span style={{ fontSize: 12, fontWeight: 600, color: T.textBright, minWidth: "32px" }}>{selColumn.size}"</span>
-                </div>
-              </div>
+              <div style={{ marginBottom: 8 }}><div style={S.lbl}>Size (inches)</div><SliderInput value={selColumn.size} min={6} max={48} onChange={v => updColumn({ size: v })} accent="#9A9488" textColor={T.textBright} bgColor={T.bg2} borderColor={T.border} /></div>
               <div style={{ marginBottom: 8 }}><div style={S.lbl}>Label</div><input style={S.inp} value={selColumn.label || ""} onChange={e => updColumn({ label: e.target.value })} /></div>
               <div style={{ marginBottom: 8 }}><div style={S.lbl}>Notes</div><textarea style={{ ...S.inp, height: 40, resize: "vertical" }} value={selColumn.notes || ""} onChange={e => updColumn({ notes: e.target.value })} /></div>
               <button style={S.del} onClick={delSel}>Delete Column</button>
@@ -3098,6 +3409,16 @@ export default function TestfitTool() {
                 <div style={{ marginBottom: 8 }}><div style={S.lbl}>Label</div><input style={S.inp} value={selMarker.label} onChange={e => updMarker({ label: e.target.value })} /></div>
                 <div style={{ marginBottom: 8 }}><div style={S.lbl}>Notes</div><textarea style={{ ...S.inp, height: 40, resize: "vertical" }} value={selMarker.notes || ""} onChange={e => updMarker({ notes: e.target.value })} /></div>
                 <div style={{ fontSize: 10, color: "#8A8478", marginBottom: 6 }}>Est: {$(compData?.unitCost || 0)}</div>
+                {selMarker.layer === "power" && (
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10, padding: "6px 8px", background: T.panelBg, borderRadius: 6, border: "1px solid " + T.border }}>
+                    <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", flex: 1 }}>
+                      <input type="checkbox" checked={!!selMarker.isNew}
+                        onChange={e => updMarker({ isNew: e.target.checked })}
+                        style={{ width: 14, height: 14, accentColor: "#50A0E0", cursor: "pointer" }} />
+                      <span style={{ fontSize: 10, color: T.textMuted }}>New / Planned</span>
+                    </label>
+                  </div>
+                )}
                 <button style={S.del} onClick={delSel}>Delete Component</button>
               </>;
             })()}
@@ -3108,8 +3429,8 @@ export default function TestfitTool() {
               const wk = WALL_KINDS[kind];
               return <>
                 <div style={{ fontSize: 12, color: wk?.color || "#9A9488", marginBottom: 10, fontWeight: 600 }}>{items.length} Walls Selected</div>
-                <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
-                  {Object.entries(WALL_KINDS).map(([k, v]) => <button key={k} style={{ padding: "6px 10px", background: kind === k ? v.color + "40" : "transparent", color: kind === k ? T.textBright : v.color, border: "1.5px solid " + v.color + "50", borderRadius: 5, fontSize: 9, cursor: "pointer", fontFamily: "inherit", flex: 1, fontWeight: 500, transition: "all 0.12s ease" }}
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginBottom: 10 }}>
+                  {Object.entries(WALL_KINDS).map(([k, v]) => <button key={k} style={{ padding: "6px 8px", background: kind === k ? v.color + "40" : "transparent", color: kind === k ? T.textBright : v.color, border: "1.5px solid " + v.color + "50", borderRadius: 5, fontSize: 9, cursor: "pointer", fontFamily: "inherit", fontWeight: 500, transition: "all 0.12s ease" }}
                     onClick={() => updWall({ kind: k })}>{v.label}</button>)}
                 </div>
                 <div style={{ marginBottom: 8 }}><div style={S.lbl}>Material</div>
@@ -3138,10 +3459,7 @@ export default function TestfitTool() {
               const w = cv(items, "width");
               return <>
                 <div style={{ fontSize: 12, color: "#C8A060", marginBottom: 10, fontWeight: 600 }}>{items.length} Doors Selected</div>
-                <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
-                  {DOOR_WIDTHS.map(dw => <button key={dw} style={{ padding: "6px 10px", background: w === dw ? T.border + "60" : "transparent", color: w === dw ? T.textBright : T.textMuted, border: "1.5px solid " + T.border, borderRadius: 5, fontSize: 9, cursor: "pointer", fontFamily: "inherit", flex: 1, fontWeight: 500, transition: "all 0.12s ease" }}
-                    onClick={() => updDoor({ width: dw })}>{dw}"</button>)}
-                </div>
+                <div style={{ marginBottom: 10 }}><SliderInput value={w} min={24} max={96} onChange={dw => updDoor({ width: dw })} accent="#C8A060" textColor={T.textBright} bgColor={T.bg2} borderColor={T.border} disabled={w === undefined} /></div>
                 <div style={{ display: "flex", gap: 6, marginBottom: 6 }}>
                   <button style={{ ...S.inp, cursor: "pointer", textAlign: "center", color: "#C8A060", fontSize: 10, flex: 1, fontWeight: 500 }} onClick={() => updDoor({ flipped: !items[0]?.flipped })}>In/Out (F)</button>
                   <button style={{ ...S.inp, cursor: "pointer", textAlign: "center", color: "#C8A060", fontSize: 10, flex: 1, fontWeight: 500 }} onClick={() => updDoor({ hingeRight: !items[0]?.hingeRight })}>Hinge (R)</button>
@@ -3154,10 +3472,7 @@ export default function TestfitTool() {
               const w = cv(items, "width");
               return <>
                 <div style={{ fontSize: 12, color: "#60A0C8", marginBottom: 10, fontWeight: 600 }}>{items.length} Windows Selected</div>
-                <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
-                  {WINDOW_WIDTHS.map(ww => <button key={ww} style={{ padding: "6px 10px", background: w === ww ? T.border + "60" : "transparent", color: w === ww ? T.textBright : T.textMuted, border: "1.5px solid " + T.border, borderRadius: 5, fontSize: 9, cursor: "pointer", fontFamily: "inherit", flex: 1, fontWeight: 500, transition: "all 0.12s ease" }}
-                    onClick={() => updWindow({ width: ww })}>{ww}"</button>)}
-                </div>
+                <div style={{ marginBottom: 10 }}><SliderInput value={w} min={12} max={96} onChange={ww => updWindow({ width: ww })} accent="#60A0C8" textColor={T.textBright} bgColor={T.bg2} borderColor={T.border} disabled={w === undefined} /></div>
                 <button style={S.del} onClick={delSel}>Delete {items.length} Windows</button>
               </>;
             })()}
@@ -3174,13 +3489,7 @@ export default function TestfitTool() {
                     <button style={{ ...S.inp, cursor: "pointer", textAlign: "center", color: shape === "square" ? T.textBright : T.textMuted, background: shape === "square" ? T.border + "60" : "transparent", fontSize: 10, flex: 1, fontWeight: 500 }} onClick={() => updColumn({ shape: "square" })}>■ Square</button>
                   </div>
                 </div>
-                <div style={{ marginBottom: 8 }}>
-                  <div style={S.lbl}>Size (inches)</div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <input type="range" min="6" max="36" value={size ?? 12} onChange={e => updColumn({ size: parseInt(e.target.value) })} style={{ flex: 1, accentColor: "#9A9488", height: 4 }} />
-                    <span style={{ fontSize: 12, fontWeight: 600, color: T.textBright, minWidth: "32px" }}>{size !== undefined ? size + '"' : "Mixed"}</span>
-                  </div>
-                </div>
+                <div style={{ marginBottom: 8 }}><div style={S.lbl}>Size (inches)</div><SliderInput value={size} min={6} max={48} onChange={v => updColumn({ size: v })} accent="#9A9488" textColor={T.textBright} bgColor={T.bg2} borderColor={T.border} disabled={size === undefined} /></div>
                 <div style={{ marginBottom: 8 }}><div style={S.lbl}>Label</div><input style={S.inp} value={cv(items, "label") ?? ""} onChange={e => updColumn({ label: e.target.value })} placeholder={cv(items, "label") === undefined ? "Mixed" : ""} /></div>
                 <div style={{ marginBottom: 8 }}><div style={S.lbl}>Notes</div><textarea style={{ ...S.inp, height: 40, resize: "vertical" }} value={cv(items, "notes") ?? ""} onChange={e => updColumn({ notes: e.target.value })} placeholder={cv(items, "notes") === undefined ? "Mixed" : ""} /></div>
                 <button style={S.del} onClick={delSel}>Delete {items.length} Columns</button>
@@ -3221,63 +3530,62 @@ export default function TestfitTool() {
           </div>}
 
           {/* Tool options panel — shown when a placement tool is active */}
-          {!selectedId && ((mode === "build" && (isWallTool(tool) || tool === "door" || tool === "window" || tool === "column" || tool === "outlet")) || (mode === "zone" && tool === "zone") || (mode === "itmep" && tool === "marker")) && <div style={S.det}>
+          {!selectedId && ((mode === "build" && (isWallTool(tool) || tool === "door" || tool === "window" || tool === "column" || tool === "outlet" || tool === "lighting")) || (mode === "zone" && tool === "zone") || (mode === "itmep" && tool === "marker")) && <div style={S.det}>
 
-            {mode === "build" && isWallTool(tool) && (() => { const wk = WALL_KINDS[wallKindForTool(tool)]; return <>
+            {mode === "build" && isWallTool(tool) && (() => { const wk = WALL_KINDS[wallKind]; return <>
+              {/* Header */}
               <div style={{ fontSize: 12, color: wk.color, marginBottom: 10, fontWeight: 600 }}>{wk.label} Wall</div>
-              <div style={{ marginBottom: 8 }}>
-                <div style={S.lbl}>Type</div>
-                <div style={{ display: "flex", gap: 6 }}>
-                  {Object.entries(WALL_KINDS).map(([k, v]) => <button key={k} style={{ padding: "6px 10px", background: wallKindForTool(tool) === k ? v.color + "40" : "transparent", color: wallKindForTool(tool) === k ? T.textBright : v.color, border: "1.5px solid " + v.color + "50", borderRadius: 5, fontSize: 9, cursor: "pointer", fontFamily: "inherit", flex: 1, fontWeight: 500, transition: "all 0.12s ease" }}
-                    onClick={() => setT(k === "demo" ? "wall_demo" : k === "new" ? "wall_new" : k === "pony" ? "wall_pony" : "wall")}>{v.label}</button>)}
-                </div>
+
+              {/* Type */}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginBottom: 10 }}>
+                {Object.entries(WALL_KINDS).map(([k, v]) => <button key={k} onClick={() => setWallKind(k)}
+                  style={{ padding: "6px 8px", background: wallKind === k ? v.color + "40" : "transparent", color: wallKind === k ? T.textBright : v.color, border: "1.5px solid " + v.color + "50", borderRadius: 5, fontSize: 9, cursor: "pointer", fontFamily: "inherit", fontWeight: 500, transition: "all 0.12s ease" }}>
+                  {v.label}
+                </button>)}
               </div>
-              <div style={{ marginBottom: 8 }}><div style={S.lbl}>Material</div>
+
+              {/* Material */}
+              <div style={{ marginBottom: 10 }}><div style={S.lbl}>Material</div>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 4 }}>
-                  {WALL_MATERIALS.map(value => {
-                    const isSel = wallMaterial === value;
-                    const patId = WALL_MATERIAL_HATCHES[value];
-                    return <button key={value} onClick={() => setWallMaterial(value)}
+                  {WALL_MATERIALS.map(mat => {
+                    const isSel = wallMaterial === mat;
+                    const patId = WALL_MATERIAL_HATCHES[mat];
+                    return <button key={mat} onClick={() => setWallMaterial(mat)}
                       style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 3, padding: "5px 4px", background: isSel ? T.border + "60" : "transparent", border: "1.5px solid " + (isSel ? T.accent : T.border), borderRadius: 5, cursor: "pointer", fontFamily: "inherit" }}>
                       <svg width="32" height="14" style={{ display: "block", borderRadius: 2, overflow: "hidden" }}>
+                        <defs><clipPath id={"tc-" + mat.replace(/\s|\/|\*/g, "")}><rect width="32" height="14"/></clipPath></defs>
                         <rect width="32" height="14" fill={T.bg2}/>
-                        {patId && <rect width="32" height="14" fill={`url(#${patId})`}/>}
+                        {patId && <rect width="32" height="14" fill={`url(#${patId})`} clipPath={`url(#tc-${mat.replace(/\s|\/|\*/g, "")})`}/>}
                         <rect width="32" height="14" fill="none" stroke={isSel ? T.accent : T.border} strokeWidth="1"/>
                       </svg>
-                      <span style={{ fontSize: 8, color: isSel ? T.textBright : T.textMuted, textAlign: "center", lineHeight: 1.2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "100%" }}>{value}</span>
+                      <span style={{ fontSize: 8, color: isSel ? T.textBright : T.textMuted, textAlign: "center", lineHeight: 1.2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "100%" }}>{mat}</span>
                     </button>;
                   })}
                 </div>
               </div>
-              {wallKindForTool(tool) === "pony" && <>
+
+              {wallKind === "pony" && <>
                 <div style={{ marginBottom: 8 }}><div style={S.lbl}>Height (inches)</div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <input type="range" min="12" max="60" value={ponyHeight} onChange={e => setPonyHeight(parseInt(e.target.value))} style={{ flex: 1, accentColor: "#C8A060", height: 4 }} />
-                    <span style={{ fontSize: 12, fontWeight: 600, color: T.textBright, minWidth: "32px" }}>{ponyHeight}"</span>
-                  </div>
+                  <SliderInput value={ponyHeight} min={12} max={60} onChange={setPonyHeight} accent="#C8A060" textColor={T.textBright} bgColor={T.bg2} borderColor={T.border} />
                 </div>
                 <div style={{ marginBottom: 8 }}><div style={S.lbl}>Depth (inches)</div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <input type="range" min="3" max="12" value={ponyDepth} onChange={e => setPonyDepth(parseInt(e.target.value))} style={{ flex: 1, accentColor: "#C8A060", height: 4 }} />
-                    <span style={{ fontSize: 12, fontWeight: 600, color: T.textBright, minWidth: "32px" }}>{ponyDepth}"</span>
-                  </div>
+                  <SliderInput value={ponyDepth} min={3} max={12} onChange={setPonyDepth} accent="#C8A060" textColor={T.textBright} bgColor={T.bg2} borderColor={T.border} />
                 </div>
               </>}
-              <div style={{ marginBottom: 8 }}><div style={S.lbl}>Notes</div><textarea style={{ ...S.inp, height: 40, resize: "vertical" }} value={wallNotes} onChange={e => setWallNotes(e.target.value)} placeholder="Load-bearing, plumbing chase..." /></div>
-              <div style={{ fontSize: 10, color: "#5A5448", fontStyle: "italic" }}>Click points to draw · Double-click to finish</div>
+              <div style={{ marginBottom: 8 }}><div style={S.lbl}>Notes</div>
+                <textarea style={{ ...S.inp, height: 72, resize: "vertical" }} value={wallNotes} onChange={e => setWallNotes(e.target.value)} placeholder="Load-bearing, plumbing chase..." />
+              </div>
+              <div style={{ fontSize: 10, color: "#5A5448", fontStyle: "italic" }}>Click to place · Shift+click to keep placing</div>
             </>; })()}
             {mode === "build" && tool === "door" && <>
               <div style={{ fontSize: 12, color: "#C8A060", marginBottom: 10, fontWeight: 600 }}>{doorType} Door · {doorWidth}"</div>
               <div style={{ marginBottom: 8 }}><div style={S.lbl}>Type</div>
-                <div style={{ display: "flex", gap: 6 }}>
-                  {DOOR_TYPES.map(t => <button key={t} style={{ padding: "6px 10px", background: doorType === t ? T.border + "60" : "transparent", color: doorType === t ? T.textBright : T.textMuted, border: "1.5px solid " + T.border, borderRadius: 5, fontSize: 9, cursor: "pointer", fontFamily: "inherit", flex: 1, fontWeight: 500, transition: "all 0.12s ease" }}
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+                  {DOOR_TYPES.map(t => <button key={t} style={{ padding: "6px 8px", background: doorType === t ? T.border + "60" : "transparent", color: doorType === t ? T.textBright : T.textMuted, border: "1.5px solid " + T.border, borderRadius: 5, fontSize: 9, cursor: "pointer", fontFamily: "inherit", fontWeight: 500, transition: "all 0.12s ease" }}
                     onClick={() => setDoorType(t)}>{t}</button>)}
                 </div>
               </div>
-              <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
-                {DOOR_WIDTHS.map(w => <button key={w} style={{ padding: "6px 10px", background: doorWidth === w ? T.border + "60" : "transparent", color: doorWidth === w ? T.textBright : T.textMuted, border: "1.5px solid " + T.border, borderRadius: 5, fontSize: 9, cursor: "pointer", fontFamily: "inherit", flex: 1, fontWeight: 500, transition: "all 0.12s ease" }}
-                  onClick={() => setDoorWidth(w)}>{w}"</button>)}
-              </div>
+              <div style={{ marginBottom: 10 }}><SliderInput value={doorWidth} min={24} max={96} onChange={setDoorWidth} accent="#C8A060" textColor={T.textBright} bgColor={T.bg2} borderColor={T.border} /></div>
               {doorType !== "Case Opening" && <div style={{ display: "flex", gap: 6, marginBottom: 6 }}>
                 <button style={{ ...S.inp, cursor: "pointer", textAlign: "center", color: "#C8A060", fontSize: 10, flex: 1, fontWeight: 500 }} onClick={() => setDoorFlipped(f => !f)}>In/Out {doorFlipped ? "✓" : ""}</button>
                 <button style={{ ...S.inp, cursor: "pointer", textAlign: "center", color: "#C8A060", fontSize: 10, flex: 1, fontWeight: 500 }} onClick={() => setDoorHingeRight(h => !h)}>Hinge {doorHingeRight ? "R" : "L"}</button>
@@ -3292,22 +3600,9 @@ export default function TestfitTool() {
                     onClick={() => setWindowType(t)}>{t}</button>)}
                 </div>
               </div>
-              <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
-                {WINDOW_WIDTHS.map(w => <button key={w} style={{ padding: "6px 10px", background: windowWidth === w ? T.border + "60" : "transparent", color: windowWidth === w ? T.textBright : T.textMuted, border: "1.5px solid " + T.border, borderRadius: 5, fontSize: 9, cursor: "pointer", fontFamily: "inherit", flex: 1, fontWeight: 500, transition: "all 0.12s ease" }}
-                  onClick={() => setWindowWidth(w)}>{w}"</button>)}
-              </div>
-              <div style={{ marginBottom: 8 }}><div style={S.lbl}>Height (inches)</div>
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <input type="range" min="12" max="96" value={windowHeight} onChange={e => setWindowHeight(parseInt(e.target.value))} style={{ flex: 1, accentColor: accent, height: 4 }} />
-                  <span style={{ fontSize: 12, fontWeight: 600, color: T.textBright, minWidth: "32px" }}>{windowHeight}"</span>
-                </div>
-              </div>
-              <div style={{ marginBottom: 8 }}><div style={S.lbl}>Sill Height (inches)</div>
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <input type="range" min="0" max="60" value={windowSill} onChange={e => setWindowSill(parseInt(e.target.value))} style={{ flex: 1, accentColor: accent, height: 4 }} />
-                  <span style={{ fontSize: 12, fontWeight: 600, color: T.textBright, minWidth: "32px" }}>{windowSill}"</span>
-                </div>
-              </div>
+              <div style={{ marginBottom: 10 }}><SliderInput value={windowWidth} min={12} max={96} onChange={setWindowWidth} accent={accent} textColor={T.textBright} bgColor={T.bg2} borderColor={T.border} /></div>
+              <div style={{ marginBottom: 8 }}><div style={S.lbl}>Height (inches)</div><SliderInput value={windowHeight} min={12} max={96} onChange={setWindowHeight} accent={accent} textColor={T.textBright} bgColor={T.bg2} borderColor={T.border} /></div>
+              <div style={{ marginBottom: 8 }}><div style={S.lbl}>Sill Height (inches)</div><SliderInput value={windowSill} min={0} max={60} onChange={setWindowSill} accent={accent} textColor={T.textBright} bgColor={T.bg2} borderColor={T.border} /></div>
               <div style={{ fontSize: 10, color: "#5A5448", fontStyle: "italic" }}>Click to place · Shift+click to keep placing</div>
             </>; })()}
             {mode === "build" && tool === "column" && <>
@@ -3319,13 +3614,7 @@ export default function TestfitTool() {
                   <button style={{ ...S.inp, cursor: "pointer", textAlign: "center", color: columnShape === "square" ? T.textBright : T.textMuted, background: columnShape === "square" ? T.border + "60" : "transparent", fontSize: 10, flex: 1, fontWeight: 500 }} onClick={() => setColumnShape("square")}>■ Square</button>
                 </div>
               </div>
-              <div style={{ marginBottom: 8 }}>
-                <div style={S.lbl}>Size (inches)</div>
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <input type="range" min="6" max="36" value={columnSize} onChange={e => setColumnSize(parseInt(e.target.value))} style={{ flex: 1, accentColor: "#9A9488", height: 4 }} />
-                  <span style={{ fontSize: 12, fontWeight: 600, color: T.textBright, minWidth: "32px" }}>{columnSize}"</span>
-                </div>
-              </div>
+              <div style={{ marginBottom: 8 }}><div style={S.lbl}>Size (inches)</div><SliderInput value={columnSize} min={6} max={48} onChange={setColumnSize} accent="#9A9488" textColor={T.textBright} bgColor={T.bg2} borderColor={T.border} /></div>
               <div style={{ marginBottom: 8 }}><div style={S.lbl}>Label</div><input style={S.inp} value={columnLabel} onChange={e => setColumnLabel(e.target.value)} /></div>
               <div style={{ marginBottom: 8 }}><div style={S.lbl}>Notes</div><textarea style={{ ...S.inp, height: 40, resize: "vertical" }} value={columnNotes} onChange={e => setColumnNotes(e.target.value)} /></div>
               <div style={{ fontSize: 10, color: "#5A5448", fontStyle: "italic" }}>Click to place · Shift+click to keep placing</div>
@@ -3337,11 +3626,11 @@ export default function TestfitTool() {
               const sectionColor = isPanel ? "#E05050" : isSwitch ? "#C8A060" : (active?.color || "#50C878");
 
               const OUTLET_OPTS = [
-                { key: "outlet_duplex",         label: "Duplex\nIn-Wall",    color: "#50C878" },
-                { key: "outlet_quad",           label: "Quad\nIn-Wall",      color: "#50C878" },
-                { key: "outlet_duplex_surface", label: "Duplex\nConduit",    color: "#E0A050" },
-                { key: "outlet_quad_surface",   label: "Quad\nConduit",      color: "#E0A050" },
-                { key: "outlet_ceiling",        label: "Ceiling\nQuad",      color: "#60B0E0" },
+                { key: "outlet_duplex",         label: "Duplex",    color: "#50C878" },
+                { key: "outlet_quad",           label: "Quad",      color: "#50C878" },
+                { key: "outlet_duplex_surface", label: "Conduit D", color: "#E0A050" },
+                { key: "outlet_quad_surface",   label: "Conduit Q", color: "#E0A050" },
+                { key: "outlet_ceiling",        label: "Ceiling",   color: "#60B0E0" },
               ];
               const SWITCH_OPTS = [
                 { key: "switch_single",  label: "Single\nPole",  color: "#C8A060" },
@@ -3352,15 +3641,24 @@ export default function TestfitTool() {
               return <>
                 <div style={{ fontSize: 12, color: sectionColor, marginBottom: 10, fontWeight: 600 }}>Electrical · {active?.name}</div>
 
+                {/* New vs As-Built toggle */}
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12, padding: "6px 8px", background: T.panelBg, borderRadius: 6, border: "1px solid " + T.border }}>
+                  <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", flex: 1 }}>
+                    <input type="checkbox" checked={outletIsNew} onChange={e => setOutletIsNew(e.target.checked)}
+                      style={{ width: 14, height: 14, accentColor: "#50A0E0", cursor: "pointer" }} />
+                    <span style={{ fontSize: 10, color: T.textMuted }}>New / Planned</span>
+                  </label>
+                </div>
+
                 {/* Outlets section */}
                 <div style={{ fontSize: 9, color: T.textMuted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 5, fontWeight: 600 }}>Outlets</div>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 5, marginBottom: 14 }}>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 5, marginBottom: 14 }}>
                   {OUTLET_OPTS.map(({ key: oKey, label, color }) => {
                     const isSel = outletType === oKey;
                     const isQuad = oKey.includes("quad");
                     const isSurf = oKey.includes("surface");
                     const isCeil = oKey === "outlet_ceiling";
-                    return <button key={oKey} onClick={() => setOutletType(oKey)} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 5, padding: "8px 4px", background: isSel ? color + "22" : "transparent", border: "1.5px solid " + (isSel ? color : T.border), borderRadius: 6, cursor: "pointer", fontFamily: "inherit", transition: "all 0.12s ease" }}>
+                    return <button key={oKey} onClick={() => { setOutletType(oKey); setT("outlet"); }} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 5, padding: "8px 4px", background: isSel ? color + "22" : "transparent", border: "1.5px solid " + (isSel ? color : T.border), borderRadius: 6, cursor: "pointer", fontFamily: "inherit", transition: "all 0.12s ease" }}>
                       <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
                         {isSurf && <rect x="2" y="2" width="24" height="24" rx="2" stroke={color} strokeWidth="1" strokeDasharray="3 2" />}
                         {isCeil ? <>
@@ -3374,7 +3672,7 @@ export default function TestfitTool() {
                           <text x="14" y="12" textAnchor="middle" fontSize="7" fill={color} fontWeight="bold">{isQuad ? "Q" : "D"}</text>
                         </>}
                       </svg>
-                      <span style={{ fontSize: 8, color: isSel ? color : T.textMuted, textAlign: "center", lineHeight: 1.3, whiteSpace: "pre-line" }}>{label}</span>
+                      <span style={{ fontSize: 8, color: isSel ? color : T.textMuted, textAlign: "center", lineHeight: 1.2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "100%" }}>{label}</span>
                     </button>;
                   })}
                 </div>
@@ -3384,13 +3682,13 @@ export default function TestfitTool() {
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 5, marginBottom: 14 }}>
                   {SWITCH_OPTS.map(({ key: oKey, label, color }) => {
                     const isSel = outletType === oKey;
-                    return <button key={oKey} onClick={() => setOutletType(oKey)} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 5, padding: "8px 4px", background: isSel ? color + "22" : "transparent", border: "1.5px solid " + (isSel ? color : T.border), borderRadius: 6, cursor: "pointer", fontFamily: "inherit", transition: "all 0.12s ease" }}>
+                    return <button key={oKey} onClick={() => { setOutletType(oKey); setT("outlet"); }} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 5, padding: "8px 4px", background: isSel ? color + "22" : "transparent", border: "1.5px solid " + (isSel ? color : T.border), borderRadius: 6, cursor: "pointer", fontFamily: "inherit", transition: "all 0.12s ease" }}>
                       <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
                         <rect x="5" y="5" width="18" height="18" rx="2" fill={color + "18"} stroke={color} strokeWidth="1.5" />
                         <line x1="9" y1="19" x2="17" y2="8" stroke={color} strokeWidth="2" />
                         <circle cx="17" cy="8" r="2.5" fill={color} />
                       </svg>
-                      <span style={{ fontSize: 8, color: isSel ? color : T.textMuted, textAlign: "center", lineHeight: 1.3, whiteSpace: "pre-line" }}>{label}</span>
+                      <span style={{ fontSize: 8, color: isSel ? color : T.textMuted, textAlign: "center", lineHeight: 1.2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "100%" }}>{label}</span>
                     </button>;
                   })}
                 </div>
@@ -3401,70 +3699,138 @@ export default function TestfitTool() {
                   {(() => {
                     const isSel = outletType === "panel_board";
                     const pcolor = "#E05050";
-                    return <button onClick={() => setOutletType("panel_board")} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 5, padding: "8px 4px", width: "100%", background: isSel ? pcolor + "22" : "transparent", border: "1.5px solid " + (isSel ? pcolor : T.border), borderRadius: 6, cursor: "pointer", fontFamily: "inherit", transition: "all 0.12s ease" }}>
+                    return <button onClick={() => { setOutletType("panel_board"); setT("outlet"); }} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 5, padding: "8px 4px", width: "100%", background: isSel ? pcolor + "22" : "transparent", border: "1.5px solid " + (isSel ? pcolor : T.border), borderRadius: 6, cursor: "pointer", fontFamily: "inherit", transition: "all 0.12s ease" }}>
                       <svg width="28" height="36" viewBox="0 0 28 36" fill="none">
                         <rect x="3" y="2" width="22" height="32" rx="2" fill={pcolor + "18"} stroke={pcolor} strokeWidth="1.5" />
                         {[6, 12, 18, 24].map(y => <rect key={y} x="9" y={y - 2} width="10" height="4" rx="1" fill={pcolor + "55"} />)}
                       </svg>
-                      <span style={{ fontSize: 8, color: isSel ? pcolor : T.textMuted, textAlign: "center", lineHeight: 1.3 }}>Panel Board</span>
+                      <span style={{ fontSize: 8, color: isSel ? pcolor : T.textMuted, textAlign: "center", lineHeight: 1.3 }}>Elec. Panel</span>
                     </button>;
                   })()}
                 </div>
 
-                {/* Lighting section */}
-                <div style={{ fontSize: 9, color: T.textMuted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 5, fontWeight: 600 }}>Lighting</div>
-                {(() => {
-                  const LIGHT_OPTS = [
-                    { key: "light_can_4",    label: "4\"\nCan",      color: "#E8D070", sym: "can"    },
-                    { key: "light_can_6",    label: "6\"\nCan",      color: "#E8D070", sym: "can6"   },
-                    { key: "light_pendant",  label: "Pendant",       color: "#E8D070", sym: "pend"   },
-                    { key: "light_linear_2", label: "Linear\n2\'",   color: "#E8D070", sym: "lin2"   },
-                    { key: "light_linear_4", label: "Linear\n4\'",   color: "#E8D070", sym: "lin4"   },
-                    { key: "light_sconce",   label: "Sconce",        color: "#E8D070", sym: "sconce" },
-                  ];
-                  return <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 5, marginBottom: 14 }}>
-                    {LIGHT_OPTS.map(({ key: lKey, label, color, sym }) => {
-                      const isSel = outletType === lKey;
-                      const isCan = sym === "can" || sym === "can6";
-                      const isLin = sym === "lin2" || sym === "lin4";
-                      const isPend = sym === "pend";
-                      const isSconce = sym === "sconce";
-                      const bigCan = sym === "can6";
-                      return <button key={lKey} onClick={() => setOutletType(lKey)} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 5, padding: "8px 4px", background: isSel ? color + "22" : "transparent", border: "1.5px solid " + (isSel ? color : T.border), borderRadius: 6, cursor: "pointer", fontFamily: "inherit", transition: "all 0.12s ease" }}>
-                        <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
-                          {isCan && <>
-                            <circle cx="14" cy="14" r={bigCan ? 9 : 7} stroke={color} strokeWidth="1.5"/>
-                            <circle cx="14" cy="14" r={bigCan ? 5 : 3.5} stroke={color} strokeWidth="1"/>
-                            <line x1="10" y1="10" x2="18" y2="18" stroke={color} strokeWidth="1"/>
-                            <line x1="18" y1="10" x2="10" y2="18" stroke={color} strokeWidth="1"/>
-                          </>}
-                          {isPend && <>
-                            <line x1="14" y1="2" x2="14" y2="8" stroke={color} strokeWidth="1.5"/>
-                            <line x1="8" y1="2" x2="20" y2="2" stroke={color} strokeWidth="1.5"/>
-                            <circle cx="14" cy="14" r="6" stroke={color} strokeWidth="1.5"/>
-                            <circle cx="14" cy="14" r="2" fill={color}/>
-                          </>}
-                          {isLin && <>
-                            <rect x={sym === "lin4" ? "3" : "6"} y="11" width={sym === "lin4" ? "22" : "16"} height="6" rx="1" stroke={color} strokeWidth="1.5"/>
-                            <line x1="14" y1="2" x2="14" y2="11" stroke={color} strokeWidth="1" strokeDasharray="2 2"/>
-                          </>}
-                          {isSconce && <>
-                            <rect x="10" y="6" width="8" height="16" rx="1" stroke={color} strokeWidth="1.5"/>
-                            <line x1="10" y1="10" x2="4" y2="7"  stroke={color} strokeWidth="1"/>
-                            <line x1="10" y1="14" x2="3" y2="14" stroke={color} strokeWidth="1"/>
-                            <line x1="10" y1="18" x2="4" y2="21" stroke={color} strokeWidth="1"/>
-                          </>}
-                        </svg>
-                        <span style={{ fontSize: 8, color: isSel ? color : T.textMuted, textAlign: "center", lineHeight: 1.3, whiteSpace: "pre-line" }}>{label}</span>
-                      </button>;
-                    })}
-                  </div>;
-                })()}
+                {/* T-Stat / Controls section */}
+                <div style={{ fontSize: 9, color: T.textMuted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 5, fontWeight: 600 }}>Controls</div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 5, marginBottom: 14 }}>
+                  {[{ key: "tstat", label: "T-Stat", color: "#E8C0A0" }].map(({ key: oKey, label, color }) => {
+                    const isSel = outletType === oKey;
+                    return <button key={oKey} onClick={() => { setOutletType(oKey); setT("outlet"); }} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 5, padding: "8px 4px", background: isSel ? color + "22" : "transparent", border: "1.5px solid " + (isSel ? color : T.border), borderRadius: 6, cursor: "pointer", fontFamily: "inherit", transition: "all 0.12s ease" }}>
+                      <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+                        <rect x="5" y="5" width="18" height="18" rx="3" stroke={color} strokeWidth="1.5" />
+                        <text x="14" y="17" textAnchor="middle" fontSize="10" fill={color} fontWeight="bold">T</text>
+                      </svg>
+                      <span style={{ fontSize: 8, color: isSel ? color : T.textMuted }}>{label}</span>
+                    </button>;
+                  })}
+                </div>
 
                 <div style={{ fontSize: 10, color: T.textMuted, marginBottom: 4 }}>Est. {$(active?.unitCost || 0)}{outletType.startsWith("outlet_") ? " / outlet" : ""}</div>
                 <div style={{ fontSize: 10, color: "#5A5448", fontStyle: "italic" }}>Click to place · Shift+click to keep placing</div>
-                {outletType !== "outlet_ceiling" && !outletType.startsWith("light_can") && !outletType.startsWith("light_pendant") && !outletType.startsWith("light_linear") && <div style={{ fontSize: 9, color: "#5A5448", marginTop: 3, fontStyle: "italic" }}>Snaps to nearest wall</div>}
-                {(outletType.startsWith("light_can") || outletType.startsWith("light_pendant") || outletType.startsWith("light_linear")) && <div style={{ fontSize: 9, color: "#5A5448", marginTop: 3, fontStyle: "italic" }}>Ceiling mount · free placement</div>}
+                {outletType !== "outlet_ceiling" && <div style={{ fontSize: 9, color: "#5A5448", marginTop: 3, fontStyle: "italic" }}>Snaps to nearest wall</div>}
+                {outletType === "outlet_ceiling" && <div style={{ fontSize: 9, color: "#5A5448", marginTop: 3, fontStyle: "italic" }}>Ceiling mount · free placement</div>}
+              </>;
+            })()}
+            {mode === "build" && tool === "lighting" && (() => {
+              const active = SPEC_COMPONENTS.power[lightingType];
+              const lightColor = "#E8D070";
+              const LIGHT_OPTS = [
+                { key: "light_can_4",    label: '4" Can',    color: "#E8D070", sym: "can"    },
+                { key: "light_can_6",    label: '6" Can',    color: "#E8D070", sym: "can6"   },
+                { key: "light_pendant",  label: "Pendant",   color: "#E8D070", sym: "pend"   },
+                { key: "light_linear_2", label: "Linear 2'", color: "#E8D070", sym: "lin2"   },
+                { key: "light_linear_4", label: "Linear 4'", color: "#E8D070", sym: "lin4"   },
+                { key: "light_sconce",   label: "Sconce",    color: "#E8D070", sym: "sconce" },
+              ];
+              return <>
+                <div style={{ fontSize: 12, color: lightColor, marginBottom: 10, fontWeight: 600 }}>Lighting · {active?.name}</div>
+                {/* New vs As-Built toggle */}
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12, padding: "6px 8px", background: T.panelBg, borderRadius: 6, border: "1px solid " + T.border }}>
+                  <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", flex: 1 }}>
+                    <input type="checkbox" checked={lightingIsNew} onChange={e => setLightingIsNew(e.target.checked)}
+                      style={{ width: 14, height: 14, accentColor: "#50A0E0", cursor: "pointer" }} />
+                    <span style={{ fontSize: 10, color: T.textMuted }}>New / Planned</span>
+                  </label>
+                </div>
+                <div style={{ fontSize: 9, color: T.textMuted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 5, fontWeight: 600 }}>Fixtures</div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 5, marginBottom: 14 }}>
+                  {LIGHT_OPTS.map(({ key: lKey, label, color, sym }) => {
+                    const isSel = lightingType === lKey;
+                    const isCan = sym === "can" || sym === "can6";
+                    const isLin = sym === "lin2" || sym === "lin4";
+                    const isPend = sym === "pend";
+                    const isSconce = sym === "sconce";
+                    const bigCan = sym === "can6";
+                    return <button key={lKey} onClick={() => { setLightingType(lKey); setT("lighting"); }} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 5, padding: "8px 4px", background: isSel ? color + "22" : "transparent", border: "1.5px solid " + (isSel ? color : T.border), borderRadius: 6, cursor: "pointer", fontFamily: "inherit", transition: "all 0.12s ease" }}>
+                      <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+                        {isCan && <>
+                          <circle cx="14" cy="14" r={bigCan ? 9 : 7} stroke={color} strokeWidth="1.5"/>
+                          <circle cx="14" cy="14" r={bigCan ? 5 : 3.5} stroke={color} strokeWidth="1"/>
+                          <line x1="10" y1="10" x2="18" y2="18" stroke={color} strokeWidth="1"/>
+                          <line x1="18" y1="10" x2="10" y2="18" stroke={color} strokeWidth="1"/>
+                        </>}
+                        {isPend && <>
+                          <line x1="14" y1="2" x2="14" y2="8" stroke={color} strokeWidth="1.5"/>
+                          <line x1="8" y1="2" x2="20" y2="2" stroke={color} strokeWidth="1.5"/>
+                          <circle cx="14" cy="14" r="6" stroke={color} strokeWidth="1.5"/>
+                          <circle cx="14" cy="14" r="2" fill={color}/>
+                        </>}
+                        {isLin && <>
+                          <rect x={sym === "lin4" ? "3" : "6"} y="11" width={sym === "lin4" ? "22" : "16"} height="6" rx="1" stroke={color} strokeWidth="1.5"/>
+                          <line x1="14" y1="2" x2="14" y2="11" stroke={color} strokeWidth="1" strokeDasharray="2 2"/>
+                        </>}
+                        {isSconce && <>
+                          <rect x="10" y="6" width="8" height="16" rx="1" stroke={color} strokeWidth="1.5"/>
+                          <line x1="10" y1="10" x2="4" y2="7"  stroke={color} strokeWidth="1"/>
+                          <line x1="10" y1="14" x2="3" y2="14" stroke={color} strokeWidth="1"/>
+                          <line x1="10" y1="18" x2="4" y2="21" stroke={color} strokeWidth="1"/>
+                        </>}
+                      </svg>
+                      <span style={{ fontSize: 8, color: isSel ? color : T.textMuted, textAlign: "center", lineHeight: 1.2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "100%" }}>{label}</span>
+                    </button>;
+                  })}
+                </div>
+                {/* Prewires */}
+                <div style={{ fontSize: 9, color: T.textMuted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 5, fontWeight: 600 }}>Prewires</div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 5, marginBottom: 14 }}>
+                  {[
+                    { key: "sconce_prewire",  label: "Sconce PW",  color: "#C87840" },
+                    { key: "pendent_prewire", label: "Pendant PW", color: "#C87840" },
+                  ].map(({ key: lKey, label, color }) => {
+                    const isSel = lightingType === lKey;
+                    return <button key={lKey} onClick={() => { setLightingType(lKey); setT("lighting"); }} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 5, padding: "8px 4px", background: isSel ? color + "22" : "transparent", border: "1.5px solid " + (isSel ? color : T.border), borderRadius: 6, cursor: "pointer", fontFamily: "inherit", transition: "all 0.12s ease" }}>
+                      <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+                        <circle cx="14" cy="14" r="5" stroke={color} strokeWidth="1.5" strokeDasharray="3 2" />
+                        <line x1="14" y1="9" x2="14" y2="2" stroke={color} strokeWidth="1.5" />
+                        <line x1="10" y1="2" x2="18" y2="2" stroke={color} strokeWidth="1.5" />
+                      </svg>
+                      <span style={{ fontSize: 8, color: isSel ? color : T.textMuted }}>{label}</span>
+                    </button>;
+                  })}
+                </div>
+
+                {/* H-Track */}
+                <div style={{ fontSize: 9, color: T.textMuted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 5, fontWeight: 600 }}>H-Track</div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 5, marginBottom: 14 }}>
+                  {[
+                    { key: "htrack_4", label: "4' Track", color: "#E8D070" },
+                    { key: "htrack_8", label: "8' Track", color: "#E8D070" },
+                  ].map(({ key: lKey, label, color }) => {
+                    const isSel = lightingType === lKey;
+                    return <button key={lKey} onClick={() => { setLightingType(lKey); setT("lighting"); }} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 5, padding: "8px 4px", background: isSel ? color + "22" : "transparent", border: "1.5px solid " + (isSel ? color : T.border), borderRadius: 6, cursor: "pointer", fontFamily: "inherit", transition: "all 0.12s ease" }}>
+                      <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+                        <rect x="3" y="10" width="22" height="8" rx="1" stroke={color} strokeWidth="1.5" />
+                        <text x="14" y="17" textAnchor="middle" fontSize="8" fill={color} fontWeight="bold">{lKey === "htrack_4" ? "4'" : "8'"}</text>
+                      </svg>
+                      <span style={{ fontSize: 8, color: isSel ? color : T.textMuted }}>{label}</span>
+                    </button>;
+                  })}
+                </div>
+                {htrackAngle > 0 && lightingType.startsWith("htrack_") && <div style={{ fontSize: 9, color: "#E8D070", marginTop: -8, marginBottom: 10, fontStyle: "italic" }}>Press R to rotate 45° · {htrackAngle}°</div>}
+
+                <div style={{ fontSize: 10, color: T.textMuted, marginBottom: 4 }}>Est. {$(active?.unitCost || 0)}</div>
+                <div style={{ fontSize: 10, color: "#5A5448", fontStyle: "italic" }}>Click to place · Shift+click to keep placing</div>
+                {(lightingType === "light_sconce" || lightingType === "sconce_prewire") && <div style={{ fontSize: 9, color: "#5A5448", marginTop: 3, fontStyle: "italic" }}>Snaps to nearest wall</div>}
+                {lightingType !== "light_sconce" && lightingType !== "sconce_prewire" && <div style={{ fontSize: 9, color: "#5A5448", marginTop: 3, fontStyle: "italic" }}>Ceiling mount · free placement</div>}
               </>;
             })()}
             {mode === "zone" && tool === "zone" && (() => { const zt = ZONE_LIBRARY[activeZoneType]; return <>
@@ -3530,50 +3896,14 @@ export default function TestfitTool() {
               
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <button 
-                    style={S.toolBtn(tool === "wall", "#9A9488")} 
+                  <button
+                    style={S.toolBtn(tool === "wall", WALL_KINDS[wallKind].color)}
                     onClick={() => setT("wall")}
                   >
                     <WallIcon />
                   </button>
                 </TooltipTrigger>
-                <TooltipContent side="top" sideOffset={8}>Existing Wall (W)</TooltipContent>
-              </Tooltip>
-              
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button 
-                    style={S.toolBtn(tool === "wall_demo", "#E05050")} 
-                    onClick={() => setT("wall_demo")}
-                  >
-                    <DemoWallIcon />
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent side="top" sideOffset={8}>Demo Wall</TooltipContent>
-              </Tooltip>
-              
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button 
-                    style={S.toolBtn(tool === "wall_new", "#50A0E0")} 
-                    onClick={() => setT("wall_new")}
-                  >
-                    <NewWallIcon />
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent side="top" sideOffset={8}>New Wall</TooltipContent>
-              </Tooltip>
-
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button
-                    style={S.toolBtn(tool === "wall_pony", "#C8A060")}
-                    onClick={() => setT("wall_pony")}
-                  >
-                    <PonyWallIcon />
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent side="top" sideOffset={8}>Pony Wall</TooltipContent>
+                <TooltipContent side="top" sideOffset={8}>Wall <kbd style={{ background:"#333", border:"1px solid #555", borderRadius:3, padding:"1px 4px", fontSize:10 }}>W</kbd></TooltipContent>
               </Tooltip>
 
               <div style={S.toolSep} />
@@ -3633,6 +3963,22 @@ export default function TestfitTool() {
 
               <Tooltip>
                 <TooltipTrigger asChild>
+                  <button style={S.toolBtn(tool === "lighting", "#E8D070")} onClick={() => setT("lighting")}>
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                      <circle cx="10" cy="10" r="5" stroke="#E8D070" strokeWidth="1.5" />
+                      <circle cx="10" cy="10" r="2" fill="#E8D070" />
+                      <line x1="10" y1="1" x2="10" y2="4" stroke="#E8D070" strokeWidth="1.5" />
+                      <line x1="10" y1="16" x2="10" y2="19" stroke="#E8D070" strokeWidth="1.5" />
+                      <line x1="1" y1="10" x2="4" y2="10" stroke="#E8D070" strokeWidth="1.5" />
+                      <line x1="16" y1="10" x2="19" y2="10" stroke="#E8D070" strokeWidth="1.5" />
+                    </svg>
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="top" sideOffset={8}>Lighting (L)</TooltipContent>
+              </Tooltip>
+
+              <Tooltip>
+                <TooltipTrigger asChild>
                   <button style={S.toolBtn(tool === "dim", T.dimText)} onClick={() => setT("dim")}>
                     <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
                       <line x1="3" y1="10" x2="17" y2="10" stroke={T.dimText} strokeWidth="1" />
@@ -3684,8 +4030,8 @@ export default function TestfitTool() {
               
               <div style={S.toolSep} />
               
-              {/* Power components */}
-              {activeSpecLayer === "power" && <>
+              {/* Power components (now in Build mode — hidden here) */}
+              {activeSpecLayer === "power" && false && <>
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <button 

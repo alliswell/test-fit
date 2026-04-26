@@ -3,10 +3,8 @@
 import * as React from "react";
 import * as TooltipPrimitive from "@radix-ui/react-tooltip";
 
-import { cn } from "./utils";
-
 function TooltipProvider({
-  delayDuration = 0,
+  delayDuration = 400,
   ...props
 }: React.ComponentProps<typeof TooltipPrimitive.Provider>) {
   return (
@@ -21,11 +19,7 @@ function TooltipProvider({
 function Tooltip({
   ...props
 }: React.ComponentProps<typeof TooltipPrimitive.Root>) {
-  return (
-    <TooltipProvider>
-      <TooltipPrimitive.Root data-slot="tooltip" {...props} />
-    </TooltipProvider>
-  );
+  return <TooltipPrimitive.Root data-slot="tooltip" {...props} />;
 }
 
 function TooltipTrigger({
@@ -35,9 +29,9 @@ function TooltipTrigger({
 }
 
 function TooltipContent({
-  className,
-  sideOffset = 0,
+  sideOffset = 6,
   children,
+  style,
   ...props
 }: React.ComponentProps<typeof TooltipPrimitive.Content>) {
   return (
@@ -45,14 +39,35 @@ function TooltipContent({
       <TooltipPrimitive.Content
         data-slot="tooltip-content"
         sideOffset={sideOffset}
-        className={cn(
-          "bg-primary text-primary-foreground animate-in fade-in-0 zoom-in-95 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 z-50 w-fit origin-(--radix-tooltip-content-transform-origin) rounded-md px-3 py-1.5 text-xs text-balance",
-          className,
-        )}
+        style={{
+          zIndex: 9999,
+          background: "rgba(28, 26, 22, 0.95)",
+          color: "#E8E0D0",
+          fontSize: "11px",
+          fontFamily: "inherit",
+          fontWeight: 500,
+          lineHeight: 1.4,
+          padding: "5px 10px",
+          borderRadius: "6px",
+          border: "1px solid rgba(255,255,255,0.08)",
+          boxShadow: "0 4px 16px rgba(0,0,0,0.4)",
+          pointerEvents: "none",
+          userSelect: "none",
+          whiteSpace: "nowrap",
+          backdropFilter: "blur(8px)",
+          ...style,
+        }}
         {...props}
       >
         {children}
-        <TooltipPrimitive.Arrow className="bg-primary fill-primary z-50 size-2.5 translate-y-[calc(-50%_-_2px)] rotate-45 rounded-[2px]" />
+        <TooltipPrimitive.Arrow
+          style={{
+            fill: "rgba(28, 26, 22, 0.95)",
+            filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.3))",
+          }}
+          width={10}
+          height={5}
+        />
       </TooltipPrimitive.Content>
     </TooltipPrimitive.Portal>
   );
