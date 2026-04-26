@@ -198,14 +198,29 @@ function applySmartGuides(x, y, targets) {
   let sx = x, sy = y;
   const guides = [];
   let bestDX = GUIDE_THRESH + 1, bestDY = GUIDE_THRESH + 1;
-  let vRef = null, hRef = null;
+  let vSnapX = null, hSnapY = null;
+
+  // Find the closest snap on each axis
   for (const t of targets) {
     const dx = Math.abs(t.x - x), dy = Math.abs(t.y - y);
-    if (dx < bestDX) { bestDX = dx; sx = t.x; vRef = t; }
-    if (dy < bestDY) { bestDY = dy; sy = t.y; hRef = t; }
+    if (dx < bestDX) { bestDX = dx; vSnapX = t.x; sx = t.x; }
+    if (dy < bestDY) { bestDY = dy; hSnapY = t.y; sy = t.y; }
   }
-  if (bestDX <= GUIDE_THRESH && vRef) guides.push({ axis: 'v', pos: sx, a: Math.min(y, vRef.y), b: Math.max(y, vRef.y) });
-  if (bestDY <= GUIDE_THRESH && hRef) guides.push({ axis: 'h', pos: sy, a: Math.min(x, hRef.x), b: Math.max(x, hRef.x) });
+
+  // Vertical guide (shared x): only when within snap threshold
+  if (vSnapX !== null && bestDX <= GUIDE_THRESH) {
+    const aligned = targets.filter(t => Math.abs(t.x - vSnapX) <= GUIDE_THRESH);
+    const pts = [...new Set([...aligned.map(t => t.y), y])].sort((a, b) => a - b);
+    guides.push({ axis: 'v', pos: vSnapX, points: pts });
+  }
+
+  // Horizontal guide (shared y): only when within snap threshold
+  if (hSnapY !== null && bestDY <= GUIDE_THRESH) {
+    const aligned = targets.filter(t => Math.abs(t.y - hSnapY) <= GUIDE_THRESH);
+    const pts = [...new Set([...aligned.map(t => t.x), x])].sort((a, b) => a - b);
+    guides.push({ axis: 'h', pos: hSnapY, points: pts });
+  }
+
   return { x: sx, y: sy, guides };
 }
 const parseDimInput = (str, ppf) => {
@@ -313,9 +328,10 @@ const THEMES = {
 
 const DEFAULT_PHASES = [
   { id: "existing", name: "Existing", color: "#9A9488", visible: true },
-  { id: "phase1",   name: "Phase 1",  color: "#4A7EC0", visible: true },
-  { id: "phase2",   name: "Phase 2",  color: "#4A9060", visible: true },
-  { id: "phase3",   name: "Phase 3",  color: "#9060B0", visible: true },
+  { id: "phase1",   name: "v0",       color: "#4A7EC0", visible: true },
+  { id: "phase2",   name: "v1",       color: "#4A9060", visible: true },
+  { id: "phase3",   name: "v2",       color: "#9060B0", visible: true },
+  { id: "phase4",   name: "v3",       color: "#B06040", visible: true },
 ];
 
 export default function TestfitTool() {
@@ -876,11 +892,17 @@ export default function TestfitTool() {
     // Filter hits based on current mode
     if (mode === "build") {
       // In BUILD mode, only allow building objects
-      for (const n of nodes) if (dst(pos.x, pos.y, n.x, n.y) < 10) return { type: "node", id: n.id };
-      for (let i = columns.length - 1; i >= 0; i--) { const col = columns[i]; const rp = resolvePos(col); const r = inToPx(col.size) / 2; if (dst(pos.x, pos.y, rp.x, rp.y) < r + 4) return { type: "column", id: col.id }; }
+      for (const n of nodes) {
+        // Only allow selecting nodes whose walls are visible in the current phase
+        const hasVisibleWall = walls.some(w => (w.n1 === n.id || w.n2 === n.id) && phaseVisible(w.phase));
+        if (!hasVisibleWall) continue;
+        if (dst(pos.x, pos.y, n.x, n.y) < 10) return { type: "node", id: n.id };
+      }
+      for (let i = columns.length - 1; i >= 0; i--) { const col = columns[i]; if (!phaseVisible(col.phase)) continue; const rp = resolvePos(col); const r = inToPx(col.size) / 2; if (dst(pos.x, pos.y, rp.x, rp.y) < r + 4) return { type: "column", id: col.id }; }
       for (let i = markers.length - 1; i >= 0; i--) {
         const p = markers[i];
         if (p.layer !== "power") continue;
+        if (!phaseVisible(p.phase)) continue;
         const rp = resolvePos(p);
         const ct = p.componentType;
         const isHtrack = ct === "htrack_4" || ct === "htrack_8" || ct === "htrack";
@@ -904,12 +926,13 @@ export default function TestfitTool() {
           if (dst(pos.x, pos.y, rp.x, rp.y) < 16) return { type: "marker", id: p.id };
         }
       }
-      for (let i = doors.length - 1; i >= 0; i--) { const d = doors[i]; const rp = resolvePos(d); if (dst(pos.x, pos.y, rp.x, rp.y) < inToPx(d.width) / 2 + 4) return { type: "door", id: d.id }; }
-      for (let i = windows.length - 1; i >= 0; i--) { const w = windows[i]; const rp = resolvePos(w); if (dst(pos.x, pos.y, rp.x, rp.y) < inToPx(w.width) / 2 + 4) return { type: "window", id: w.id }; }
-      for (let i = walls.length - 1; i >= 0; i--) { const w = walls[i], c = wc(w); if (c && ptSeg(pos.x, pos.y, c.x1, c.y1, c.x2, c.y2) < 10) return { type: "wall", id: w.id }; }
+      for (let i = doors.length - 1; i >= 0; i--) { const d = doors[i]; if (!phaseVisible(d.phase)) continue; const rp = resolvePos(d); if (dst(pos.x, pos.y, rp.x, rp.y) < inToPx(d.width) / 2 + 4) return { type: "door", id: d.id }; }
+      for (let i = windows.length - 1; i >= 0; i--) { const w = windows[i]; if (!phaseVisible(w.phase)) continue; const rp = resolvePos(w); if (dst(pos.x, pos.y, rp.x, rp.y) < inToPx(w.width) / 2 + 4) return { type: "window", id: w.id }; }
+      for (let i = walls.length - 1; i >= 0; i--) { const w = walls[i]; if (!phaseVisible(w.phase)) continue; const c = wc(w); if (c && ptSeg(pos.x, pos.y, c.x1, c.y1, c.x2, c.y2) < 10) return { type: "wall", id: w.id }; }
     } else if (mode === "zone") {
       // In ZONE mode — check zone vertices first, then edges, then zone bodies (all using resolved positions)
       for (let i = zones.length - 1; i >= 0; i--) { const z = zones[i];
+        if (!phaseVisible(z.phase)) continue;
         if (z.points && (selectedId === z.id || selectedIds.includes(z.id))) {
           const rpts = resolvePoints(z);
           for (let vi = 0; vi < rpts.length; vi++) {
@@ -918,6 +941,7 @@ export default function TestfitTool() {
         }
       }
       for (let i = zones.length - 1; i >= 0; i--) { const z = zones[i];
+        if (!phaseVisible(z.phase)) continue;
         if (z.points && (selectedId === z.id || selectedIds.includes(z.id))) {
           const rpts = resolvePoints(z);
           for (let ei = 0; ei < rpts.length; ei++) {
@@ -927,14 +951,15 @@ export default function TestfitTool() {
         }
       }
       for (let i = zones.length - 1; i >= 0; i--) { const z = zones[i];
+        if (!phaseVisible(z.phase)) continue;
         if (z.points) { if (pointInPoly(pos.x, pos.y, resolvePoints(z))) return { type: "zone", id: z.id }; }
         else { if (pos.x >= z.x && pos.x <= z.x + z.w && pos.y >= z.y && pos.y <= z.y + z.h) return { type: "zone", id: z.id }; }
       }
     } else if (mode === "itmep") {
-      for (let i = markers.length - 1; i >= 0; i--) { const p = markers[i]; const rp = resolvePos(p); if (dst(pos.x, pos.y, rp.x, rp.y) < 14) return { type: "marker", id: p.id }; }
+      for (let i = markers.length - 1; i >= 0; i--) { const p = markers[i]; if (!phaseVisible(p.phase)) continue; const rp = resolvePos(p); if (dst(pos.x, pos.y, rp.x, rp.y) < 14) return { type: "marker", id: p.id }; }
     }
     return null;
-  }, [mode, nodes, walls, zones, markers, doors, windows, columns, dims, wc, inToPx, selectedId, selectedIds, resolvePos, resolvePoints]);
+  }, [mode, nodes, walls, zones, markers, doors, windows, columns, dims, wc, inToPx, selectedId, selectedIds, resolvePos, resolvePoints, phaseVisible]);
 
   const onDown = useCallback((e) => {
     // Pan with middle click or spacebar held
@@ -1511,7 +1536,7 @@ export default function TestfitTool() {
               if (obj.points) {
                 setZones(p => p.map(z => {
                   if (z.id !== obj.id) return z;
-                  if (phased && z.phase !== activePhase) {
+                  if (phased) {
                     const base = z.px?.[activePhase] ?? z.points;
                     return { ...z, px: { ...z.px, [activePhase]: base.map(pt => ({ x: pt.x + dx, y: pt.y + dy })) } };
                   }
@@ -1520,7 +1545,7 @@ export default function TestfitTool() {
               } else {
                 setZones(p => p.map(z => {
                   if (z.id !== obj.id) return z;
-                  if (phased && z.phase !== activePhase) {
+                  if (phased) {
                     const base = z.px?.[activePhase] ?? { x: z.x, y: z.y };
                     return { ...z, px: { ...z.px, [activePhase]: { x: base.x + dx, y: base.y + dy } } };
                   }
@@ -1530,29 +1555,25 @@ export default function TestfitTool() {
             } else if (obj.type === "marker") {
               setMarkers(p => p.map(m => {
                 if (m.id !== obj.id) return m;
-                const phased = activePhase && activePhase !== "existing" && m.phase !== activePhase;
-                if (phased) { const base = m.px?.[activePhase] ?? { x: m.x, y: m.y }; return { ...m, px: { ...m.px, [activePhase]: { x: base.x + dx, y: base.y + dy } } }; }
+                if (activePhase && activePhase !== "existing") { const base = m.px?.[activePhase] ?? { x: m.x, y: m.y }; return { ...m, px: { ...m.px, [activePhase]: { x: base.x + dx, y: base.y + dy } } }; }
                 return { ...m, x: m.x + dx, y: m.y + dy };
               }));
             } else if (obj.type === "door") {
               setDoors(p => p.map(d => {
                 if (d.id !== obj.id) return d;
-                const phased = activePhase && activePhase !== "existing" && d.phase !== activePhase;
-                if (phased) { const base = d.px?.[activePhase] ?? { x: d.x, y: d.y }; return { ...d, px: { ...d.px, [activePhase]: { x: base.x + dx, y: base.y + dy } } }; }
+                if (activePhase && activePhase !== "existing") { const base = d.px?.[activePhase] ?? { x: d.x, y: d.y }; return { ...d, px: { ...d.px, [activePhase]: { x: base.x + dx, y: base.y + dy } } }; }
                 return { ...d, x: d.x + dx, y: d.y + dy };
               }));
             } else if (obj.type === "window") {
               setWindows(p => p.map(w => {
                 if (w.id !== obj.id) return w;
-                const phased = activePhase && activePhase !== "existing" && w.phase !== activePhase;
-                if (phased) { const base = w.px?.[activePhase] ?? { x: w.x, y: w.y }; return { ...w, px: { ...w.px, [activePhase]: { x: base.x + dx, y: base.y + dy } } }; }
+                if (activePhase && activePhase !== "existing") { const base = w.px?.[activePhase] ?? { x: w.x, y: w.y }; return { ...w, px: { ...w.px, [activePhase]: { x: base.x + dx, y: base.y + dy } } }; }
                 return { ...w, x: w.x + dx, y: w.y + dy };
               }));
             } else if (obj.type === "column") {
               setColumns(p => p.map(c => {
                 if (c.id !== obj.id) return c;
-                const phased = activePhase && activePhase !== "existing" && c.phase !== activePhase;
-                if (phased) { const base = c.px?.[activePhase] ?? { x: c.x, y: c.y }; return { ...c, px: { ...c.px, [activePhase]: { x: base.x + dx, y: base.y + dy } } }; }
+                if (activePhase && activePhase !== "existing") { const base = c.px?.[activePhase] ?? { x: c.x, y: c.y }; return { ...c, px: { ...c.px, [activePhase]: { x: base.x + dx, y: base.y + dy } } }; }
                 return { ...c, x: c.x + dx, y: c.y + dy };
               }));
             }
@@ -1785,12 +1806,15 @@ export default function TestfitTool() {
       // Check nodes
       if (mode === "build") {
         nodes.forEach(n => {
+          const hasVisibleWall = walls.some(w => (w.n1 === n.id || w.n2 === n.id) && phaseVisible(w.phase));
+          if (!hasVisibleWall) return;
           if (n.x >= minX && n.x <= maxX && n.y >= minY && n.y <= maxY) {
             selected.push({ id: n.id, type: "node" });
           }
         });
         // Add walls whose both endpoints are inside the marquee
         walls.forEach(w => {
+          if (!phaseVisible(w.phase)) return;
           const c = wc(w); if (!c) return;
           const n1 = nodes.find(n => n.id === w.n1), n2 = nodes.find(n => n.id === w.n2);
           if (n1 && n2 &&
@@ -1800,31 +1824,41 @@ export default function TestfitTool() {
           }
         });
         doors.forEach(d => {
-          if (d.x >= minX && d.x <= maxX && d.y >= minY && d.y <= maxY) {
+          if (!phaseVisible(d.phase)) return;
+          const rp = resolvePos(d);
+          if (rp.x >= minX && rp.x <= maxX && rp.y >= minY && rp.y <= maxY) {
             selected.push({ id: d.id, type: "door" });
           }
         });
         windows.forEach(w => {
-          if (w.x >= minX && w.x <= maxX && w.y >= minY && w.y <= maxY) {
+          if (!phaseVisible(w.phase)) return;
+          const rp = resolvePos(w);
+          if (rp.x >= minX && rp.x <= maxX && rp.y >= minY && rp.y <= maxY) {
             selected.push({ id: w.id, type: "window" });
           }
         });
         columns.forEach(c => {
-          if (c.x >= minX && c.x <= maxX && c.y >= minY && c.y <= maxY) {
+          if (!phaseVisible(c.phase)) return;
+          const rp = resolvePos(c);
+          if (rp.x >= minX && rp.x <= maxX && rp.y >= minY && rp.y <= maxY) {
             selected.push({ id: c.id, type: "column" });
           }
         });
       } else if (mode === "zone") {
         zones.forEach(z => {
-          const zx = z.points ? polyCentroid(z.points).x : z.x + z.w / 2;
-          const zy = z.points ? polyCentroid(z.points).y : z.y + z.h / 2;
+          if (!phaseVisible(z.phase)) return;
+          const rpts = resolvePoints(z);
+          const zx = z.points ? polyCentroid(rpts).x : z.x + z.w / 2;
+          const zy = z.points ? polyCentroid(rpts).y : z.y + z.h / 2;
           if (zx >= minX && zx <= maxX && zy >= minY && zy <= maxY) {
             selected.push({ id: z.id, type: "zone" });
           }
         });
       } else if (mode === "itmep") {
         markers.forEach(m => {
-          if (m.x >= minX && m.x <= maxX && m.y >= minY && m.y <= maxY) {
+          if (!phaseVisible(m.phase)) return;
+          const rp = resolvePos(m);
+          if (rp.x >= minX && rp.x <= maxX && rp.y >= minY && rp.y <= maxY) {
             selected.push({ id: m.id, type: "marker" });
           }
         });
@@ -1862,7 +1896,7 @@ export default function TestfitTool() {
     }
     // No re-clipping on zone drag/vertex drag end — user controls shape manually
     setDrag(null); setResize(null); setPanning(false); setPanSt(null); setHoverNid(null); setRotatingMarker(null); setSmartGuides([]);
-  }, [drag, resize, hoverNid, marquee, selectedIds, selectedId, mode, nodes, walls, doors, windows, zones, markers]);
+  }, [drag, resize, hoverNid, marquee, selectedIds, selectedId, mode, nodes, walls, doors, windows, zones, markers, columns, phaseVisible, resolvePos, resolvePoints, wc]);
 
   // Smooth zoom centered on cursor
   const onWheel = useCallback((e) => {
@@ -2008,6 +2042,77 @@ export default function TestfitTool() {
   const updDoor = (u) => { const ids = _ids(); setDoors(p => p.map(d => ids.has(d.id) ? { ...d, ...u } : d)); };
   const updWindow = (u) => { const ids = _ids(); setWindows(p => p.map(w => ids.has(w.id) ? { ...w, ...u } : w)); };
   const updColumn = (u) => { const ids = _ids(); setColumns(p => p.map(c => ids.has(c.id) ? { ...c, ...u } : c)); };
+
+  const alignDistribute = useCallback((action) => {
+    if (selectedIds.length < 2) return;
+    const ids = new Set(selectedIds);
+    const phased = activePhase && activePhase !== "existing";
+
+    // Build a resolved bounding-box/centroid record for each selected element
+    const makeBox = (el, type) => {
+      if (type === "zone") {
+        const pts = resolvePoints(el);
+        if (!pts || pts.length === 0) return null;
+        const xs = pts.map(p => p.x), ys = pts.map(p => p.y);
+        const minX = Math.min(...xs), maxX = Math.max(...xs);
+        const minY = Math.min(...ys), maxY = Math.max(...ys);
+        return { id: el.id, cx: (minX + maxX) / 2, cy: (minY + maxY) / 2, type, el };
+      }
+      const rp = resolvePos(el);
+      return { id: el.id, cx: rp.x, cy: rp.y, type, el };
+    };
+
+    const allItems = [];
+    const collect = (arr, type) => arr.filter(e => ids.has(e.id)).forEach(e => { const b = makeBox(e, type); if (b) allItems.push(b); });
+    collect(columns, "column"); collect(markers, "marker");
+    collect(doors, "door"); collect(windows, "window"); collect(zones, "zone");
+    if (allItems.length < 2) return;
+
+    const xs = allItems.map(i => i.cx), ys = allItems.map(i => i.cy);
+    const minX = Math.min(...xs), maxX = Math.max(...xs);
+    const minY = Math.min(...ys), maxY = Math.max(...ys);
+
+    // Compute target cx/cy for each item
+    const targets = allItems.map(item => ({ ...item, nx: item.cx, ny: item.cy }));
+
+    if (action === "alignLeft")       targets.forEach(t => { t.nx = minX; });
+    else if (action === "alignCenterH") targets.forEach(t => { t.nx = (minX + maxX) / 2; });
+    else if (action === "alignRight")  targets.forEach(t => { t.nx = maxX; });
+    else if (action === "alignTop")    targets.forEach(t => { t.ny = minY; });
+    else if (action === "alignMiddleV") targets.forEach(t => { t.ny = (minY + maxY) / 2; });
+    else if (action === "alignBottom") targets.forEach(t => { t.ny = maxY; });
+    else if (action === "distributeH" && targets.length >= 2) {
+      const sorted = [...targets].sort((a, b) => a.cx - b.cx);
+      const step = (maxX - minX) / (sorted.length - 1);
+      sorted.forEach((t, i) => { t.nx = minX + i * step; });
+    } else if (action === "distributeV" && targets.length >= 2) {
+      const sorted = [...targets].sort((a, b) => a.cy - b.cy);
+      const step = (maxY - minY) / (sorted.length - 1);
+      sorted.forEach((t, i) => { t.ny = minY + i * step; });
+    }
+
+    const deltaMap = new Map(targets.map(t => [t.id, { dx: t.nx - t.cx, dy: t.ny - t.cy }]));
+
+    const applyEl = (el, type) => {
+      const d = deltaMap.get(el.id);
+      if (!d || (d.dx === 0 && d.dy === 0)) return el;
+      if (type === "zone") {
+        const pts = resolvePoints(el);
+        const newPts = pts.map(p => ({ x: p.x + d.dx, y: p.y + d.dy }));
+        return phased ? { ...el, px: { ...el.px, [activePhase]: newPts } } : { ...el, points: newPts };
+      }
+      const rp = resolvePos(el);
+      const nx = rp.x + d.dx, ny = rp.y + d.dy;
+      if (phased) return { ...el, px: { ...el.px, [activePhase]: { ...(el.px?.[activePhase] ?? {}), x: nx, y: ny } } };
+      return { ...el, x: nx, y: ny };
+    };
+
+    setColumns(prev => prev.map(c => ids.has(c.id) ? applyEl(c, "column") : c));
+    setMarkers(prev => prev.map(m => ids.has(m.id) ? applyEl(m, "marker") : m));
+    setDoors(prev => prev.map(d => ids.has(d.id) ? applyEl(d, "door") : d));
+    setWindows(prev => prev.map(w => ids.has(w.id) ? applyEl(w, "window") : w));
+    setZones(prev => prev.map(z => ids.has(z.id) ? applyEl(z, "zone") : z));
+  }, [selectedIds, activePhase, columns, markers, doors, windows, zones, resolvePos, resolvePoints]);
 
   // Keyboard
   useEffect(() => {
@@ -2602,7 +2707,7 @@ export default function TestfitTool() {
               style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 10px", background: showPhaseMenu ? ap?.color + "28" : ap?.color + "18", border: "1px solid " + (ap?.color || T.border) + (showPhaseMenu ? "88" : "44"), borderRadius: 6, cursor: "pointer", color: ap?.color || T.textMuted, fontWeight: 600, fontSize: 10, fontFamily: "inherit", transition: "all 0.12s ease", height: 28 }}
             >
               <span style={{ width: 7, height: 7, borderRadius: "50%", background: ap?.color, flexShrink: 0 }} />
-              {ap?.name || "Phase"}
+              {ap?.name || "Existing"}
               <ChevronDown size={10} style={{ opacity: 0.7, transition: "transform 0.15s", transform: showPhaseMenu ? "rotate(180deg)" : "none" }} />
             </button>
             {showPhaseMenu && <>
@@ -2693,6 +2798,7 @@ export default function TestfitTool() {
                   <div style={{ marginTop: 10 }}><div style={S.lbl}>Opacity</div><input type="range" min="0" max="100" value={bgOpacity * 100} onChange={e => setBgOpacity(e.target.value / 100)} style={{ width: "100%", accentColor: "#9A9488", height: 4 }} /></div>
                   <div style={{ marginTop: 8 }}><div style={S.lbl}>Scale</div><input type="range" min="20" max="300" value={bgScale * 100} onChange={e => setBgScale(e.target.value / 100)} style={{ width: "100%", accentColor: "#9A9488", height: 4 }} /></div>
                   <div style={{ fontSize: 9, color: T.textDim, marginTop: 6, fontStyle: "italic" }}>Alt + drag to reposition</div>
+                  <button onClick={() => { setBgImage(null); setBgOpacity(0.35); setBgScale(1); setBgOffset({ x: 0, y: 0 }); }} style={{ ...S.del, marginTop: 10, width: "100%", textAlign: "center" }}>Delete Reference Image</button>
                 </>}
               </div>
               {bgImage && calibrationLine && calibrationLine.p1 && calibrationLine.p2 && (
@@ -3056,8 +3162,17 @@ export default function TestfitTool() {
 
           {view3d && (
             <TestFit3D
-              walls={walls} nodes={nodes} doors={doors} windows={windows}
-              columns={columns} zones={zones} markers={markers} dims={dims}
+              walls={walls.filter(w => phaseVisible(w.phase))}
+              nodes={nodes.map(n => {
+                const resolved = gn(n.id);
+                return resolved ? { ...n, x: resolved.x, y: resolved.y } : n;
+              })}
+              doors={doors.filter(d => phaseVisible(d.phase)).map(d => ({ ...d, ...resolvePos(d) }))}
+              windows={windows.filter(w => phaseVisible(w.phase)).map(w => ({ ...w, ...resolvePos(w) }))}
+              columns={columns.filter(c => phaseVisible(c.phase)).map(c => ({ ...c, ...resolvePos(c) }))}
+              zones={zones.filter(z => phaseVisible(z.phase)).map(z => z.points ? { ...z, points: resolvePoints(z) } : z)}
+              markers={markers.filter(m => phaseVisible(m.phase)).map(m => ({ ...m, ...resolvePos(m) }))}
+              dims={dims}
               pxPerFoot={pxPerFoot} ceilingHeight={ceilingHeight} T={T} themeMode={themeMode}
               controlsRef={controls3dRef} mode={mode}
               selectedId={selectedId} selType={selType}
@@ -3073,7 +3188,7 @@ export default function TestfitTool() {
             const pp = phases.find(p => p.id === previewPhase);
             return <div style={{ position: "absolute", top: 12, left: "50%", transform: "translateX(-50%)", display: "flex", alignItems: "center", gap: 7, background: T.panelBg, border: "1px solid " + (pp?.color || T.border) + "66", borderRadius: 20, padding: "5px 14px", fontSize: 10, color: pp?.color, fontWeight: 600, zIndex: 20, backdropFilter: "blur(12px)", boxShadow: T.panelShadow, pointerEvents: "none", letterSpacing: "0.02em" }}>
               <span style={{ width: 7, height: 7, borderRadius: "50%", background: pp?.color, flexShrink: 0 }} />
-              Previewing {pp?.name}
+              Previewing {pp?.name ?? "Existing"}
             </div>;
           })()}
 
@@ -3525,13 +3640,53 @@ export default function TestfitTool() {
               {/* Smart guides */}
               {smartGuides.length > 0 && (() => {
                 const pad = 40;
+                const fs = 9 / zoom;
+                const ph = 13 / zoom;
+                const pr = 3 / zoom;
                 return <g style={{ pointerEvents: "none" }}>
-                  {smartGuides.map((g, i) => g.axis === 'v'
-                    ? <line key={i} x1={g.pos} y1={g.a - pad} x2={g.pos} y2={g.b + pad}
-                        stroke="#FF40FF" strokeWidth={1 / zoom} opacity={0.85} />
-                    : <line key={i} x1={g.a - pad} y1={g.pos} x2={g.b + pad} y2={g.pos}
-                        stroke="#FF40FF" strokeWidth={1 / zoom} opacity={0.85} />
-                  )}
+                  {smartGuides.map((g, i) => {
+                    const pts = g.points ?? [];
+                    if (pts.length < 2) return null;
+                    const minPt = pts[0], maxPt = pts[pts.length - 1];
+
+                    if (g.axis === 'v') {
+                      return <g key={i}>
+                        <line x1={g.pos} y1={minPt - pad} x2={g.pos} y2={maxPt + pad} stroke="#FF40FF" strokeWidth={1 / zoom} opacity={0.85} />
+                        {pts.slice(0, -1).map((from, j) => {
+                          const to = pts[j + 1];
+                          const dist = to - from;
+                          if (dist < 1) return null;
+                          const label = ft(dist);
+                          const pw = (label.length * 5.5 + 8) / zoom;
+                          const my = (from + to) / 2;
+                          return <g key={j}>
+                            <line x1={g.pos - 4 / zoom} y1={from} x2={g.pos + 4 / zoom} y2={from} stroke="#FF40FF" strokeWidth={1 / zoom} opacity={0.7} />
+                            <line x1={g.pos - 4 / zoom} y1={to}   x2={g.pos + 4 / zoom} y2={to}   stroke="#FF40FF" strokeWidth={1 / zoom} opacity={0.7} />
+                            <rect x={g.pos - pw / 2} y={my - ph / 2} width={pw} height={ph} rx={pr} fill="#FF40FF" opacity={0.92} />
+                            <text x={g.pos} y={my + fs * 0.36} textAnchor="middle" fontSize={fs} fill="#fff" fontWeight={600} fontFamily="inherit" letterSpacing="0.02em">{label}</text>
+                          </g>;
+                        })}
+                      </g>;
+                    } else {
+                      return <g key={i}>
+                        <line x1={minPt - pad} y1={g.pos} x2={maxPt + pad} y2={g.pos} stroke="#FF40FF" strokeWidth={1 / zoom} opacity={0.85} />
+                        {pts.slice(0, -1).map((from, j) => {
+                          const to = pts[j + 1];
+                          const dist = to - from;
+                          if (dist < 1) return null;
+                          const label = ft(dist);
+                          const pw = (label.length * 5.5 + 8) / zoom;
+                          const mx = (from + to) / 2;
+                          return <g key={j}>
+                            <line x1={from} y1={g.pos - 4 / zoom} x2={from} y2={g.pos + 4 / zoom} stroke="#FF40FF" strokeWidth={1 / zoom} opacity={0.7} />
+                            <line x1={to}   y1={g.pos - 4 / zoom} x2={to}   y2={g.pos + 4 / zoom} stroke="#FF40FF" strokeWidth={1 / zoom} opacity={0.7} />
+                            <rect x={mx - pw / 2} y={g.pos - ph / 2} width={pw} height={ph} rx={pr} fill="#FF40FF" opacity={0.92} />
+                            <text x={mx} y={g.pos + fs * 0.36} textAnchor="middle" fontSize={fs} fill="#fff" fontWeight={600} fontFamily="inherit" letterSpacing="0.02em">{label}</text>
+                          </g>;
+                        })}
+                      </g>;
+                    }
+                  })}
                 </g>;
               })()}
 
@@ -3730,7 +3885,7 @@ export default function TestfitTool() {
                   {[84, 96, 108, 120, 132, 144].map(h => <option key={h} value={h}>{Math.floor(h / 12)}'-{h % 12 ? h % 12 + '"' : '0"'}</option>)}
                 </select>
               </div>
-              <div style={{ marginBottom: 8 }}><div style={S.lbl}>Phase</div>
+              <div style={{ marginBottom: 8 }}><div style={S.lbl}>Version</div>
                 <select value={selWall.phase ?? "existing"} onChange={e => updWall({ phase: e.target.value })} style={{ ...S.inp, padding: "6px 10px", fontSize: 10 }}>
                   {phases.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
                 </select>
@@ -3838,7 +3993,7 @@ export default function TestfitTool() {
                   <div style={{ fontSize: 10, color: T.accentDim ?? "#8A8478", marginTop: 5, textAlign: "right", fontWeight: 600 }}>Est. {$(estCost)}</div>
                 </div>
               </div>}
-              <div style={{ marginBottom: 8 }}><div style={S.lbl}>Phase</div>
+              <div style={{ marginBottom: 8 }}><div style={S.lbl}>Version</div>
                 <select value={selZone.phase ?? "existing"} onChange={e => updZone({ phase: e.target.value })} style={{ ...S.inp, padding: "6px 10px", fontSize: 10 }}>
                   {phases.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
                 </select>
@@ -3874,6 +4029,40 @@ export default function TestfitTool() {
               </>;
             })()}
             {/* Multi-select panels */}
+            {selectedIds.length > 1 && multiSelType && multiSelType !== "wall" && (() => {
+              const btnStyle = {
+                flex: 1, padding: "5px 0", background: "transparent", border: "1.5px solid " + T.border,
+                borderRadius: 5, cursor: "pointer", color: T.textMuted, fontSize: 10, fontFamily: "inherit",
+                display: "flex", alignItems: "center", justifyContent: "center",
+                transition: "all 0.12s ease",
+              };
+              const Row = ({ children }) => <div style={{ display: "flex", gap: 4, marginBottom: 4 }}>{children}</div>;
+              const Btn = ({ action, label, tip }) => (
+                <button style={btnStyle} title={tip}
+                  onClick={() => alignDistribute(action)}
+                  onMouseEnter={e => { e.currentTarget.style.borderColor = T.accent; e.currentTarget.style.color = T.textBright; }}
+                  onMouseLeave={e => { e.currentTarget.style.borderColor = T.border; e.currentTarget.style.color = T.textMuted; }}>
+                  {label}
+                </button>
+              );
+              return <div style={{ marginBottom: 10 }}>
+                <div style={S.lbl}>Align & Distribute</div>
+                <Row>
+                  <Btn action="alignLeft"    label="⬤◌◌" tip="Align Left" />
+                  <Btn action="alignCenterH" label="◌⬤◌" tip="Align Center (H)" />
+                  <Btn action="alignRight"   label="◌◌⬤" tip="Align Right" />
+                </Row>
+                <Row>
+                  <Btn action="alignTop"     label="▲" tip="Align Top" />
+                  <Btn action="alignMiddleV" label="↕" tip="Align Middle (V)" />
+                  <Btn action="alignBottom"  label="▼" tip="Align Bottom" />
+                </Row>
+                {selectedIds.length > 2 && <Row>
+                  <Btn action="distributeH" label="⇔ Space H" tip="Distribute Horizontally" />
+                  <Btn action="distributeV" label="⇕ Space V" tip="Distribute Vertically" />
+                </Row>}
+              </div>;
+            })()}
             {selectedIds.length > 1 && multiSelType === "wall" && (() => {
               const items = multiSelItems;
               const kind = cv(items, "kind") || "existing";
