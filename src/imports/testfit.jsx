@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from "react";
-import { MousePointer2, X, Plus, DoorOpen, Ruler, Box, LayoutDashboard, RotateCcw } from "lucide-react";
+import { MousePointer2, X, Plus, DoorOpen, Ruler, Box, LayoutDashboard, RotateCcw, Undo2, Redo2, Tag } from "lucide-react";
 import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "../app/components/ui/tooltip";
 import TestFit3D from "./testfit3d";
 
@@ -331,6 +331,7 @@ export default function TestfitTool() {
   const [doors, setDoors] = useState([]); // {id, x, y, angle, width, flipped}
   const [windows, setWindows] = useState([]); // {id, x, y, angle, width}
   const [columns, setColumns] = useState([]); // {id, x, y, size, shape:"circle"|"square"}
+  const [dims, setDims] = useState([]); // [{id, x1, y1, x2, y2, offset}]
   const [bgImage, setBgImage] = useState(null);
   const [bgOpacity, setBgOpacity] = useState(0.35);
   const [bgScale, setBgScale] = useState(1);
@@ -342,10 +343,12 @@ export default function TestfitTool() {
   const historyIdxRef = useRef(-1);
   const skipSnapshotRef = useRef(false);
   const MAX_HISTORY = 50;
+  const [canUndo, setCanUndo] = useState(false);
+  const [canRedo, setCanRedo] = useState(false);
 
   const snapshot = useCallback(() => {
     if (skipSnapshotRef.current) { skipSnapshotRef.current = false; return; }
-    const state = JSON.stringify({ nodes, walls, zones, markers, doors, windows, columns });
+    const state = JSON.stringify({ nodes, walls, zones, markers, doors, windows, columns, dims });
     const idx = historyIdxRef.current;
     // Trim any redo states ahead of current
     const hist = historyRef.current.slice(0, idx + 1);
@@ -355,7 +358,9 @@ export default function TestfitTool() {
     if (hist.length > MAX_HISTORY) hist.shift();
     historyRef.current = hist;
     historyIdxRef.current = hist.length - 1;
-  }, [nodes, walls, zones, markers, doors, windows, columns]);
+    setCanUndo(hist.length > 1);
+    setCanRedo(false);
+  }, [nodes, walls, zones, markers, doors, windows, columns, dims]);
 
   // Take snapshot after every meaningful state change (debounced)
   const snapshotTimer = useRef(null);
@@ -373,8 +378,10 @@ export default function TestfitTool() {
     skipSnapshotRef.current = true;
     setNodes(state.nodes); setWalls(state.walls); setZones(state.zones);
     setMarkers(state.markers); setDoors(state.doors); setWindows(state.windows);
-    setColumns(state.columns || []);
+    setColumns(state.columns || []); setDims(state.dims || []);
     setSelectedId(null); setSelType(null);
+    setCanUndo(newIdx > 0);
+    setCanRedo(true);
   }, []);
 
   const redo = useCallback(() => {
@@ -386,8 +393,10 @@ export default function TestfitTool() {
     skipSnapshotRef.current = true;
     setNodes(state.nodes); setWalls(state.walls); setZones(state.zones);
     setMarkers(state.markers); setDoors(state.doors); setWindows(state.windows);
-    setColumns(state.columns || []);
+    setColumns(state.columns || []); setDims(state.dims || []);
     setSelectedId(null); setSelType(null);
+    setCanUndo(true);
+    setCanRedo(newIdx < historyRef.current.length - 1);
   }, []);
 
   // tool: select, pan, wall, zone, marker, door, window, column, calibrate
@@ -444,7 +453,6 @@ export default function TestfitTool() {
   const [rotatingMarker, setRotatingMarker] = useState(null); // { id, cx, cy }
   const [clipboard, setClipboard] = useState(null); // { walls, nodes, doors, windows, columns, markers, zones }
   const [pasteOffset, setPasteOffset] = useState(0); // increments each paste
-  const [dims, setDims] = useState([]); // [{id, x1, y1, x2, y2, offset}]
   const [drawDim, setDrawDim] = useState(null); // null | {x1,y1} | {x1,y1,x2,y2}
   const [mode, setMode] = useState("build"); // build, zone, itmep, budget
 
@@ -570,6 +578,7 @@ export default function TestfitTool() {
         setBgImage(null);
         setSelectedId(null); setSelType(null);
         historyRef.current = []; historyIdxRef.current = -1;
+        setCanUndo(false); setCanRedo(false);
       } catch (e) { console.error("Import failed:", e); alert("Failed to import project: " + e.message); }
     };
     reader.readAsText(file);
@@ -583,6 +592,7 @@ export default function TestfitTool() {
     setSelectedId(null); setSelType(null); setDrawChain(null); setDrawPolyZone(null); setCursorPos(null);
     setViewOff({ x: 0, y: 0 }); setZoom(1);
     historyRef.current = []; historyIdxRef.current = -1;
+    setCanUndo(false); setCanRedo(false);
   }, []);
 
   const fitAll = useCallback((ns = nodes) => {
@@ -1851,6 +1861,7 @@ export default function TestfitTool() {
       const k = e.key.toUpperCase();
       if (e.key === " ") { e.preventDefault(); setSpaceHeld(true); return; }
       if (k === "Z" && (e.ctrlKey || e.metaKey) && e.shiftKey) { e.preventDefault(); redo(); return; }
+      if (k === "Y" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); redo(); return; }
       if (k === "Z" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); undo(); return; }
       // ── Copy ────────────────────────────────────────────────────────────
       if (k === "C" && (e.ctrlKey || e.metaKey)) {
@@ -2333,7 +2344,7 @@ export default function TestfitTool() {
     floatingToolbar: {
       position: "absolute",
       left: "50%",
-      bottom: "36px",
+      bottom: "48px",
       transform: "translateX(-50%)",
       display: "flex",
       flexDirection: "row",
@@ -2387,6 +2398,19 @@ export default function TestfitTool() {
       <div style={S.bar}>
         {Object.entries(MODES).map(([k, m]) => <button key={k} style={S.mbtn(mode === k, m.color)} onClick={() => { setMode(k); setT("select"); setSelectedId(null); setSelType(null); setSelectedIds([]); }}>{m.label}</button>)}
         <div style={{ flex: 1 }} />
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button style={{ ...S.smBtn, opacity: canUndo ? 1 : 0.35, cursor: canUndo ? "pointer" : "default" }} onClick={undo} disabled={!canUndo}><Undo2 size={13} /></button>
+          </TooltipTrigger>
+          <TooltipContent>Undo (⌘Z)</TooltipContent>
+        </Tooltip>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button style={{ ...S.smBtn, opacity: canRedo ? 1 : 0.35, cursor: canRedo ? "pointer" : "default" }} onClick={redo} disabled={!canRedo}><Redo2 size={13} /></button>
+          </TooltipTrigger>
+          <TooltipContent>Redo (⌘⇧Z / ⌘Y)</TooltipContent>
+        </Tooltip>
+        <div style={{ width: 1, height: 20, background: T.border, margin: "0 3px" }} />
         <button style={S.smBtn} onClick={() => setShowDims(d => !d)}>{showDims ? "Dims ✓" : "Dims"}</button>
         <button style={S.smBtn} onClick={() => setShowGrid(g => !g)}>{showGrid ? "Grid ✓" : "Grid"}</button>
         <button style={S.smBtn} onClick={() => setThemeMode(m => m === "dark" ? "light" : "dark")}>{themeMode === "dark" ? "Light" : "Dark"}</button>
@@ -2754,26 +2778,46 @@ export default function TestfitTool() {
 
         {/* ── Canvas ──────────────────────────────────────────────── */}
         <div style={S.cv}>
-          {/* 2D/3D toggle button */}
-          <button
-            onClick={() => setView3d(v => !v)}
-            title={view3d ? "Switch to 2D (` key)" : "Switch to 3D (` key)"}
-            style={{ position: "absolute", bottom: 70, right: 12, zIndex: 20, display: "flex", alignItems: "center", gap: 5, padding: "5px 10px", fontSize: 11, fontWeight: 600, borderRadius: 6, border: "1px solid " + T.border, background: view3d ? T.accent : T.panelBg, color: view3d ? "#fff" : T.textMuted, cursor: "pointer", backdropFilter: "blur(8px)", boxShadow: T.panelShadow, userSelect: "none" }}
-          >
-            {view3d ? <LayoutDashboard size={13} /> : <Box size={13} />}
-            {view3d ? "2D" : "3D"}
-          </button>
-
-          {/* Reset camera button — icon only, sits left of the toggle */}
-          {view3d && (
-            <button
-              onClick={() => controls3dRef.current?.reset()}
-              title="Reset camera view"
-              style={{ position: "absolute", bottom: 70, right: 76, zIndex: 20, display: "flex", alignItems: "center", justifyContent: "center", padding: "6px 8px", borderRadius: 6, border: "1px solid " + T.border, background: T.panelBg, color: T.textMuted, cursor: "pointer", backdropFilter: "blur(8px)", boxShadow: T.panelShadow, userSelect: "none" }}
-            >
-              <RotateCcw size={14} />
-            </button>
-          )}
+          {/* 3D controls row — all buttons inline at bottom-right */}
+          <div style={{ position: "absolute", bottom: 70, right: 12, zIndex: 20, display: "flex", alignItems: "center", gap: 4 }}>
+            {view3d && (<>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button onClick={() => setShow3dLabels(v => !v)} style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: "6px 8px", borderRadius: 6, border: "1px solid " + T.border, background: show3dLabels ? T.accent : T.panelBg, color: show3dLabels ? "#fff" : T.textMuted, cursor: "pointer", backdropFilter: "blur(8px)", boxShadow: T.panelShadow, userSelect: "none" }}>
+                    <Tag size={14} />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="top" sideOffset={8}>Zone labels</TooltipContent>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button onClick={() => setShow3dDims(v => !v)} style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: "6px 8px", borderRadius: 6, border: "1px solid " + T.border, background: show3dDims ? T.accent : T.panelBg, color: show3dDims ? "#fff" : T.textMuted, cursor: "pointer", backdropFilter: "blur(8px)", boxShadow: T.panelShadow, userSelect: "none" }}>
+                    <Ruler size={14} />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="top" sideOffset={8}>Wall dimensions</TooltipContent>
+              </Tooltip>
+              <div style={{ width: 1, height: 20, background: T.border, margin: "0 2px" }} />
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button onClick={() => controls3dRef.current?.reset()} style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: "6px 8px", borderRadius: 6, border: "1px solid " + T.border, background: T.panelBg, color: T.textMuted, cursor: "pointer", backdropFilter: "blur(8px)", boxShadow: T.panelShadow, userSelect: "none" }}>
+                    <RotateCcw size={14} />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="top" sideOffset={8}>Reset camera</TooltipContent>
+              </Tooltip>
+              <div style={{ width: 1, height: 20, background: T.border, margin: "0 2px" }} />
+            </>)}
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button onClick={() => setView3d(v => !v)} title={view3d ? "Switch to 2D (` key)" : "Switch to 3D (` key)"} style={{ display: "flex", alignItems: "center", gap: 5, padding: "5px 10px", fontSize: 11, fontWeight: 600, borderRadius: 6, border: "1px solid " + T.border, background: view3d ? T.accent : T.panelBg, color: view3d ? "#fff" : T.textMuted, cursor: "pointer", backdropFilter: "blur(8px)", boxShadow: T.panelShadow, userSelect: "none" }}>
+                  {view3d ? <LayoutDashboard size={13} /> : <Box size={13} />}
+                  {view3d ? "2D" : "3D"}
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="top" sideOffset={8}>{view3d ? "Back to 2D (` key)" : "3D view (` key)"}</TooltipContent>
+            </Tooltip>
+          </div>
 
           {view3d && (
             <TestFit3D

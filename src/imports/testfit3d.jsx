@@ -1,8 +1,7 @@
-import { useState, useMemo, useRef } from "react";
-import { Canvas, useFrame } from "@react-three/fiber";
+import { useState, useMemo, useRef, useEffect } from "react";
+import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { OrbitControls, Grid, Text, Billboard } from "@react-three/drei";
 import * as THREE from "three";
-import { RotateCcw, Tag, Ruler } from "lucide-react";
 
 // ─── Constants ─────────────────────────────────────────────────────────────────
 const WALL_KINDS = {
@@ -659,17 +658,30 @@ function FloorPlane({ zones, cx, cz, pxPerFoot, T }) {
   );
 }
 
-// ─── Overlay button style ──────────────────────────────────────────────────────
-const overlayBtn = (T, active) => ({
-  position: "absolute", bottom: 36, zIndex: 20,
-  display: "flex", alignItems: "center", justifyContent: "center",
-  padding: "6px 8px", borderRadius: 6,
-  border: "1px solid " + T.border,
-  background: active ? T.accent : T.panelBg,
-  color: active ? "#fff" : T.textMuted,
-  cursor: "pointer", backdropFilter: "blur(8px)",
-  boxShadow: T.panelShadow, userSelect: "none",
-});
+// ─── Camera auto-fit on every mount ───────────────────────────────────────────
+// Runs inside the Canvas so it can access useThree(). Imperatively sets the
+// camera position and tells OrbitControls to treat it as the "home" state so
+// the reset button always returns to the same fit-all view.
+function CameraRig({ camDist, controlsRef }) {
+  const { camera } = useThree();
+  useEffect(() => {
+    const d = camDist;
+    camera.position.set(d * 0.7, d * 0.8, d * 0.7);
+    camera.lookAt(0, 0, 0);
+    camera.updateProjectionMatrix();
+    // Give OrbitControls one frame to initialise before saving home state.
+    const id = setTimeout(() => {
+      if (controlsRef?.current) {
+        controlsRef.current.target.set(0, 0, 0);
+        controlsRef.current.update();
+        controlsRef.current.saveState();
+      }
+    }, 0);
+    return () => clearTimeout(id);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // intentionally empty — runs once per mount
+  return null;
+}
 
 // ─── Main 3D component ─────────────────────────────────────────────────────────
 export default function TestFit3D({
@@ -699,18 +711,16 @@ export default function TestFit3D({
 
   return (
     <div style={{ position: "absolute", inset: 0, background: T.canvas }}>
-      <button onClick={() => setShow3dLabels(v => !v)} title="Toggle zone names and square footage" style={{ ...overlayBtn(T, show3dLabels), right: 148 }}><Tag size={14} /></button>
-      <button onClick={() => setShow3dDims(v => !v)}   title="Toggle wall lengths and dimension strings" style={{ ...overlayBtn(T, show3dDims), right: 112 }}><Ruler size={14} /></button>
-
-      <div style={{ position: "absolute", bottom: 36, left: 12, fontSize: 10, color: T.textFaint, zIndex: 10, userSelect: "none" }}>
+      <div style={{ position: "absolute", bottom: 12, left: 12, fontSize: 10, color: T.textFaint, zIndex: 10, userSelect: "none" }}>
         Orbit: drag · Pan: right-drag · Zoom: scroll · Click to inspect
       </div>
 
-      <Canvas camera={{ position: [camDist * 0.7, camDist * 0.8, camDist * 0.7], fov: 50, near: 0.1, far: 2000 }} gl={{ antialias: true }} style={{ width: "100%", height: "100%" }}>
+      <Canvas camera={{ fov: 50, near: 0.1, far: 2000 }} gl={{ antialias: true }} style={{ width: "100%", height: "100%" }}>
         <color attach="background" args={[T.canvas]} />
         <ambientLight intensity={0.65} />
         <directionalLight position={[8, 15, 8]} intensity={0.9} />
-        <OrbitControls ref={controlsRef} enableDamping dampingFactor={0.08} minPolarAngle={0} maxPolarAngle={Math.PI / 2 - 0.04} target={[0, 0, 0]} />
+        <OrbitControls ref={controlsRef} enableDamping dampingFactor={0.08} zoomSpeed={0.5} minPolarAngle={0} maxPolarAngle={Math.PI / 2 - 0.04} target={[0, 0, 0]} />
+        <CameraRig camDist={camDist} controlsRef={controlsRef} />
 
         <FloorPlane zones={zones} cx={cx} cz={cz} pxPerFoot={pxPerFoot} T={T} />
         <Grid args={[500, 500]} cellSize={1} sectionSize={10} cellColor={gridCell} sectionColor={gridSec} position={[0, 0.002, 0]} fadeDistance={120} fadeStrength={1.5} />
