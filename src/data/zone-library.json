@@ -1,0 +1,160 @@
+{
+  "entry": {
+    "name": "Entry",
+    "color": "#8B7355",
+    "defaultW": 15,
+    "defaultH": 10,
+    "recommendedSf": 150,
+    "items": [
+      { "name": "Reception Desk", "qty": 1, "unitCost": 2400 },
+      { "name": "Bench", "qty": 1, "unitCost": 800 },
+      { "name": "Coat Rack", "qty": 1, "unitCost": 350 },
+      { "name": "Signage", "qty": 1, "unitCost": 600 }
+    ]
+  },
+  "softseating": {
+    "name": "Soft Seating",
+    "color": "#8B6914",
+    "defaultW": 16.3,
+    "defaultH": 12.2,
+    "recommendedSf": 200,
+    "items": [
+      { "name": "Sofa (3-seat)", "qty": 1, "unitCost": 2800 },
+      { "name": "Accent Chair", "qty": 2, "unitCost": 950 },
+      { "name": "Coffee Table", "qty": 1, "unitCost": 600 },
+      { "name": "Side Table", "qty": 1, "unitCost": 350 },
+      { "name": "Floor Lamp (warm 2700K)", "qty": 2, "unitCost": 420 }
+    ]
+  },
+  "cafe": {
+    "name": "Café",
+    "color": "#8B4513",
+    "defaultW": 20,
+    "defaultH": 15,
+    "recommendedSf": 300,
+    "items": [
+      { "name": "Bar Top (linear ft)", "qty": 8, "unitCost": 175 },
+      { "name": "Bar Stool", "qty": 6, "unitCost": 480 },
+      { "name": "Under-counter Fridge", "qty": 1, "unitCost": 900 },
+      { "name": "Pendant Light", "qty": 3, "unitCost": 320 }
+    ]
+  },
+  "kitchen": {
+    "name": "Kitchen",
+    "color": "#704214",
+    "defaultW": 15,
+    "defaultH": 10,
+    "recommendedSf": 150,
+    "items": [
+      { "name": "Counter/Cabinets (linear ft)", "qty": 6, "unitCost": 200 },
+      { "name": "Sink", "qty": 1, "unitCost": 650 },
+      { "name": "Microwave", "qty": 1, "unitCost": 280 },
+      { "name": "Coffee Machine", "qty": 1, "unitCost": 1200 },
+      { "name": "Mini Fridge", "qty": 1, "unitCost": 500 }
+    ]
+  },
+  "clubroom": {
+    "name": "Club Room",
+    "color": "#2B4570",
+    "defaultW": 20.4,
+    "defaultH": 12.2,
+    "recommendedSf": 250,
+    "items": [
+      { "name": "Conference Table", "qty": 1, "unitCost": 2200 },
+      { "name": "Meeting Chair", "qty": 8, "unitCost": 520 },
+      { "name": "Display/Monitor", "qty": 1, "unitCost": 1400 },
+      { "name": "Whiteboard", "qty": 1, "unitCost": 350 }
+    ]
+  },
+  "library": {
+    "name": "Library / Heads Down",
+    "color": "#2D5F2D",
+    "defaultW": 20.3,
+    "defaultH": 17.2,
+    "recommendedSf": 350,
+    "items": [
+      { "name": "Work Table (communal)", "qty": 1, "unitCost": 1800 },
+      { "name": "Task Chair", "qty": 6, "unitCost": 650 },
+      { "name": "Task Lamp", "qty": 3, "unitCost": 280 },
+      { "name": "Power Strip (under-table)", "qty": 2, "unitCost": 85 }
+    ]
+  },
+  "outdoor": {
+    "name": "Outdoor / Patio",
+    "color": "#556B2F",
+    "defaultW": 25,
+    "defaultH": 16,
+    "recommendedSf": 400,
+    "items": [
+      { "name": "Outdoor Table", "qty": 2, "unitCost": 1100 },
+      { "name": "Outdoor Chair", "qty": 8, "unitCost": 380 },
+      { "name": "Planter (large)", "qty": 3, "unitCost": 250 },
+      { "name": "String Lights (set)", "qty": 2, "unitCost": 180 }
+    ]
+  },
+  "banquet": {
+    "name": "Banquet Seating",
+    "color": "#6B3A6B",
+    "defaultW": 20,
+    "defaultH": 15,
+    "recommendedSf": 300,
+    "items": [
+      { "name": "Banquet Table (8-top)", "qty": 2, "unitCost": 1400 },
+      { "name": "Banquet Chair", "qty": 16, "unitCost": 320 },
+      { "name": "Pendant Light", "qty": 2, "unitCost": 320 }
+    ]
+  },
+  "ops": {
+    "name": "Ops Space",
+    "color": "#5A5A5A",
+    "defaultW": 15,
+    "defaultH": 10,
+    "recommendedSf": 150,
+    "items": [
+      { "name": "Work Desk", "qty": 2, "unitCost": 800 },
+      { "name": "Office Chair", "qty": 2, "unitCost": 450 },
+      { "name": "File Cabinet", "qty": 2, "unitCost": 350 },
+      { "name": "Printer Stand", "qty": 1, "unitCost": 200 }
+    ]
+  },
+  "itcloset": {
+    "name": "IT Closet",
+    "color": "#3A5A7A",
+    "defaultW": 10,
+    "defaultH": 8,
+    "recommendedSf": 80,
+    "items": [
+      { "name": "Server Rack", "qty": 1, "unitCost": 1800 },
+      { "name": "Network Switch", "qty": 2, "unitCost": 650 },
+      { "name": "Cable Management", "qty": 1, "unitCost": 300 },
+      { "name": "Cooling Unit", "qty": 1, "unitCost": 1200 }
+    ]
+  },
+  "restroom": {
+    "name": "Restroom",
+    "color": "#4A7A9A",
+    "defaultW": 12.2,
+    "defaultH": 12.2,
+    "recommendedSf": 150,
+    "items": [
+      { "name": "Toilet", "qty": 2, "unitCost": 800 },
+      { "name": "Sink", "qty": 2, "unitCost": 500 },
+      { "name": "Mirror", "qty": 2, "unitCost": 200 },
+      { "name": "Paper Towel Dispenser", "qty": 1, "unitCost": 180 },
+      { "name": "Trash Can", "qty": 1, "unitCost": 120 },
+      { "name": "Accessories", "qty": 1, "unitCost": 400 }
+    ]
+  },
+  "storage": {
+    "name": "Storage Closet",
+    "color": "#6A5A4A",
+    "defaultW": 10,
+    "defaultH": 10,
+    "recommendedSf": 100,
+    "items": [
+      { "name": "Shelving Unit", "qty": 3, "unitCost": 250 },
+      { "name": "Storage Bins", "qty": 10, "unitCost": 25 },
+      { "name": "Cleaning Supplies", "qty": 1, "unitCost": 150 }
+    ]
+  }
+}

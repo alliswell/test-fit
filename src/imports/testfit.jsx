@@ -1,5 +1,6 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from "react";
-import { MousePointer2, X, Plus, DoorOpen, Ruler, Box, LayoutDashboard, RotateCcw, Undo2, Redo2, Tag } from "lucide-react";
+import { MousePointer2, X, Plus, DoorOpen, Ruler, Box, LayoutDashboard, RotateCcw, Undo2, Redo2, Tag, Settings, ChevronDown, ChevronRight, Trash2, History, GitBranch } from "lucide-react";
+import ZONE_LIBRARY_DEFAULTS from "../data/zone-library.json";
 import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "../app/components/ui/tooltip";
 import TestFit3D from "./testfit3d";
 
@@ -57,20 +58,10 @@ const ColumnIcon = () => (
   </svg>
 );
 
-const ZONE_LIBRARY = {
-  entry: { name: "Entry", color: "#8B7355", defaultW: 140, defaultH: 100, items: [{ name: "Reception Desk", qty: 1, unitCost: 2400 },{ name: "Bench", qty: 1, unitCost: 800 },{ name: "Coat Rack", qty: 1, unitCost: 350 },{ name: "Signage", qty: 1, unitCost: 600 }] },
-  softseating: { name: "Soft Seating", color: "#8B6914", defaultW: 160, defaultH: 120, items: [{ name: "Sofa (3-seat)", qty: 1, unitCost: 2800 },{ name: "Accent Chair", qty: 2, unitCost: 950 },{ name: "Coffee Table", qty: 1, unitCost: 600 },{ name: "Side Table", qty: 1, unitCost: 350 },{ name: "Floor Lamp (warm 2700K)", qty: 2, unitCost: 420 }] },
-  cafe: { name: "Café", color: "#8B4513", defaultW: 240, defaultH: 100, items: [{ name: "Bar Top (linear ft)", qty: 8, unitCost: 175 },{ name: "Bar Stool", qty: 6, unitCost: 480 },{ name: "Under-counter Fridge", qty: 1, unitCost: 900 },{ name: "Pendant Light", qty: 3, unitCost: 320 }] },
-  kitchen: { name: "Kitchen", color: "#704214", defaultW: 140, defaultH: 100, items: [{ name: "Counter/Cabinets (linear ft)", qty: 6, unitCost: 200 },{ name: "Sink", qty: 1, unitCost: 650 },{ name: "Microwave", qty: 1, unitCost: 280 },{ name: "Coffee Machine", qty: 1, unitCost: 1200 },{ name: "Mini Fridge", qty: 1, unitCost: 500 }] },
-  clubroom: { name: "Club Room", color: "#2B4570", defaultW: 160, defaultH: 120, items: [{ name: "Conference Table", qty: 1, unitCost: 2200 },{ name: "Meeting Chair", qty: 8, unitCost: 520 },{ name: "Display/Monitor", qty: 1, unitCost: 1400 },{ name: "Whiteboard", qty: 1, unitCost: 350 }] },
-  library: { name: "Library / Heads Down", color: "#2D5F2D", defaultW: 200, defaultH: 140, items: [{ name: "Work Table (communal)", qty: 1, unitCost: 1800 },{ name: "Task Chair", qty: 6, unitCost: 650 },{ name: "Task Lamp", qty: 3, unitCost: 280 },{ name: "Power Strip (under-table)", qty: 2, unitCost: 85 }] },
-  outdoor: { name: "Outdoor / Patio", color: "#556B2F", defaultW: 200, defaultH: 160, items: [{ name: "Outdoor Table", qty: 2, unitCost: 1100 },{ name: "Outdoor Chair", qty: 8, unitCost: 380 },{ name: "Planter (large)", qty: 3, unitCost: 250 },{ name: "String Lights (set)", qty: 2, unitCost: 180 }] },
-  banquet: { name: "Banquet Seating", color: "#6B3A6B", defaultW: 200, defaultH: 120, items: [{ name: "Banquet Table (8-top)", qty: 2, unitCost: 1400 },{ name: "Banquet Chair", qty: 16, unitCost: 320 },{ name: "Pendant Light", qty: 2, unitCost: 320 }] },
-  ops: { name: "Ops Space", color: "#5A5A5A", defaultW: 120, defaultH: 100, items: [{ name: "Work Desk", qty: 2, unitCost: 800 },{ name: "Office Chair", qty: 2, unitCost: 450 },{ name: "File Cabinet", qty: 2, unitCost: 350 },{ name: "Printer Stand", qty: 1, unitCost: 200 }] },
-  itcloset: { name: "IT Closet", color: "#3A5A7A", defaultW: 80, defaultH: 80, items: [{ name: "Server Rack", qty: 1, unitCost: 1800 },{ name: "Network Switch", qty: 2, unitCost: 650 },{ name: "Cable Management", qty: 1, unitCost: 300 },{ name: "Cooling Unit", qty: 1, unitCost: 1200 }] },
-  restroom: { name: "Restroom", color: "#4A7A9A", defaultW: 100, defaultH: 120, items: [{ name: "Toilet", qty: 2, unitCost: 800 },{ name: "Sink", qty: 2, unitCost: 500 },{ name: "Mirror", qty: 2, unitCost: 200 },{ name: "Accessories", qty: 1, unitCost: 400 }] },
-  storage: { name: "Storage Closet", color: "#6A5A4A", defaultW: 80, defaultH: 100, items: [{ name: "Shelving Unit", qty: 3, unitCost: 250 },{ name: "Storage Bins", qty: 10, unitCost: 25 },{ name: "Cleaning Supplies", qty: 1, unitCost: 150 }] },
-};
+// Zone library defaults are defined in src/data/zone-library.json.
+// The active library lives in component state (zoneLibrary) so it can be
+// edited at runtime and persisted per-project.
+const ZONE_LIBRARY = ZONE_LIBRARY_DEFAULTS; // legacy alias — component code uses zoneLibrary state
 
 // Component specifications organized by layer category
 const SPEC_COMPONENTS = {
@@ -320,6 +311,13 @@ const THEMES = {
   }
 };
 
+const DEFAULT_PHASES = [
+  { id: "existing", name: "Existing", color: "#9A9488", visible: true },
+  { id: "phase1",   name: "Phase 1",  color: "#4A7EC0", visible: true },
+  { id: "phase2",   name: "Phase 2",  color: "#4A9060", visible: true },
+  { id: "phase3",   name: "Phase 3",  color: "#9060B0", visible: true },
+];
+
 export default function TestfitTool() {
   const [themeMode, setThemeMode] = useState("dark");
   const T = THEMES[themeMode];
@@ -337,6 +335,36 @@ export default function TestfitTool() {
   const [bgScale, setBgScale] = useState(1);
   const [bgOffset, setBgOffset] = useState({ x: 0, y: 0 });
   const [pxPerFoot, setPxPerFoot] = useState(20);
+
+  // ── Zone Library (editable at runtime) ─────────────────────────────
+  const [zoneLibrary, setZoneLibrary] = useState(() => {
+    try {
+      const saved = localStorage.getItem("testfit-zone-library");
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        // v2: defaultW/defaultH are in feet (≤ 50). If any zone has a value > 50
+        // it's the old pixel-based library — discard it and use fresh defaults.
+        const hasPxValues = Object.values(parsed).some(
+          z => z.defaultW > 50 || z.defaultH > 50
+        );
+        if (!hasPxValues) return parsed;
+        localStorage.removeItem("testfit-zone-library");
+      }
+    } catch {}
+    return ZONE_LIBRARY_DEFAULTS;
+  });
+  useEffect(() => {
+    localStorage.setItem("testfit-zone-library", JSON.stringify(zoneLibrary));
+  }, [zoneLibrary]);
+  const [showSettings, setShowSettings] = useState(false);
+
+  // ── Phases ──────────────────────────────────────────────────────────
+  const [phases, setPhases] = useState(DEFAULT_PHASES);
+  const [activePhase, setActivePhase] = useState("existing");
+
+  // ── Versions (named snapshots) ───────────────────────────────────────
+  const [versions, setVersions] = useState([]);
+  const [showVersions, setShowVersions] = useState(false);
 
   // ── Undo / Redo ────────────────────────────────────────────────────
   const historyRef = useRef([]);
@@ -481,12 +509,19 @@ export default function TestfitTool() {
   const fRef = useRef(null);
   const loadRef = useRef(null);
 
+  // ── Phase visibility helper ────────────────────────────────────────
+  const phaseVisible = useCallback((phase) => {
+    if (!phase) return true;
+    return phases.find(p => p.id === phase)?.visible ?? true;
+  }, [phases]);
+
   // ── Project management ─────────────────────────────────────────────
   const getProjectData = useCallback(() => ({
     projectName, nodes, walls, zones, markers, doors, windows, columns, dims,
-    bgOpacity, bgScale, bgOffset, pxPerFoot, showDims,
+    bgOpacity, bgScale, bgOffset, pxPerFoot, showDims, zoneLibrary,
+    phases, activePhase, versions,
     version: "testfit-v7",
-  }), [projectName, nodes, walls, zones, markers, doors, windows, columns, dims, bgOpacity, bgScale, bgOffset, pxPerFoot, showDims]);
+  }), [projectName, nodes, walls, zones, markers, doors, windows, columns, dims, bgOpacity, bgScale, bgOffset, pxPerFoot, showDims, zoneLibrary, phases, activePhase, versions]);
 
   const exportProject = useCallback(() => {
     const data = getProjectData();
@@ -498,6 +533,31 @@ export default function TestfitTool() {
     a.click();
     URL.revokeObjectURL(url);
   }, [getProjectData, projectName]);
+
+  const saveVersion = useCallback((name) => {
+    const snap = { id: uid(), name: name || "Version " + Date.now(), ts: Date.now(), data: getProjectData() };
+    setVersions(prev => [...prev, snap]);
+  }, [getProjectData]);
+
+  const restoreVersion = useCallback((v) => {
+    const d = v.data;
+    if (!d) return;
+    const arr = (x) => Array.isArray(x) ? x : [];
+    setProjectName(d.projectName || "Restored");
+    setNodes(arr(d.nodes)); setWalls(arr(d.walls)); setZones(arr(d.zones));
+    setMarkers(arr(d.markers)); setDoors(arr(d.doors)); setWindows(arr(d.windows));
+    setColumns(arr(d.columns)); setDims(arr(d.dims));
+    setBgOpacity(d.bgOpacity ?? 0.35); setBgScale(d.bgScale ?? 1);
+    setBgOffset(d.bgOffset ?? { x: 0, y: 0 });
+    if (d.pxPerFoot) setPxPerFoot(d.pxPerFoot);
+    if (d.showDims !== undefined) setShowDims(d.showDims);
+    if (d.zoneLibrary) setZoneLibrary(d.zoneLibrary);
+    if (d.phases) setPhases(d.phases);
+    if (d.activePhase) setActivePhase(d.activePhase);
+    historyRef.current = []; historyIdxRef.current = -1;
+    setCanUndo(false); setCanRedo(false);
+    setShowVersions(false);
+  }, []);
 
   const exportPng = useCallback(() => {
     const svg = cvs.current;
@@ -575,6 +635,10 @@ export default function TestfitTool() {
         setBgOffset(d.bgOffset ?? { x: 0, y: 0 });
         if (d.pxPerFoot) setPxPerFoot(d.pxPerFoot);
         if (d.showDims !== undefined) setShowDims(d.showDims);
+        if (d.zoneLibrary && typeof d.zoneLibrary === "object") setZoneLibrary(d.zoneLibrary);
+        if (Array.isArray(d.phases) && d.phases.length) setPhases(d.phases);
+        if (d.activePhase) setActivePhase(d.activePhase);
+        if (Array.isArray(d.versions)) setVersions(d.versions);
         setBgImage(null);
         setSelectedId(null); setSelType(null);
         historyRef.current = []; historyIdxRef.current = -1;
@@ -593,6 +657,9 @@ export default function TestfitTool() {
     setViewOff({ x: 0, y: 0 }); setZoom(1);
     historyRef.current = []; historyIdxRef.current = -1;
     setCanUndo(false); setCanRedo(false);
+    setZoneLibrary(ZONE_LIBRARY_DEFAULTS);
+    localStorage.removeItem("testfit-zone-library");
+    setPhases(DEFAULT_PHASES); setActivePhase("existing"); setVersions([]);
   }, []);
 
   const fitAll = useCallback((ns = nodes) => {
@@ -616,8 +683,35 @@ export default function TestfitTool() {
   const ftN = useCallback((px) => px / pxPerFoot, [pxPerFoot]);
   const inToPx = useCallback((inches) => (inches / 12) * pxPerFoot, [pxPerFoot]);
 
-  const gn = useCallback((nid) => nodes.find(n => n.id === nid), [nodes]);
-  const wc = useCallback((w) => { const a = gn(w.n1), b = gn(w.n2); return (a && b) ? { x1: a.x, y1: a.y, x2: b.x, y2: b.y } : null; }, [gn]);
+  // gn: resolve node position, applying per-phase override if the wall has one
+  const gn = useCallback((nid, phase) => {
+    const n = nodes.find(n => n.id === nid);
+    if (!n) return null;
+    if (phase && phase !== "existing" && n.px?.[phase]) {
+      return { ...n, x: n.px[phase].x, y: n.px[phase].y };
+    }
+    return n;
+  }, [nodes]);
+  const wc = useCallback((w) => { const a = gn(w.n1, w.phase), b = gn(w.n2, w.phase); return (a && b) ? { x1: a.x, y1: a.y, x2: b.x, y2: b.y } : null; }, [gn]);
+
+  // resolvePos: return the effective {x, y} for an element, honouring per-phase overrides.
+  // The latest visible phase that has an override wins (phases are ordered as defined).
+  const resolvePos = useCallback((el) => {
+    for (let i = phases.length - 1; i >= 0; i--) {
+      const p = phases[i];
+      if (p.visible && el.px?.[p.id]) return el.px[p.id];
+    }
+    return { x: el.x, y: el.y };
+  }, [phases]);
+
+  // resolvePoints: same idea but for polygon zone points arrays
+  const resolvePoints = useCallback((el) => {
+    for (let i = phases.length - 1; i >= 0; i--) {
+      const p = phases[i];
+      if (p.visible && el.px?.[p.id]) return el.px[p.id];
+    }
+    return el.points;
+  }, [phases]);
   const wl = useCallback((w) => { const c = wc(w); return c ? dst(c.x1, c.y1, c.x2, c.y2) : 0; }, [wc]);
   const wa = useCallback((w) => { const c = wc(w); return c ? (Math.atan2(c.y2 - c.y1, c.x2 - c.x1) * 180) / Math.PI : 0; }, [wc]);
   const findNear = useCallback((x, y, excl) => { let best = null, bd = SNAP_R; for (const n of nodes) { if (excl?.includes(n.id)) continue; const d = dst(x, y, n.x, n.y); if (d < bd) { best = n; bd = d; } } return best; }, [nodes]);
@@ -707,7 +801,7 @@ export default function TestfitTool() {
     if (!n2Id) { const nn = { id: uid(), x: toX, y: toY }; newNodes.push(nn); n2Id = nn.id; }
     if (n1Id !== n2Id) {
       if (newNodes.length) setNodes(prev => [...prev, ...newNodes]);
-      const w = { id: uid(), n1: n1Id, n2: n2Id, kind };
+      const w = { id: uid(), n1: n1Id, n2: n2Id, kind, phase: activePhase };
       if (wallMaterial) w.material = wallMaterial;
       if (wallPaintColor !== "#E8E0D0") w.paintColor = wallPaintColor;
       if (wallPaintFinish) w.paintFinish = wallPaintFinish;
@@ -749,7 +843,7 @@ export default function TestfitTool() {
       return { nodeId: n2Id, x: nearEnd ? nearEnd.x : toX, y: nearEnd ? nearEnd.y : toY };
     }
     return null;
-  }, [findNear, wc, wallMaterial, wallPaintColor, wallPaintFinish, wallNotes, ponyHeight, ponyDepth]);
+  }, [findNear, wc, wallMaterial, wallPaintColor, wallPaintFinish, wallNotes, ponyHeight, ponyDepth, activePhase]);
 
   // Hit test
   const hitTest = useCallback((pos) => {
@@ -879,16 +973,16 @@ export default function TestfitTool() {
       return;
     }
     if (tool === "zone") {
-      const zt = ZONE_LIBRARY[activeZoneType]; const nid = uid();
-      const pts = [{ x: sx, y: sy }, { x: sx + zt.defaultW, y: sy }, { x: sx + zt.defaultW, y: sy + zt.defaultH }, { x: sx, y: sy + zt.defaultH }];
-      setZones(p => [...p, { id: nid, type: activeZoneType, points: pts, label: zt.name, notes: zoneNotes, paintColor: zonePaintColor, paintFinish: zonePaintFinish }]);
+      const zt = zoneLibrary[activeZoneType]; const nid = uid();
+      const pts = [{ x: sx, y: sy }, { x: sx + zt.defaultW * pxPerFoot, y: sy }, { x: sx + zt.defaultW * pxPerFoot, y: sy + zt.defaultH * pxPerFoot }, { x: sx, y: sy + zt.defaultH * pxPerFoot }];
+      setZones(p => [...p, { id: nid, type: activeZoneType, points: pts, label: zt.name, notes: zoneNotes, paintColor: zonePaintColor, paintFinish: zonePaintFinish, phase: activePhase }]);
       if (e.shiftKey) { setSelectedId(null); setSelType(null); } else { setSelectedId(nid); setSelType("zone"); setTool("select"); setGhostPos(null); }
       return;
     }
     if (tool === "marker") {
       const nid = uid();
       const compData = SPEC_COMPONENTS[activeSpecLayer][activeComponentType];
-      setMarkers(p => [...p, { id: nid, layer: activeSpecLayer, componentType: activeComponentType, x: sx, y: sy, label: compData.name, notes: markerNotes }]);
+      setMarkers(p => [...p, { id: nid, layer: activeSpecLayer, componentType: activeComponentType, x: sx, y: sy, label: compData.name, notes: markerNotes, phase: activePhase }]);
       if (e.shiftKey) { setSelectedId(null); setSelType(null); } else { setSelectedId(nid); setSelType("marker"); setTool("select"); setGhostPos(null); }
       return;
     }
@@ -896,7 +990,7 @@ export default function TestfitTool() {
       const nid = uid();
       const snap = snapToWall(pos.x, pos.y);
       const dx = snap ? snap.x : sx, dy = snap ? snap.y : sy, da = snap ? snap.angle : 0;
-      setDoors(p => [...p, { id: nid, x: dx, y: dy, angle: da, width: doorWidth, flipped: doorFlipped, hingeRight: doorHingeRight, doorType }]);
+      setDoors(p => [...p, { id: nid, x: dx, y: dy, angle: da, width: doorWidth, flipped: doorFlipped, hingeRight: doorHingeRight, doorType, phase: activePhase }]);
       if (e.shiftKey) { setSelectedId(null); setSelType(null); } else { setSelectedId(nid); setSelType("door"); setTool("select"); setGhostPos(null); }
       return;
     }
@@ -904,13 +998,13 @@ export default function TestfitTool() {
       const nid = uid();
       const snap = snapToWall(pos.x, pos.y);
       const wx = snap ? snap.x : sx, wy = snap ? snap.y : sy, wa2 = snap ? snap.angle : 0;
-      setWindows(p => [...p, { id: nid, x: wx, y: wy, angle: wa2, width: windowWidth, height: windowHeight, sill: windowSill, type: windowType }]);
+      setWindows(p => [...p, { id: nid, x: wx, y: wy, angle: wa2, width: windowWidth, height: windowHeight, sill: windowSill, type: windowType, phase: activePhase }]);
       if (e.shiftKey) { setSelectedId(null); setSelType(null); } else { setSelectedId(nid); setSelType("window"); setTool("select"); setGhostPos(null); }
       return;
     }
     if (tool === "column") {
       const nid = uid();
-      setColumns(p => [...p, { id: nid, x: sx, y: sy, size: columnSize, shape: columnShape, label: columnLabel, notes: columnNotes }]);
+      setColumns(p => [...p, { id: nid, x: sx, y: sy, size: columnSize, shape: columnShape, label: columnLabel, notes: columnNotes, phase: activePhase }]);
       if (e.shiftKey) { setSelectedId(null); setSelType(null); } else { setSelectedId(nid); setSelType("column"); setTool("select"); setGhostPos(null); }
       return;
     }
@@ -1130,7 +1224,7 @@ export default function TestfitTool() {
           } else {
             const w = walls.find(ww => ww.id === hit.id), c = wc(w);
             if (c) {
-              const n1 = gn(w.n1), n2 = gn(w.n2);
+              const n1 = gn(w.n1, w.phase), n2 = gn(w.n2, w.phase);
               if (n1 && n2) {
                 // Items on the dragged wall itself — parametric t keeps them on centerline
                 // even when snap grid causes slight wall rotation.
@@ -1168,7 +1262,7 @@ export default function TestfitTool() {
                     });
                   });
                 });
-                setDrag({ type: "wall", id: hit.id, ox: pos.x, oy: pos.y, n1x: n1.x, n1y: n1.y, n2x: n2.x, n2y: n2.y, attached: attachedItems, adjacentAttached });
+                setDrag({ type: "wall", id: hit.id, ox: pos.x, oy: pos.y, n1x: n1.x, n1y: n1.y, n2x: n2.x, n2y: n2.y, wallPhase: w.phase, attached: attachedItems, adjacentAttached });
               }
             }
           }
@@ -1388,21 +1482,63 @@ export default function TestfitTool() {
         if (dx || dy) {
           drag.objects.forEach(obj => {
             if (obj.type === "node") {
-              setNodes(prev => prev.map(n => n.id === obj.id ? { ...n, x: n.x + dx, y: n.y + dy } : n));
+              setNodes(prev => prev.map(n => {
+                if (n.id !== obj.id) return n;
+                if (activePhase && activePhase !== "existing") {
+                  const cur = n.px?.[activePhase] ?? { x: n.x, y: n.y };
+                  return { ...n, px: { ...n.px, [activePhase]: { x: cur.x + dx, y: cur.y + dy } } };
+                }
+                return { ...n, x: n.x + dx, y: n.y + dy };
+              }));
             } else if (obj.type === "zone") {
+              const phased = activePhase && activePhase !== "existing";
               if (obj.points) {
-                setZones(p => p.map(z => z.id === obj.id ? { ...z, points: z.points.map(pt => ({ x: pt.x + dx, y: pt.y + dy })) } : z));
+                setZones(p => p.map(z => {
+                  if (z.id !== obj.id) return z;
+                  if (phased && z.phase !== activePhase) {
+                    const base = z.px?.[activePhase] ?? z.points;
+                    return { ...z, px: { ...z.px, [activePhase]: base.map(pt => ({ x: pt.x + dx, y: pt.y + dy })) } };
+                  }
+                  return { ...z, points: z.points.map(pt => ({ x: pt.x + dx, y: pt.y + dy })) };
+                }));
               } else {
-                setZones(p => p.map(z => z.id === obj.id ? { ...z, x: z.x + dx, y: z.y + dy } : z));
+                setZones(p => p.map(z => {
+                  if (z.id !== obj.id) return z;
+                  if (phased && z.phase !== activePhase) {
+                    const base = z.px?.[activePhase] ?? { x: z.x, y: z.y };
+                    return { ...z, px: { ...z.px, [activePhase]: { x: base.x + dx, y: base.y + dy } } };
+                  }
+                  return { ...z, x: z.x + dx, y: z.y + dy };
+                }));
               }
             } else if (obj.type === "marker") {
-              setMarkers(p => p.map(m => m.id === obj.id ? { ...m, x: m.x + dx, y: m.y + dy } : m));
+              setMarkers(p => p.map(m => {
+                if (m.id !== obj.id) return m;
+                const phased = activePhase && activePhase !== "existing" && m.phase !== activePhase;
+                if (phased) { const base = m.px?.[activePhase] ?? { x: m.x, y: m.y }; return { ...m, px: { ...m.px, [activePhase]: { x: base.x + dx, y: base.y + dy } } }; }
+                return { ...m, x: m.x + dx, y: m.y + dy };
+              }));
             } else if (obj.type === "door") {
-              setDoors(p => p.map(d => d.id === obj.id ? { ...d, x: d.x + dx, y: d.y + dy } : d));
+              setDoors(p => p.map(d => {
+                if (d.id !== obj.id) return d;
+                const phased = activePhase && activePhase !== "existing" && d.phase !== activePhase;
+                if (phased) { const base = d.px?.[activePhase] ?? { x: d.x, y: d.y }; return { ...d, px: { ...d.px, [activePhase]: { x: base.x + dx, y: base.y + dy } } }; }
+                return { ...d, x: d.x + dx, y: d.y + dy };
+              }));
             } else if (obj.type === "window") {
-              setWindows(p => p.map(w => w.id === obj.id ? { ...w, x: w.x + dx, y: w.y + dy } : w));
+              setWindows(p => p.map(w => {
+                if (w.id !== obj.id) return w;
+                const phased = activePhase && activePhase !== "existing" && w.phase !== activePhase;
+                if (phased) { const base = w.px?.[activePhase] ?? { x: w.x, y: w.y }; return { ...w, px: { ...w.px, [activePhase]: { x: base.x + dx, y: base.y + dy } } }; }
+                return { ...w, x: w.x + dx, y: w.y + dy };
+              }));
             } else if (obj.type === "column") {
-              setColumns(p => p.map(c => c.id === obj.id ? { ...c, x: c.x + dx, y: c.y + dy } : c));
+              setColumns(p => p.map(c => {
+                if (c.id !== obj.id) return c;
+                const phased = activePhase && activePhase !== "existing" && c.phase !== activePhase;
+                if (phased) { const base = c.px?.[activePhase] ?? { x: c.x, y: c.y }; return { ...c, px: { ...c.px, [activePhase]: { x: base.x + dx, y: base.y + dy } } }; }
+                return { ...c, x: c.x + dx, y: c.y + dy };
+              }));
             }
           });
           setDrag(d => ({ ...d, lastX: pos.x, lastY: pos.y }));
@@ -1415,7 +1551,12 @@ export default function TestfitTool() {
           newNodeX = g.x; newNodeY = g.y;
           setSmartGuides(g.guides);
         } else { setSmartGuides([]); }
-        setNodes(prev => prev.map(n => n.id === drag.id ? { ...n, x: newNodeX, y: newNodeY } : n));
+        setNodes(prev => prev.map(n => {
+          if (n.id !== drag.id) return n;
+          if (activePhase && activePhase !== "existing")
+            return { ...n, px: { ...n.px, [activePhase]: { x: newNodeX, y: newNodeY } } };
+          return { ...n, x: newNodeX, y: newNodeY };
+        }));
         setHoverNid(near ? near.id : null);
         // Reposition attached doors/windows along their walls
         if (drag.nodeAttached?.length) {
@@ -1442,8 +1583,10 @@ export default function TestfitTool() {
           const n2NewX = sn(drag.n2x + dx, snapGrid);
           const n2NewY = sn(drag.n2y + dy, snapGrid);
           setNodes(prev => prev.map(n => {
-            if (n.id === w.n1) return { ...n, x: n1NewX, y: n1NewY };
-            if (n.id === w.n2) return { ...n, x: n2NewX, y: n2NewY };
+            const wp = drag.wallPhase;
+            const phased = wp && wp !== "existing";
+            if (n.id === w.n1) return phased ? { ...n, px: { ...n.px, [wp]: { x: n1NewX, y: n1NewY } } } : { ...n, x: n1NewX, y: n1NewY };
+            if (n.id === w.n2) return phased ? { ...n, px: { ...n.px, [wp]: { x: n2NewX, y: n2NewY } } } : { ...n, x: n2NewX, y: n2NewY };
             return n;
           }));
           // Items on the dragged wall — parametric reposition keeps them on the centerline.
@@ -1690,7 +1833,7 @@ export default function TestfitTool() {
 
   const cost = useMemo(() => {
     const zc = zones.map(z => {
-      const lib = ZONE_LIBRARY[z.type]; const t = lib.items.reduce((s, i) => s + i.qty * i.unitCost, 0);
+      const lib = zoneLibrary[z.type]; const t = lib.items.reduce((s, i) => s + i.qty * i.unitCost, 0);
       const sf = z.points ? Math.round(polyArea(z.points) / (pxPerFoot * pxPerFoot)) : Math.round(ftN(z.w) * ftN(z.h));
       return { id: z.id, label: z.label || lib.name, type: z.type, total: t, items: lib.items, sf };
     });
@@ -2422,6 +2565,19 @@ export default function TestfitTool() {
         <button style={S.smBtn} onClick={() => loadRef.current?.click()}>Load</button>
         <button style={S.smBtn} onClick={() => { if (walls.length || zones.length || markers.length) { if (confirm("New project?")) newProject(); } else newProject(); }}>New</button>
         <input ref={loadRef} type="file" accept=".json" style={{ display: "none" }} onChange={e => { const f = e.target.files?.[0]; if (f) importProject(f); e.target.value = ""; }} />
+        <div style={{ width: 1, height: 20, background: T.border, margin: "0 3px" }} />
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button style={S.smBtn} onClick={() => setShowVersions(true)}><History size={13} /></button>
+          </TooltipTrigger>
+          <TooltipContent>Version History</TooltipContent>
+        </Tooltip>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button style={S.smBtn} onClick={() => setShowSettings(true)}><Settings size={13} /></button>
+          </TooltipTrigger>
+          <TooltipContent>Zone Library Settings</TooltipContent>
+        </Tooltip>
       </div>
 
       <div style={S.main}>
@@ -2488,19 +2644,25 @@ export default function TestfitTool() {
                   </button>
                 </div>
               )}
+              {/* Drawing Scale — hidden, state + functionality preserved */}
               <div style={S.sec}>
-                <div style={S.sh}>Drawing Scale</div>
-                <select value={pxPerFoot} onChange={e => setPxPerFoot(Number(e.target.value))} style={{ ...S.inp, padding: "6px 10px", fontSize: 10 }}>
-                  <option value={10}>1 grid = 2'</option><option value={20}>1 grid = 1'</option><option value={40}>1 grid = 6"</option>
+                <div style={S.sh}>Phases</div>
+                <div style={S.lbl}>Drawing in</div>
+                <select value={activePhase} onChange={e => setActivePhase(e.target.value)} style={{ ...S.inp, padding: "6px 10px", fontSize: 10, marginBottom: 10 }}>
+                  {phases.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
                 </select>
-              </div>
-              <div style={S.sec}>
-                <div style={S.sh}>Ceiling Height</div>
-                <select value={ceilingHeight} onChange={e => setCeilingHeight(Number(e.target.value))} style={{ ...S.inp, padding: "6px 10px", fontSize: 10 }}>
-                  {[84, 96, 108, 120, 132, 144].map(h => (
-                    <option key={h} value={h}>{Math.floor(h / 12)}'-{h % 12 ? h % 12 + '"' : '0"'}</option>
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  {phases.map(p => (
+                    <label key={p.id} style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+                      <input type="checkbox" checked={p.visible} onChange={() => setPhases(prev => prev.map(ph => ph.id === p.id ? { ...ph, visible: !ph.visible } : ph))} style={{ accentColor: p.color, width: 13, height: 13 }} />
+                      <span style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 10, color: p.id === activePhase ? T.textBright : T.textMuted, fontWeight: p.id === activePhase ? 600 : 400 }}>
+                        <span style={{ width: 8, height: 8, borderRadius: "50%", background: p.color, flexShrink: 0 }} />
+                        {p.name}
+                        {p.id === activePhase && <span style={{ fontSize: 8, color: p.color }}>active</span>}
+                      </span>
+                    </label>
                   ))}
-                </select>
+                </div>
               </div>
               <div style={S.sec}>
                 <div style={S.sh}>Summary</div>
@@ -2559,7 +2721,7 @@ export default function TestfitTool() {
               </div>
               <div style={S.sec}>
                 <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                  {Object.entries(ZONE_LIBRARY).map(([k, z]) => <button key={k} style={S.btn(activeZoneType === k, z.color)}
+                  {Object.entries(zoneLibrary).map(([k, z]) => <button key={k} style={S.btn(activeZoneType === k, z.color)}
                     onClick={() => { setActiveZoneType(k); if (tool !== "zone") setT("zone"); }}>
                     <span style={S.dot(z.color)} />{z.name}
                   </button>)}
@@ -2570,7 +2732,7 @@ export default function TestfitTool() {
                 {zones.length === 0 && <div style={{ color: T.textFaint, fontSize: 10, padding: "8px 0", fontStyle: "italic" }}>No zones placed yet</div>}
                 {zones.map(z => <div key={z.id} style={{ padding: "6px 10px", background: selectedId === z.id ? T.selBg : "transparent", borderRadius: 5, cursor: "pointer", display: "flex", alignItems: "center", gap: 8, fontSize: 10, marginBottom: 3, border: selectedId === z.id ? "1.5px solid " + T.selBorder : "1.5px solid transparent", transition: "all 0.12s ease" }}
                   onClick={() => { setSelectedId(z.id); setSelType("zone"); setT("select"); }}>
-                  <span style={S.dot(ZONE_LIBRARY[z.type].color)} />
+                  <span style={S.dot(zoneLibrary[z.type].color)} />
                   <span style={{ flex: 1, fontWeight: selectedId === z.id ? 500 : 400 }}>{z.label}</span>
                   <span style={{ color: T.accentDim, fontSize: 9 }}>{z.points ? Math.round(polyArea(z.points) / (pxPerFoot * pxPerFoot)) + " sf" : ft(z.w) + "×" + ft(z.h)}</span>
                 </div>)}
@@ -2662,7 +2824,7 @@ export default function TestfitTool() {
                     setSelectedIds([z.id]);
                   }}
                 >
-                  <span style={{ display: "flex", alignItems: "center", gap: 6 }}><span style={S.dot(ZONE_LIBRARY[z.type].color)} />{z.label}</span>
+                  <span style={{ display: "flex", alignItems: "center", gap: 6 }}><span style={S.dot(zoneLibrary[z.type].color)} />{z.label}</span>
                   <span style={{ fontWeight: 500 }}>{$(z.total)}</span>
                 </div>)}
                 {Object.entries(cost.markers).map(([k, p]) => {
@@ -2828,6 +2990,7 @@ export default function TestfitTool() {
               selectedId={selectedId} selType={selType}
               show3dLabels={show3dLabels} setShow3dLabels={setShow3dLabels}
               show3dDims={show3dDims}     setShow3dDims={setShow3dDims}
+              zoneLibrary={zoneLibrary}
               onSelect={(id, type) => { setSelectedId(id); setSelType(type); }}
             />
           )}
@@ -3038,6 +3201,7 @@ export default function TestfitTool() {
 
                 // Compute geometry for all walls once
                 const wallData = walls.map(w => {
+                  if (!phaseVisible(w.phase)) return null;
                   const c = wc(w); if (!c) return null;
                   const sel = (selectedId === w.id && selType === "wall") || selectedIds.includes(w.id);
                   const wk = WALL_KINDS[w.kind || "existing"];
@@ -3047,7 +3211,7 @@ export default function TestfitTool() {
                   const halfT = (wallThicknessIn / 12) * pxPerFoot / 2;
                   const nx = -dy / wLen, ny = dx / wLen;
                   const ux = dx / wLen, uy = dy / wLen;
-                  const cuts = []; [...doors, ...windows].forEach(item => { const projT = ((item.x - c.x1) * dx + (item.y - c.y1) * dy) / (wLen * wLen); if (projT < -0.05 || projT > 1.05) return; const projX = c.x1 + projT * dx, projY = c.y1 + projT * dy; if (dst(item.x, item.y, projX, projY) > 8) return; const halfW = inToPx(item.width) / 2 / wLen; cuts.push({ t0: Math.max(0, projT - halfW), t1: Math.min(1, projT + halfW) }); });
+                  const cuts = []; [...doors, ...windows].filter(item => phaseVisible(item.phase)).forEach(item => { const rp = resolvePos(item); const projT = ((rp.x - c.x1) * dx + (rp.y - c.y1) * dy) / (wLen * wLen); if (projT < -0.05 || projT > 1.05) return; const projX = c.x1 + projT * dx, projY = c.y1 + projT * dy; if (dst(rp.x, rp.y, projX, projY) > 8) return; const halfW = inToPx(item.width) / 2 / wLen; cuts.push({ t0: Math.max(0, projT - halfW), t1: Math.min(1, projT + halfW) }); });
                   cuts.sort((a,b) => a.t0 - b.t0); const merged = []; cuts.forEach(cu => { if (merged.length && cu.t0 <= merged[merged.length-1].t1) merged[merged.length-1].t1 = Math.max(merged[merged.length-1].t1, cu.t1); else merged.push({...cu}); });
                   const segs = []; let tS = 0; merged.forEach(cu => { if (cu.t0 > tS) segs.push({t0:tS,t1:cu.t0}); tS = cu.t1; }); if (tS < 1) segs.push({t0:tS,t1:1});
                   const hatchId = w.material && WALL_MATERIAL_HATCHES[w.material] ? WALL_MATERIAL_HATCHES[w.material] : ({demo:"hatch-demo",new:"hatch-new",pony:"hatch-pony"}[w.kind] ?? "hatch-existing");
@@ -3072,7 +3236,7 @@ export default function TestfitTool() {
                 // Terminators (more open ends) render first; through-walls render last so their
                 // canvas fill buries any junction edge bleed from the walls they cross.
                 const openCount = d => (d.mN1.openL?1:0)+(d.mN1.openR?1:0)+(d.mN2.openL?1:0)+(d.mN2.openR?1:0);
-                const fillOrder = [...wallData].sort((a, b) => openCount(a) - openCount(b));
+                const fillOrder = wallData.filter(Boolean).sort((a, b) => openCount(a) - openCount(b));
 
                 return <>
                   {fillOrder.map(({ w, wk, sel, hatchId, edgeColor, edgeW, mN1, mN2, segPts, glowEffect }) =>
@@ -3089,7 +3253,7 @@ export default function TestfitTool() {
                     </g>
                   )}
                   {/* Pass 2: hit-detection + dims only */}
-                  {wallData.map(({ w, c, sel, halfT, glowEffect }) =>
+                  {wallData.filter(Boolean).map(({ w, c, sel, halfT, glowEffect }) =>
                     <g key={"s"+w.id} filter={glowEffect ? "url(#glow-budget)" : undefined}>
                       <line x1={c.x1} y1={c.y1} x2={c.x2} y2={c.y2} stroke="transparent" strokeWidth={halfT * 2 + 6} style={{ cursor: tool === "select" ? wallResizeCursor(c.x1, c.y1, c.x2, c.y2) : "inherit" }} />
                       {showDims && <WallDim w={w} hi={sel} />}
@@ -3099,14 +3263,14 @@ export default function TestfitTool() {
               })()}
 
               {/* Zones */}
-              {zones.map(z => { const lib = ZONE_LIBRARY[z.type], sel = (selectedId === z.id && selType === "zone") || selectedIds.includes(z.id);
+              {zones.map(z => { if (!phaseVisible(z.phase)) return null; const lib = zoneLibrary[z.type], sel = (selectedId === z.id && selType === "zone") || selectedIds.includes(z.id);
                 const glowEffect = mode === "budget" && sel;
-                if (z.points) { const pts = z.points.map(p => `${p.x},${p.y}`).join(" "); const c = polyCentroid(z.points); const sf = Math.round(polyArea(z.points) / (pxPerFoot * pxPerFoot));
+                if (z.points) { const rpts = resolvePoints(z); const pts = rpts.map(p => `${p.x},${p.y}`).join(" "); const c = polyCentroid(rpts); const sf = Math.round(polyArea(rpts) / (pxPerFoot * pxPerFoot));
                   return <g key={z.id} filter={glowEffect ? "url(#glow-budget)" : undefined}><polygon points={pts} fill={lib.color + "25"} stroke={sel ? T.nodeFill : lib.color + "88"} strokeWidth={sel ? 2 : 1} strokeDasharray={sel ? "none" : "4 2"} strokeLinejoin="round" />
                     <text x={c.x} y={c.y - 4} textAnchor="middle" fill={lib.color + "CC"} fontSize={10} fontFamily="inherit" fontWeight={500} style={{ pointerEvents: "none" }}>{z.label}</text>
                     <text x={c.x} y={c.y + 14} textAnchor="middle" fill={lib.color + "BB"} fontSize={13} fontFamily="inherit" fontWeight={700} style={{ pointerEvents: "none" }}>{sf} sf</text>
-                    {sel && z.points.map((p, i) => { const j = (i + 1) % z.points.length; const p2 = z.points[j]; return <line key={"e" + i} x1={p.x} y1={p.y} x2={p2.x} y2={p2.y} stroke="transparent" strokeWidth={14} style={{ cursor: wallResizeCursor(p.x, p.y, p2.x, p2.y) }} />; })}
-                    {sel && z.points.map((p, i) => <g key={i}><circle cx={p.x} cy={p.y} r={7} fill={lib.color} stroke={T.nodeFill} strokeWidth={2} style={{ cursor: "move" }} /><circle cx={p.x} cy={p.y} r={3} fill={T.nodeFill} style={{ cursor: "move", pointerEvents: "none" }} /></g>)}
+                    {sel && rpts.map((p, i) => { const j = (i + 1) % rpts.length; const p2 = rpts[j]; return <line key={"e" + i} x1={p.x} y1={p.y} x2={p2.x} y2={p2.y} stroke="transparent" strokeWidth={14} style={{ cursor: wallResizeCursor(p.x, p.y, p2.x, p2.y) }} />; })}
+                    {sel && rpts.map((p, i) => <g key={i}><circle cx={p.x} cy={p.y} r={7} fill={lib.color} stroke={T.nodeFill} strokeWidth={2} style={{ cursor: "move" }} /><circle cx={p.x} cy={p.y} r={3} fill={T.nodeFill} style={{ cursor: "move", pointerEvents: "none" }} /></g>)}
                   </g>; }
                 return <g key={z.id} filter={glowEffect ? "url(#glow-budget)" : undefined}><rect x={z.x} y={z.y} width={z.w} height={z.h} fill={lib.color + "25"} stroke={sel ? T.nodeFill : lib.color + "88"} strokeWidth={sel ? 2 : 1} strokeDasharray={sel ? "none" : "4 2"} rx={3} />
                   <text x={z.x + 8} y={z.y + 16} fill={lib.color + "CC"} fontSize={10} fontFamily="inherit" fontWeight={500} style={{ pointerEvents: "none" }}>{z.label}</text>
@@ -3191,35 +3355,41 @@ export default function TestfitTool() {
 
               {/* Doors & Windows */}
               {doors.map(d => {
+                if (!phaseVisible(d.phase)) return null;
+                const rp = resolvePos(d);
                 const sel = (selectedId === d.id && selType === "door") || selectedIds.includes(d.id);
                 const glowEffect = mode === "budget" && sel;
                 return <g key={d.id} filter={glowEffect ? "url(#glow-budget)" : undefined}>
-                  <DoorSvg d={d} sel={sel} />
+                  <DoorSvg d={{ ...d, x: rp.x, y: rp.y }} sel={sel} />
                 </g>;
               })}
               {windows.map(w => {
+                if (!phaseVisible(w.phase)) return null;
+                const rp = resolvePos(w);
                 const sel = (selectedId === w.id && selType === "window") || selectedIds.includes(w.id);
                 const glowEffect = mode === "budget" && sel;
                 return <g key={w.id} filter={glowEffect ? "url(#glow-budget)" : undefined}>
-                  <WindowSvg w={w} sel={sel} />
+                  <WindowSvg w={{ ...w, x: rp.x, y: rp.y }} sel={sel} />
                 </g>;
               })}
 
               {/* Columns */}
               {columns.map(col => {
+                if (!phaseVisible(col.phase)) return null;
+                const rp = resolvePos(col);
                 const sel = (selectedId === col.id && selType === "column") || selectedIds.includes(col.id);
                 const r = inToPx(col.size) / 2;
                 const glowEffect = mode === "budget" && sel;
                 return <g key={col.id} filter={glowEffect ? "url(#glow-budget)" : undefined}>
                   {col.shape === "circle" ? (
                     <>
-                      <circle cx={col.x} cy={col.y} r={r + 8} fill="transparent" style={{ cursor: tool === "select" ? "move" : "inherit" }} />
-                      <circle cx={col.x} cy={col.y} r={r} fill={sel ? "#9A9488" : T.nodeStroke} stroke={sel ? T.nodeFill : "#9A9488"} strokeWidth={sel ? 2.5 : 1.5} style={{ pointerEvents: "none" }} />
+                      <circle cx={rp.x} cy={rp.y} r={r + 8} fill="transparent" style={{ cursor: tool === "select" ? "move" : "inherit" }} />
+                      <circle cx={rp.x} cy={rp.y} r={r} fill={sel ? "#9A9488" : T.nodeStroke} stroke={sel ? T.nodeFill : "#9A9488"} strokeWidth={sel ? 2.5 : 1.5} style={{ pointerEvents: "none" }} />
                     </>
                   ) : (
                     <>
-                      <rect x={col.x - r - 8} y={col.y - r - 8} width={(r + 8) * 2} height={(r + 8) * 2} fill="transparent" style={{ cursor: tool === "select" ? "move" : "inherit" }} />
-                      <rect x={col.x - r} y={col.y - r} width={r * 2} height={r * 2} fill={sel ? "#9A9488" : T.nodeStroke} stroke={sel ? T.nodeFill : "#9A9488"} strokeWidth={sel ? 2.5 : 1.5} rx={2} style={{ pointerEvents: "none" }} />
+                      <rect x={rp.x - r - 8} y={rp.y - r - 8} width={(r + 8) * 2} height={(r + 8) * 2} fill="transparent" style={{ cursor: tool === "select" ? "move" : "inherit" }} />
+                      <rect x={rp.x - r} y={rp.y - r} width={r * 2} height={r * 2} fill={sel ? "#9A9488" : T.nodeStroke} stroke={sel ? T.nodeFill : "#9A9488"} strokeWidth={sel ? 2.5 : 1.5} rx={2} style={{ pointerEvents: "none" }} />
                     </>
                   )}
                 </g>;
@@ -3284,8 +3454,8 @@ export default function TestfitTool() {
               })()}
 
               {/* Ghosts */}
-              {tool === "zone" && ghostPos && (() => { const lib = ZONE_LIBRARY[activeZoneType];
-                const gw = lib.defaultW, gh = lib.defaultH; return <g style={{ pointerEvents: "none" }}>
+              {tool === "zone" && ghostPos && (() => { const lib = zoneLibrary[activeZoneType];
+                const gw = lib.defaultW * pxPerFoot, gh = lib.defaultH * pxPerFoot; return <g style={{ pointerEvents: "none" }}>
                 <rect x={ghostPos.x} y={ghostPos.y} width={gw} height={gh} fill={lib.color + "15"} stroke={lib.color + "55"} strokeWidth={1.5} strokeDasharray="6 3" rx={3} />
                 <text x={ghostPos.x + 8} y={ghostPos.y + 16} fill={lib.color + "88"} fontSize={10} fontFamily="inherit" fontWeight={500}>{lib.name}</text>
                 <text x={ghostPos.x + gw / 2} y={ghostPos.y + gh / 2 + 4} textAnchor="middle" fill={lib.color + "44"} fontSize={11} fontFamily="inherit" fontWeight={600}>{Math.round(ftN(gw) * ftN(gh))} sf</text>
@@ -3342,8 +3512,11 @@ export default function TestfitTool() {
 
               {/* Markers (top) */}
               {markers.map(p => {
-                const l = SPEC_LAYERS[p.layer]; 
-                const ct = p.componentType;
+                if (!phaseVisible(p.phase)) return null;
+                const rp = resolvePos(p);
+                const p_r = rp.x !== p.x || rp.y !== p.y ? { ...p, x: rp.x, y: rp.y } : p;
+                const l = SPEC_LAYERS[p_r.layer];
+                const ct = p_r.componentType;
                 const isBuildLighting = ct?.startsWith("light_") || ct?.startsWith("htrack_") || ct === "sconce_prewire" || ct === "pendent_prewire";
                 const isBuildElec = !isBuildLighting && (ct?.startsWith("outlet_") || ct?.startsWith("switch_") || ct === "panel_board" || ct === "tstat");
                 const isOutletInBuild = mode === "build" && p.layer === "power" && (isBuildElec || isBuildLighting);
@@ -3470,6 +3643,16 @@ export default function TestfitTool() {
                   <SliderInput value={selWall.ponyDepth || 6} min={3} max={12} onChange={v => updWall({ ponyDepth: v })} accent={T.uiDoor} textColor={T.textBright} bgColor={T.bg2} borderColor={T.border} />
                 </div>
               </>}
+              <div style={{ marginBottom: 8 }}><div style={S.lbl}>Ceiling Height</div>
+                <select value={selWall.ceilingHeight ?? ceilingHeight} onChange={e => updWall({ ceilingHeight: Number(e.target.value) })} style={{ ...S.inp, padding: "6px 10px", fontSize: 10 }}>
+                  {[84, 96, 108, 120, 132, 144].map(h => <option key={h} value={h}>{Math.floor(h / 12)}'-{h % 12 ? h % 12 + '"' : '0"'}</option>)}
+                </select>
+              </div>
+              <div style={{ marginBottom: 8 }}><div style={S.lbl}>Phase</div>
+                <select value={selWall.phase ?? "existing"} onChange={e => updWall({ phase: e.target.value })} style={{ ...S.inp, padding: "6px 10px", fontSize: 10 }}>
+                  {phases.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                </select>
+              </div>
               <div style={{ marginBottom: 8 }}><div style={S.lbl}>Notes</div><textarea style={{ ...S.inp, height: 72, resize: "vertical" }} value={selWall.notes || ""} onChange={e => updWall({ notes: e.target.value })} placeholder="Load-bearing, plumbing chase..." /></div>
             </>; })()}
             {selectedIds.length <= 1 && selDoor && <>
@@ -3514,21 +3697,70 @@ export default function TestfitTool() {
               <div style={{ marginBottom: 8 }}><div style={S.lbl}>Notes</div><textarea style={{ ...S.inp, height: 40, resize: "vertical" }} value={selColumn.notes || ""} onChange={e => updColumn({ notes: e.target.value })} /></div>
               <button style={S.del} onClick={delSel}>Delete Column</button>
             </>}
-            {selectedIds.length <= 1 && selZone && (() => { const sf = selZone.points ? Math.round(polyArea(selZone.points) / (pxPerFoot * pxPerFoot)) : Math.round(ftN(selZone.w) * ftN(selZone.h)); return <>
-              <div style={{ fontSize: 12, marginBottom: 10, fontWeight: 600, color: ZONE_LIBRARY[selZone.type].color }}>{ZONE_LIBRARY[selZone.type].name} · {sf} sf</div>
+            {selectedIds.length <= 1 && selZone && (() => {
+              const pts = selZone.points || [];
+              const sf = pts.length ? Math.round(polyArea(pts) / (pxPerFoot * pxPerFoot)) : Math.round(ftN(selZone.w) * ftN(selZone.h));
+              const xs = pts.map(p => p.x), ys = pts.map(p => p.y);
+              const minX = Math.min(...xs), maxX = Math.max(...xs);
+              const minY = Math.min(...ys), maxY = Math.max(...ys);
+              const wFt = Math.round((maxX - minX) / pxPerFoot * 10) / 10;
+              const hFt = Math.round((maxY - minY) / pxPerFoot * 10) / 10;
+              const lib = zoneLibrary[selZone.type] ?? {};
+              const items = lib.items ?? [];
+              const estCost = items.reduce((s, i) => s + i.qty * i.unitCost, 0);
+              return <>
+              <div style={{ fontSize: 12, marginBottom: 10, fontWeight: 600, color: lib.color }}>{lib.name} · {sf} sf</div>
               <div style={{ marginBottom: 8 }}><div style={S.lbl}>Type</div>
                 <select style={{ ...S.inp, padding: "6px 10px", fontSize: 10 }} value={selZone.type}
-                  onChange={e => { const newType = e.target.value; const lib = ZONE_LIBRARY[newType]; updZone({ type: newType, label: selZone.label === ZONE_LIBRARY[selZone.type].name ? lib.name : selZone.label }); }}>
-                  {Object.entries(ZONE_LIBRARY).map(([k, z]) => <option key={k} value={k}>{z.name}</option>)}
+                  onChange={e => { const newType = e.target.value; const l = zoneLibrary[newType]; updZone({ type: newType, label: selZone.label === lib.name ? l.name : selZone.label }); }}>
+                  {Object.entries(zoneLibrary).map(([k, z]) => <option key={k} value={k}>{z.name}</option>)}
                 </select>
               </div>
               <div style={{ marginBottom: 8 }}><div style={S.lbl}>Label</div><input style={S.inp} value={selZone.label} onChange={e => updZone({ label: e.target.value })} /></div>
-              <div style={{ marginBottom: 8 }}><div style={S.lbl}>Notes</div><textarea style={{ ...S.inp, height: 40, resize: "vertical" }} value={selZone.notes} onChange={e => updZone({ notes: e.target.value })} /></div>
-              <div style={{ marginBottom: 8 }}><div style={S.lbl}>Paint</div><div style={{ display: "flex", gap: 6 }}>
-                <input type="color" value={selZone.paintColor} onChange={e => updZone({ paintColor: e.target.value })} style={{ width: 28, height: 28, border: "1.5px solid " + T.border, background: "none", cursor: "pointer", borderRadius: 5 }} />
-                <input style={{ ...S.inp, flex: 1 }} value={selZone.paintFinish} onChange={e => updZone({ paintFinish: e.target.value })} placeholder="Finish" />
-              </div></div>
-              <div style={{ fontSize: 10, color: "#8A8478", marginBottom: 6 }}>Est: {$(ZONE_LIBRARY[selZone.type].items.reduce((s, i) => s + i.qty * i.unitCost, 0))}</div>
+              <div style={{ marginBottom: 8 }}><div style={S.lbl}>Notes</div><textarea style={{ ...S.inp, height: 40, resize: "vertical" }} value={selZone.notes ?? ""} onChange={e => updZone({ notes: e.target.value })} /></div>
+              {/* Dimensions */}
+              <div style={{ marginBottom: 10 }}>
+                <div style={{ display: "flex", gap: 6 }}>
+                  <div style={{ flex: 1 }}>
+                    <div style={S.lbl}>Width (ft)</div>
+                    <input type="number" step="0.5" min="1" value={wFt} style={S.inp}
+                      onChange={e => {
+                        const newW = Math.max(1, Number(e.target.value)) * pxPerFoot;
+                        const oldW = maxX - minX || 1;
+                        const scale = newW / oldW;
+                        updZone({ points: pts.map(p => ({ ...p, x: minX + (p.x - minX) * scale })) });
+                      }} />
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <div style={S.lbl}>Height (ft)</div>
+                    <input type="number" step="0.5" min="1" value={hFt} style={S.inp}
+                      onChange={e => {
+                        const newH = Math.max(1, Number(e.target.value)) * pxPerFoot;
+                        const oldH = maxY - minY || 1;
+                        const scale = newH / oldH;
+                        updZone({ points: pts.map(p => ({ ...p, y: minY + (p.y - minY) * scale })) });
+                      }} />
+                  </div>
+                </div>
+              </div>
+              {/* FF&E Items */}
+              {items.length > 0 && <div style={{ marginBottom: 10 }}>
+                <div style={S.lbl}>FF&amp;E Items</div>
+                <div style={{ display: "flex", flexDirection: "column" }}>
+                  {items.map((item, i) => (
+                    <div key={i} style={{ display: "flex", justifyContent: "space-between", fontSize: 10, padding: "4px 0", borderBottom: "1px solid " + T.border + "55" }}>
+                      <span style={{ color: T.textMuted }}>{item.qty > 1 ? `${item.qty}× ` : ""}{item.name}</span>
+                      <span style={{ color: T.text, whiteSpace: "nowrap", paddingLeft: 8 }}>{$(item.qty * item.unitCost)}</span>
+                    </div>
+                  ))}
+                  <div style={{ fontSize: 10, color: T.accentDim ?? "#8A8478", marginTop: 5, textAlign: "right", fontWeight: 600 }}>Est. {$(estCost)}</div>
+                </div>
+              </div>}
+              <div style={{ marginBottom: 8 }}><div style={S.lbl}>Phase</div>
+                <select value={selZone.phase ?? "existing"} onChange={e => updZone({ phase: e.target.value })} style={{ ...S.inp, padding: "6px 10px", fontSize: 10 }}>
+                  {phases.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                </select>
+              </div>
               <button style={S.del} onClick={delSel}>Delete Zone</button>
             </>; })()}
             {selectedIds.length <= 1 && selMarker && (() => {
@@ -3587,6 +3819,12 @@ export default function TestfitTool() {
                     })}
                   </div>
                 </div>
+                <div style={{ marginBottom: 8 }}><div style={S.lbl}>Ceiling Height</div>
+                  <select value={cv(items, "ceilingHeight") ?? ceilingHeight} onChange={e => updWall({ ceilingHeight: Number(e.target.value) })} style={{ ...S.inp, padding: "6px 10px", fontSize: 10 }}>
+                    {cv(items, "ceilingHeight") === undefined && <option value="">Mixed</option>}
+                    {[84, 96, 108, 120, 132, 144].map(h => <option key={h} value={h}>{Math.floor(h / 12)}'-{h % 12 ? h % 12 + '"' : '0"'}</option>)}
+                  </select>
+                </div>
                 <div style={{ marginBottom: 8 }}><div style={S.lbl}>Notes</div><textarea style={{ ...S.inp, height: 72, resize: "vertical" }} value={cv(items, "notes") ?? ""} onChange={e => updWall({ notes: e.target.value })} placeholder={cv(items, "notes") === undefined ? "Mixed" : ""} /></div>
                 <button style={S.del} onClick={delSel}>Delete {items.length} Walls</button>
               </>;
@@ -3636,12 +3874,12 @@ export default function TestfitTool() {
               const items = multiSelItems;
               const type = cv(items, "type");
               return <>
-                <div style={{ fontSize: 12, color: type ? ZONE_LIBRARY[type]?.color : "#9A9488", marginBottom: 10, fontWeight: 600 }}>{items.length} Zones Selected</div>
+                <div style={{ fontSize: 12, color: type ? zoneLibrary[type]?.color : "#9A9488", marginBottom: 10, fontWeight: 600 }}>{items.length} Zones Selected</div>
                 <div style={{ marginBottom: 8 }}><div style={S.lbl}>Type</div>
                   <select style={{ ...S.inp, padding: "6px 10px", fontSize: 10 }} value={type ?? ""}
-                    onChange={e => { const nt = e.target.value; const lib = ZONE_LIBRARY[nt]; updZone({ type: nt, label: lib.name }); }}>
+                    onChange={e => { const nt = e.target.value; const lib = zoneLibrary[nt]; updZone({ type: nt, label: lib.name }); }}>
                     {!type && <option value="">Mixed</option>}
-                    {Object.entries(ZONE_LIBRARY).map(([k, z]) => <option key={k} value={k}>{z.name}</option>)}
+                    {Object.entries(zoneLibrary).map(([k, z]) => <option key={k} value={k}>{z.name}</option>)}
                   </select>
                 </div>
                 <div style={{ marginBottom: 8 }}><div style={S.lbl}>Notes</div><textarea style={{ ...S.inp, height: 40, resize: "vertical" }} value={cv(items, "notes") ?? ""} onChange={e => updZone({ notes: e.target.value })} placeholder={cv(items, "notes") === undefined ? "Mixed" : ""} /></div>
@@ -3970,12 +4208,12 @@ export default function TestfitTool() {
                 {lightingType !== "light_sconce" && lightingType !== "sconce_prewire" && <div style={{ fontSize: 9, color: "#5A5448", marginTop: 3, fontStyle: "italic" }}>Ceiling mount · free placement</div>}
               </>;
             })()}
-            {mode === "zone" && tool === "zone" && (() => { const zt = ZONE_LIBRARY[activeZoneType]; return <>
+            {mode === "zone" && tool === "zone" && (() => { const zt = zoneLibrary[activeZoneType]; return <>
               <div style={{ fontSize: 12, color: zt.color, marginBottom: 10, fontWeight: 600 }}>{zt.name}</div>
               <div style={{ marginBottom: 8 }}><div style={S.lbl}>Type</div>
                 <select style={{ ...S.inp, padding: "6px 10px", fontSize: 10 }} value={activeZoneType}
                   onChange={e => setActiveZoneType(e.target.value)}>
-                  {Object.entries(ZONE_LIBRARY).map(([k, z]) => <option key={k} value={k}>{z.name}</option>)}
+                  {Object.entries(zoneLibrary).map(([k, z]) => <option key={k} value={k}>{z.name}</option>)}
                 </select>
               </div>
               <div style={{ marginBottom: 8 }}><div style={S.lbl}>Notes</div><textarea style={{ ...S.inp, height: 40, resize: "vertical" }} value={zoneNotes} onChange={e => setZoneNotes(e.target.value)} /></div>
@@ -4412,8 +4650,8 @@ export default function TestfitTool() {
           {/* ── Bottom Status Bar ────────────────────────────────────── */}
           <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, background: T.bg2, borderTop: "1px solid " + T.border, padding: "6px 16px", display: "flex", alignItems: "center", gap: 12, fontSize: 10, color: T.textDim, zIndex: 10 }}>
             {mode === "zone" && (
-              <span style={{ color: ZONE_LIBRARY[activeZoneType]?.color || "#5A5448", fontSize: 10, fontWeight: 500 }}>
-                {ZONE_LIBRARY[activeZoneType]?.name || "—"}
+              <span style={{ color: zoneLibrary[activeZoneType]?.color || "#5A5448", fontSize: 10, fontWeight: 500 }}>
+                {zoneLibrary[activeZoneType]?.name || "—"}
               </span>
             )}
             
@@ -4431,6 +4669,272 @@ export default function TestfitTool() {
         </div>
       </div>
     </div>
+
+    {/* ── Zone Library Settings Modal ──────────────────────────────── */}
+    {showSettings && <ZoneLibraryModal
+      zoneLibrary={zoneLibrary}
+      setZoneLibrary={setZoneLibrary}
+      onReset={() => { setZoneLibrary(ZONE_LIBRARY_DEFAULTS); localStorage.removeItem("testfit-zone-library"); }}
+      onClose={() => setShowSettings(false)}
+      T={T}
+    />}
+
+    {/* ── Version History Modal ────────────────────────────────────── */}
+    {showVersions && <VersionsModal
+      versions={versions}
+      setVersions={setVersions}
+      onSave={saveVersion}
+      onRestore={restoreVersion}
+      onClose={() => setShowVersions(false)}
+      T={T}
+    />}
     </TooltipProvider>
+  );
+}
+
+// ─── Zone Library Settings Modal ───────────────────────────────────────────────
+function ZoneLibraryModal({ zoneLibrary, setZoneLibrary, onReset, onClose, T }) {
+  const [expandedKey, setExpandedKey] = useState(null);
+
+  const updZone = (key, patch) =>
+    setZoneLibrary(prev => ({ ...prev, [key]: { ...prev[key], ...patch } }));
+
+  const updItem = (key, idx, patch) =>
+    setZoneLibrary(prev => {
+      const items = prev[key].items.map((it, i) => i === idx ? { ...it, ...patch } : it);
+      return { ...prev, [key]: { ...prev[key], items } };
+    });
+
+  const addItem = (key) =>
+    setZoneLibrary(prev => ({
+      ...prev,
+      [key]: { ...prev[key], items: [...prev[key].items, { name: "", qty: 1, unitCost: 0 }] },
+    }));
+
+  const removeItem = (key, idx) =>
+    setZoneLibrary(prev => ({
+      ...prev,
+      [key]: { ...prev[key], items: prev[key].items.filter((_, i) => i !== idx) },
+    }));
+
+  const addZoneType = () => {
+    const newKey = "custom_" + Date.now();
+    setZoneLibrary(prev => ({
+      ...prev,
+      [newKey]: { name: "New Zone", color: "#888888", defaultW: 12, defaultH: 10, recommendedSf: 120, items: [] },
+    }));
+    setExpandedKey(newKey);
+  };
+
+  const deleteZoneType = (key) => {
+    setZoneLibrary(prev => { const next = { ...prev }; delete next[key]; return next; });
+    setExpandedKey(null);
+  };
+
+  const inp = (extra = {}) => ({
+    background: T.bg2, border: "1px solid " + T.border, borderRadius: 4,
+    color: T.text, fontSize: 11, fontFamily: "inherit", padding: "3px 6px",
+    outline: "none", ...extra,
+  });
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 1000, display: "flex", alignItems: "flex-start", justifyContent: "center", paddingTop: 48, paddingBottom: 48, overflowY: "auto" }}>
+      <div style={{ background: T.bg1, border: "1px solid " + T.border, borderRadius: 10, width: 680, maxWidth: "95vw", boxShadow: "0 24px 64px rgba(0,0,0,0.4)", overflow: "hidden" }}>
+        {/* Header */}
+        <div style={{ display: "flex", alignItems: "center", padding: "14px 20px", borderBottom: "1px solid " + T.border, background: T.bg0 }}>
+          <span style={{ fontWeight: 600, fontSize: 14, color: T.textBright, flex: 1 }}>Zone Library</span>
+          <button onClick={onReset} style={{ ...inp(), marginRight: 8, cursor: "pointer", color: T.textMuted }}>Reset to defaults</button>
+          <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", color: T.textMuted, padding: 4 }}><X size={16} /></button>
+        </div>
+
+        {/* Zone list */}
+        <div style={{ maxHeight: "70vh", overflowY: "auto" }}>
+          {Object.entries(zoneLibrary).map(([key, zone]) => {
+            const isOpen = expandedKey === key;
+            const total = zone.items.reduce((s, i) => s + (i.qty || 0) * (i.unitCost || 0), 0);
+            return (
+              <div key={key} style={{ borderBottom: "1px solid " + T.border }}>
+                {/* Row header */}
+                <div
+                  onClick={() => setExpandedKey(isOpen ? null : key)}
+                  style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 20px", cursor: "pointer", background: isOpen ? T.bg2 : "transparent" }}
+                >
+                  <span style={{ color: T.textMuted, width: 14 }}>{isOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}</span>
+                  <input type="color" value={zone.color} onClick={e => e.stopPropagation()}
+                    onChange={e => updZone(key, { color: e.target.value })}
+                    style={{ width: 24, height: 24, border: "none", borderRadius: 4, cursor: "pointer", padding: 0, background: "none" }} />
+                  <input value={zone.name} onClick={e => e.stopPropagation()}
+                    onChange={e => updZone(key, { name: e.target.value })}
+                    style={{ ...inp(), flex: 1, fontWeight: 500 }} />
+                  <span style={{ fontSize: 10, color: T.textMuted, whiteSpace: "nowrap" }}>Rec. {zone.recommendedSf ?? "—"} sf</span>
+                  <span style={{ fontSize: 10, color: T.textMuted, whiteSpace: "nowrap" }}>${total.toLocaleString()} est.</span>
+                </div>
+
+                {/* Expanded detail */}
+                {isOpen && (
+                  <div style={{ padding: "12px 20px 16px 48px", background: T.bg0 }}>
+                    {/* Meta row */}
+                    <div style={{ display: "flex", gap: 12, marginBottom: 14, alignItems: "center", flexWrap: "wrap" }}>
+                      <label style={{ fontSize: 10, color: T.textMuted, display: "flex", alignItems: "center", gap: 6 }}>
+                        Rec. SF
+                        <input type="number" value={zone.recommendedSf ?? ""} onChange={e => {
+                          const newSf = Number(e.target.value);
+                          const ratio = (zone.defaultW || 1) / (zone.defaultH || 1);
+                          const newH = Math.round(Math.sqrt(newSf / ratio) * 10) / 10;
+                          const newW = Math.round(Math.sqrt(newSf * ratio) * 10) / 10;
+                          updZone(key, { recommendedSf: newSf, defaultW: newW, defaultH: newH });
+                        }} style={{ ...inp({ width: 64 }) }} />
+                      </label>
+                      <label style={{ fontSize: 10, color: T.textMuted, display: "flex", alignItems: "center", gap: 6 }}>
+                        Default W (ft)
+                        <input type="number" value={zone.defaultW} onChange={e => updZone(key, { defaultW: Number(e.target.value) })} style={{ ...inp({ width: 64 }) }} />
+                      </label>
+                      <label style={{ fontSize: 10, color: T.textMuted, display: "flex", alignItems: "center", gap: 6 }}>
+                        Default H (ft)
+                        <input type="number" value={zone.defaultH} onChange={e => updZone(key, { defaultH: Number(e.target.value) })} style={{ ...inp({ width: 64 }) }} />
+                      </label>
+                    </div>
+
+                    {/* FF&E items table */}
+                    <div style={{ fontSize: 10, color: T.textMuted, marginBottom: 6, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em" }}>FF&amp;E / Budget Items</div>
+                    {zone.items.length > 0 && (
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 56px 80px 28px", gap: 4, marginBottom: 6, fontSize: 10, color: T.textMuted, paddingRight: 4 }}>
+                        <span>Item</span><span style={{ textAlign: "center" }}>Qty</span><span style={{ textAlign: "right" }}>$/unit</span><span />
+                      </div>
+                    )}
+                    {zone.items.map((item, idx) => (
+                      <div key={idx} style={{ display: "grid", gridTemplateColumns: "1fr 56px 80px 28px", gap: 4, marginBottom: 4 }}>
+                        <input value={item.name} onChange={e => updItem(key, idx, { name: e.target.value })} placeholder="Item name" style={inp({ width: "100%" })} />
+                        <input type="number" value={item.qty} onChange={e => updItem(key, idx, { qty: Number(e.target.value) })} style={{ ...inp({ textAlign: "center" }) }} />
+                        <input type="number" value={item.unitCost} onChange={e => updItem(key, idx, { unitCost: Number(e.target.value) })} style={{ ...inp({ textAlign: "right" }) }} />
+                        <button onClick={() => removeItem(key, idx)} style={{ background: "none", border: "none", cursor: "pointer", color: T.textMuted, padding: 2, display: "flex", alignItems: "center" }}>
+                          <Trash2 size={12} />
+                        </button>
+                      </div>
+                    ))}
+                    <button onClick={() => addItem(key)} style={{ ...inp(), cursor: "pointer", marginTop: 4, color: T.textMuted, display: "flex", alignItems: "center", gap: 4 }}>
+                      <Plus size={11} /> Add item
+                    </button>
+
+                    {/* Delete zone type */}
+                    <div style={{ marginTop: 14, paddingTop: 12, borderTop: "1px solid " + T.border }}>
+                      <button onClick={() => deleteZoneType(key)}
+                        style={{ ...inp(), cursor: "pointer", color: "#E05050", display: "flex", alignItems: "center", gap: 4 }}>
+                        <Trash2 size={11} /> Delete zone type
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Footer */}
+        <div style={{ padding: "12px 20px", borderTop: "1px solid " + T.border, background: T.bg0 }}>
+          <button onClick={addZoneType} style={{ ...inp(), cursor: "pointer", color: T.accent, display: "flex", alignItems: "center", gap: 6, fontWeight: 500 }}>
+            <Plus size={13} /> Add zone type
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Version History Modal ─────────────────────────────────────────────────────
+function VersionsModal({ versions, setVersions, onSave, onRestore, onClose, T }) {
+  const [saveName, setSaveName] = useState("");
+
+  const overlay = {
+    position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", zIndex: 1000,
+    display: "flex", alignItems: "center", justifyContent: "center",
+  };
+  const panel = {
+    background: T.bg1, border: "1px solid " + T.border, borderRadius: 12,
+    width: 520, maxHeight: "80vh", display: "flex", flexDirection: "column",
+    boxShadow: "0 24px 64px rgba(0,0,0,0.5)",
+  };
+  const inp = (extra = {}) => ({
+    background: T.bg2, border: "1px solid " + T.border, borderRadius: 6,
+    color: T.textBright, fontFamily: "inherit", fontSize: 11, padding: "7px 10px",
+    outline: "none", ...extra,
+  });
+
+  const fmt = (ts) => {
+    const d = new Date(ts);
+    return d.toLocaleDateString() + " " + d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  };
+
+  const handleSave = () => {
+    const name = saveName.trim() || "Snapshot " + new Date().toLocaleDateString();
+    onSave(name);
+    setSaveName("");
+  };
+
+  return (
+    <div style={overlay} onClick={e => e.target === e.currentTarget && onClose()}>
+      <div style={panel}>
+        {/* Header */}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "16px 20px", borderBottom: "1px solid " + T.border }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <History size={15} color={T.accent} />
+            <span style={{ fontSize: 14, fontWeight: 600, color: T.textBright }}>Version History</span>
+          </div>
+          <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", color: T.textMuted, padding: 4, borderRadius: 4 }}><X size={16} /></button>
+        </div>
+
+        {/* Save new version */}
+        <div style={{ padding: "14px 20px", borderBottom: "1px solid " + T.border, display: "flex", gap: 8 }}>
+          <input
+            style={{ ...inp(), flex: 1 }}
+            placeholder='Name this version, e.g. "Schematic Design"'
+            value={saveName}
+            onChange={e => setSaveName(e.target.value)}
+            onKeyDown={e => e.key === "Enter" && handleSave()}
+          />
+          <button
+            onClick={handleSave}
+            style={{ padding: "7px 14px", background: T.accent + "22", border: "1px solid " + T.accent + "55", borderRadius: 6, color: T.accent, fontSize: 11, cursor: "pointer", fontFamily: "inherit", fontWeight: 500, whiteSpace: "nowrap" }}
+          >
+            Save snapshot
+          </button>
+        </div>
+
+        {/* Version list */}
+        <div style={{ flex: 1, overflowY: "auto", padding: "8px 0" }}>
+          {versions.length === 0 && (
+            <div style={{ padding: "32px 20px", textAlign: "center", color: T.textFaint, fontSize: 11, fontStyle: "italic" }}>
+              No versions saved yet. Save a snapshot to track a milestone.
+            </div>
+          )}
+          {[...versions].reverse().map((v, i) => (
+            <div key={v.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 20px", borderBottom: "1px solid " + T.border + "44" }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 12, fontWeight: 600, color: T.textBright, marginBottom: 2 }}>{v.name}</div>
+                <div style={{ fontSize: 10, color: T.textFaint }}>{fmt(v.ts)}</div>
+              </div>
+              <button
+                onClick={() => { if (window.confirm(`Restore "${v.name}"? Current unsaved changes will be lost.`)) onRestore(v); }}
+                style={{ padding: "5px 10px", background: "transparent", border: "1px solid " + T.border, borderRadius: 5, color: T.textMuted, fontSize: 10, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" }}
+              >
+                Restore
+              </button>
+              <button
+                onClick={() => setVersions(prev => prev.filter(x => x.id !== v.id))}
+                style={{ background: "none", border: "none", cursor: "pointer", color: T.textFaint, padding: 4, borderRadius: 4 }}
+              >
+                <X size={13} />
+              </button>
+            </div>
+          ))}
+        </div>
+
+        {versions.length > 0 && (
+          <div style={{ padding: "10px 20px", borderTop: "1px solid " + T.border, fontSize: 10, color: T.textFaint }}>
+            {versions.length} snapshot{versions.length !== 1 ? "s" : ""} saved
+          </div>
+        )}
+      </div>
+    </div>
   );
 }

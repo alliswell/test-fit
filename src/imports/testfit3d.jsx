@@ -11,11 +11,9 @@ const WALL_KINDS = {
   pony:     { label: "Pony",     color: "#C8A060", thickness: 3.5 },
 };
 
-const ZONE_COLORS = {
-  entry: "#8B7355", softseating: "#8B6914", cafe: "#8B4513", kitchen: "#704214",
-  clubroom: "#2B4570", library: "#2D5F2D", outdoor: "#556B2F", banquet: "#6B3A6B",
-  ops: "#5A5A5A", itcloset: "#3A5A7A", restroom: "#4A7A9A", storage: "#6A5A4A",
-};
+// Zone colors come from the editable zoneLibrary prop passed by TestFit3D.
+const zoneColor = (zone, zoneLibrary) =>
+  zoneLibrary?.[zone.type]?.color ?? zone.paintColor ?? "#8B7355";
 
 const DOOR_HEIGHT_FT = 7;   // standard door height; masthead fills above
 // Wall-mounted markers are centered at the wall centerline in world space.
@@ -579,8 +577,8 @@ function Marker3D({ marker, cx, cz, pxPerFoot, ceilingHeight, onSelect, isSelect
 }
 
 // ─── Zone labels ──────────────────────────────────────────────────────────────
-function ZoneLabel3D({ zone, cx, cz, pxPerFoot }) {
-  const color = ZONE_COLORS[zone.type] ?? "#8B7355";
+function ZoneLabel3D({ zone, cx, cz, pxPerFoot, zoneLibrary }) {
+  const color = zoneColor(zone, zoneLibrary);
   let worldX, worldZ, sf;
   if (zone.points && zone.points.length >= 3) {
     const c = polyCentroid(zone.points); worldX = (c.x - cx) / pxPerFoot; worldZ = (c.y - cz) / pxPerFoot;
@@ -626,7 +624,7 @@ function DimLine3D({ dim, cx, cz, pxPerFoot }) {
 }
 
 // ─── Zone floor ───────────────────────────────────────────────────────────────
-function ZoneFloor({ zone, cx, cz, pxPerFoot }) {
+function ZoneFloor({ zone, cx, cz, pxPerFoot, zoneLibrary }) {
   const geo = useMemo(() => {
     const toSX = sx =>  (sx - cx) / pxPerFoot;
     const toSY = sy => -((sy - cz) / pxPerFoot);
@@ -644,16 +642,16 @@ function ZoneFloor({ zone, cx, cz, pxPerFoot }) {
   if (!geo) return null;
   return (
     <mesh geometry={geo} rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.05, 0]}>
-      <meshLambertMaterial color={ZONE_COLORS[zone.type] ?? zone.paintColor ?? "#8B7355"} transparent opacity={0.4} depthWrite={false} side={THREE.DoubleSide} />
+      <meshLambertMaterial color={zoneColor(zone, zoneLibrary)} transparent opacity={0.4} depthWrite={false} side={THREE.DoubleSide} />
     </mesh>
   );
 }
 
-function FloorPlane({ zones, cx, cz, pxPerFoot, T }) {
+function FloorPlane({ zones, cx, cz, pxPerFoot, T, zoneLibrary }) {
   return (
     <group>
       <mesh rotation={[-Math.PI / 2, 0, 0]}><planeGeometry args={[500, 500]} /><meshLambertMaterial color={T.canvas} /></mesh>
-      {zones.map(z => <ZoneFloor key={z.id} zone={z} cx={cx} cz={cz} pxPerFoot={pxPerFoot} />)}
+      {zones.map(z => <ZoneFloor key={z.id} zone={z} cx={cx} cz={cz} pxPerFoot={pxPerFoot} zoneLibrary={zoneLibrary} />)}
     </group>
   );
 }
@@ -690,6 +688,7 @@ export default function TestFit3D({
   selectedId, selType, mode = "build",
   show3dLabels, setShow3dLabels,
   show3dDims,   setShow3dDims,
+  zoneLibrary = {},
 }) {
   const safeSelect = (id, type) => { if ((MODE_SELECT[mode] ?? new Set()).has(type)) onSelect(id, type); };
 
@@ -722,12 +721,12 @@ export default function TestFit3D({
         <OrbitControls ref={controlsRef} enableDamping dampingFactor={0.08} zoomSpeed={0.5} minPolarAngle={0} maxPolarAngle={Math.PI / 2 - 0.04} target={[0, 0, 0]} />
         <CameraRig camDist={camDist} controlsRef={controlsRef} />
 
-        <FloorPlane zones={zones} cx={cx} cz={cz} pxPerFoot={pxPerFoot} T={T} />
+        <FloorPlane zones={zones} cx={cx} cz={cz} pxPerFoot={pxPerFoot} T={T} zoneLibrary={zoneLibrary} />
         <Grid args={[500, 500]} cellSize={1} sectionSize={10} cellColor={gridCell} sectionColor={gridSec} position={[0, 0.002, 0]} fadeDistance={120} fadeStrength={1.5} />
 
         {walls.map(w => (
           <Wall3D key={w.id} w={w} nodes={nodes} doors={doors} windows={windows}
-            cx={cx} cz={cz} pxPerFoot={pxPerFoot} ceilingHeight={ceilingHeight}
+            cx={cx} cz={cz} pxPerFoot={pxPerFoot} ceilingHeight={w.ceilingHeight ?? ceilingHeight}
             onSelect={safeSelect} selectedId={selectedId} selType={selType} showDims={show3dDims} />
         ))}
         {columns.map(col => (
@@ -738,7 +737,7 @@ export default function TestFit3D({
           <Marker3D key={m.id} marker={m} cx={cx} cz={cz} pxPerFoot={pxPerFoot} ceilingHeight={ceilingHeight}
             onSelect={safeSelect} isSelected={selectedId === m.id && selType === "marker"} />
         ))}
-        {show3dLabels && zones.map(z => <ZoneLabel3D key={z.id} zone={z} cx={cx} cz={cz} pxPerFoot={pxPerFoot} />)}
+        {show3dLabels && zones.map(z => <ZoneLabel3D key={z.id} zone={z} cx={cx} cz={cz} pxPerFoot={pxPerFoot} zoneLibrary={zoneLibrary} />)}
         {show3dDims   && dims.map(d =>  <DimLine3D  key={d.id} dim={d}  cx={cx} cz={cz} pxPerFoot={pxPerFoot} />)}
       </Canvas>
     </div>
