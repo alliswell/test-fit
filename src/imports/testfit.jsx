@@ -200,6 +200,23 @@ const WALL_MATERIAL_HATCHES = {
 
 const uid = () => Math.random().toString(36).slice(2, 10);
 const sn = (v, g) => Math.round(v / g) * g;
+
+// Smart guide snapping — returns snapped {x,y} and guide lines to draw
+const GUIDE_THRESH = 7; // canvas px; ~4" at default scale
+function applySmartGuides(x, y, targets) {
+  let sx = x, sy = y;
+  const guides = [];
+  let bestDX = GUIDE_THRESH + 1, bestDY = GUIDE_THRESH + 1;
+  let vRef = null, hRef = null;
+  for (const t of targets) {
+    const dx = Math.abs(t.x - x), dy = Math.abs(t.y - y);
+    if (dx < bestDX) { bestDX = dx; sx = t.x; vRef = t; }
+    if (dy < bestDY) { bestDY = dy; sy = t.y; hRef = t; }
+  }
+  if (bestDX <= GUIDE_THRESH && vRef) guides.push({ axis: 'v', pos: sx, a: Math.min(y, vRef.y), b: Math.max(y, vRef.y) });
+  if (bestDY <= GUIDE_THRESH && hRef) guides.push({ axis: 'h', pos: sy, a: Math.min(x, hRef.x), b: Math.max(x, hRef.x) });
+  return { x: sx, y: sy, guides };
+}
 const parseDimInput = (str, ppf) => {
   if (!str) return null;
   const s = str.trim();
@@ -440,6 +457,7 @@ export default function TestfitTool() {
   const [zoom, setZoom] = useState(1);
   const [hoverNid, setHoverNid] = useState(null);
   const [ghostPos, setGhostPos] = useState(null);
+  const [smartGuides, setSmartGuides] = useState([]);
 
   // Dynamic snap grid: 1" at 300%+, 3" at 150%+, 1' otherwise
   const snapGrid = zoom >= 3 ? pxPerFoot / 12 : zoom >= 1.5 ? pxPerFoot / 4 : pxPerFoot;
@@ -1233,8 +1251,22 @@ export default function TestfitTool() {
       }
       const near = findNear(sx, sy, drawChain?.lastNodeId ? [drawChain.lastNodeId] : []);
       const wallSnap2 = !near ? snapToWall(sx, sy, SNAP_R) : null;
-      const cpx = near ? near.x : wallSnap2 ? wallSnap2.x : sx;
-      const cpy = near ? near.y : wallSnap2 ? wallSnap2.y : sy;
+      let cpx = near ? near.x : wallSnap2 ? wallSnap2.x : sx;
+      let cpy = near ? near.y : wallSnap2 ? wallSnap2.y : sy;
+      // Smart guides while drawing — only when not already snapping to a node or wall
+      if (!near && !wallSnap2 && drawChain) {
+        const excludeId = drawChain.lastNodeId;
+        const wallGuideTargets = [
+          ...nodes.filter(n => n.id !== excludeId).map(n => ({ x: n.x, y: n.y })),
+          ...doors.map(d => ({ x: d.x, y: d.y })),
+          ...windows.map(w => ({ x: w.x, y: w.y })),
+        ];
+        const g = applySmartGuides(cpx, cpy, wallGuideTargets);
+        cpx = g.x; cpy = g.y;
+        setSmartGuides(g.guides);
+      } else {
+        setSmartGuides([]);
+      }
       setCursorPos({ x: cpx, y: cpy, snap: !!(near || wallSnap2) });
       setHoverNid(near ? near.id : null);
       return;
@@ -1316,6 +1348,20 @@ export default function TestfitTool() {
     }
 
     if (drag) {
+      // Build smart-guide target list — all element centers except the one(s) being dragged
+      const _dragIds = new Set(
+        drag.type === "multi" ? drag.objects.map(o => o.id)
+        : drag.type === "wall" ? [walls.find(w => w.id === drag.id)?.n1, walls.find(w => w.id === drag.id)?.n2].filter(Boolean)
+        : [drag.id]
+      );
+      const _guideTargets = [
+        ...nodes.filter(n => !_dragIds.has(n.id)).map(n => ({ x: n.x, y: n.y })),
+        ...doors.filter(d => !_dragIds.has(d.id)).map(d => ({ x: d.x, y: d.y })),
+        ...windows.filter(w => !_dragIds.has(w.id)).map(w => ({ x: w.x, y: w.y })),
+        ...columns.filter(c => !_dragIds.has(c.id)).map(c => ({ x: c.x, y: c.y })),
+        ...markers.filter(m => !_dragIds.has(m.id)).map(m => ({ x: m.x, y: m.y })),
+      ];
+
       if (drag.type === "multi") {
         // Multi-object drag
         const dx = sn(pos.x, snapGrid) - sn(drag.lastX, snapGrid);
@@ -1345,7 +1391,12 @@ export default function TestfitTool() {
         }
       } else if (drag.type === "node") {
         const near = findNear(sx, sy, [drag.id]);
-        const newNodeX = near ? near.x : sx, newNodeY = near ? near.y : sy;
+        let newNodeX = near ? near.x : sx, newNodeY = near ? near.y : sy;
+        if (!near) {
+          const g = applySmartGuides(newNodeX, newNodeY, _guideTargets);
+          newNodeX = g.x; newNodeY = g.y;
+          setSmartGuides(g.guides);
+        } else { setSmartGuides([]); }
         setNodes(prev => prev.map(n => n.id === drag.id ? { ...n, x: newNodeX, y: newNodeY } : n));
         setHoverNid(near ? near.id : null);
         // Reposition attached doors/windows along their walls
@@ -1444,23 +1495,36 @@ export default function TestfitTool() {
         if (isWallOutlet) {
           const snap = snapToWall(pos.x, pos.y, Infinity);
           if (snap) setMarkers(p => p.map(x => x.id === drag.id ? { ...x, x: snap.x, y: snap.y, angle: snap.angle * Math.PI / 180 } : x));
+          setSmartGuides([]);
         } else {
-          setMarkers(p => p.map(x => x.id === drag.id ? { ...x, x: sn(pos.x - drag.ox, snapGrid), y: sn(pos.y - drag.oy, snapGrid) } : x));
+          const rawX = sn(pos.x - drag.ox, snapGrid), rawY = sn(pos.y - drag.oy, snapGrid);
+          const g = applySmartGuides(rawX, rawY, _guideTargets);
+          setSmartGuides(g.guides);
+          setMarkers(p => p.map(x => x.id === drag.id ? { ...x, x: g.x, y: g.y } : x));
         }
       }
       else if (drag.type === "door") {
         const rawX = sn(pos.x - drag.ox, snapGrid), rawY = sn(pos.y - drag.oy, snapGrid);
         const snap = snapToWall(pos.x - drag.ox, pos.y - drag.oy);
-        if (snap) setDoors(p => p.map(d => d.id === drag.id ? { ...d, x: snap.x, y: snap.y, angle: snap.angle } : d));
-        else setDoors(p => p.map(d => d.id === drag.id ? { ...d, x: rawX, y: rawY } : d));
+        const fx = snap ? snap.x : rawX, fy = snap ? snap.y : rawY;
+        setDoors(p => p.map(d => d.id === drag.id ? { ...d, x: fx, y: fy, ...(snap ? { angle: snap.angle } : {}) } : d));
+        const g = applySmartGuides(fx, fy, _guideTargets);
+        setSmartGuides(g.guides);
       }
       else if (drag.type === "window") {
         const rawX = sn(pos.x - drag.ox, snapGrid), rawY = sn(pos.y - drag.oy, snapGrid);
         const snap = snapToWall(pos.x - drag.ox, pos.y - drag.oy);
-        if (snap) setWindows(p => p.map(w => w.id === drag.id ? { ...w, x: snap.x, y: snap.y, angle: snap.angle } : w));
-        else setWindows(p => p.map(w => w.id === drag.id ? { ...w, x: rawX, y: rawY } : w));
+        const fx = snap ? snap.x : rawX, fy = snap ? snap.y : rawY;
+        setWindows(p => p.map(w => w.id === drag.id ? { ...w, x: fx, y: fy, ...(snap ? { angle: snap.angle } : {}) } : w));
+        const g = applySmartGuides(fx, fy, _guideTargets);
+        setSmartGuides(g.guides);
       }
-      else if (drag.type === "column") { setColumns(p => p.map(c => c.id === drag.id ? { ...c, x: sn(pos.x - drag.ox, snapGrid), y: sn(pos.y - drag.oy, snapGrid) } : c)); }
+      else if (drag.type === "column") {
+        const rawX = sn(pos.x - drag.ox, snapGrid), rawY = sn(pos.y - drag.oy, snapGrid);
+        const g = applySmartGuides(rawX, rawY, _guideTargets);
+        setSmartGuides(g.guides);
+        setColumns(p => p.map(c => c.id === drag.id ? { ...c, x: g.x, y: g.y } : c));
+      }
       else if (drag.type === "dim") {
         // Dragging the dim line adjusts offset (perpendicular distance from p1-p2 line)
         const dim = dims.find(x => x.id === drag.id);
@@ -1491,7 +1555,7 @@ export default function TestfitTool() {
         return { ...z, x, y, w, h };
       }));
     }
-  }, [panning, panSt, drawChain, drag, resize, s2c, findNear, findDimSnap, walls, wc, tool, snapToWall, snapGrid, marquee, calibrationLine, dims, drawDim, zones, zoom, rotatingMarker, outletType, lightingType, htrackAngle]);
+  }, [panning, panSt, drawChain, drag, resize, s2c, findNear, findDimSnap, walls, wc, tool, snapToWall, snapGrid, marquee, calibrationLine, dims, drawDim, zones, zoom, rotatingMarker, outletType, lightingType, htrackAngle, nodes, doors, windows, columns, markers]);
 
   const onUp = useCallback((e) => {
     // Finish marquee selection
@@ -1582,7 +1646,7 @@ export default function TestfitTool() {
       setSelectedId(tgt); setSelType("node");
     }
     // No re-clipping on zone drag/vertex drag end — user controls shape manually
-    setDrag(null); setResize(null); setPanning(false); setPanSt(null); setHoverNid(null); setRotatingMarker(null);
+    setDrag(null); setResize(null); setPanning(false); setPanSt(null); setHoverNid(null); setRotatingMarker(null); setSmartGuides([]);
   }, [drag, resize, hoverNid, marquee, selectedIds, selectedId, mode, nodes, walls, doors, windows, zones, markers]);
 
   // Smooth zoom centered on cursor
@@ -3143,6 +3207,19 @@ export default function TestfitTool() {
                 const previewDim = { x1: drawDim.x1, y1: drawDim.y1, x2: drawDim.x2, y2: drawDim.y2, offset: off2 };
                 return <g style={{ pointerEvents: "none", opacity: 0.7 }}>
                   <DimString d={previewDim} sel={false} />
+                </g>;
+              })()}
+
+              {/* Smart guides */}
+              {smartGuides.length > 0 && (() => {
+                const pad = 40;
+                return <g style={{ pointerEvents: "none" }}>
+                  {smartGuides.map((g, i) => g.axis === 'v'
+                    ? <line key={i} x1={g.pos} y1={g.a - pad} x2={g.pos} y2={g.b + pad}
+                        stroke="#FF40FF" strokeWidth={1 / zoom} opacity={0.85} />
+                    : <line key={i} x1={g.a - pad} y1={g.pos} x2={g.b + pad} y2={g.pos}
+                        stroke="#FF40FF" strokeWidth={1 / zoom} opacity={0.85} />
+                  )}
                 </g>;
               })()}
 
