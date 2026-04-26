@@ -296,19 +296,27 @@ const THEMES = {
     delBg: "#6B2020", delText: "#FFB0B0",
     dimText: "#E8E0D055", wallNode: "#E8E0D0",
     crosshairColor: "%23E8E0D0",
+    // UI accent colors (sidebar/panel text — distinct from canvas marker colors)
+    uiLighting: "#E8D070", uiElec: "#50C878", uiDoor: "#C8A060",
+    uiSwitch: "#C8A060", uiBudget: "#E8C840", uiPanel: "#E05050",
+    uiConduit: "#E0A050", uiPrewire: "#C87840",
   },
   light: {
-    bg0: "#F5F0E8", bg1: "#EDE8DF", bg2: "#E5E0D6", bg3: "#DBD6CC", border: "#C8C0B0",
-    text: "#4A4538", textBright: "#2A2520", textMuted: "#8A8478", textDim: "#A09888", textFaint: "#B8B0A0",
-    accent: "#6A6458", accentDim: "#9A9488",
-    canvas: "#F5F0E8", gridMajor: "#C8C0B020", gridMinor: "#A0988810", gridSub: "#C8C0B0",
-    nodeStroke: "#F5F0E8", nodeFill: "#2A2520",
-    selBg: "#C8C0B040", selBorder: "#B8B0A0",
-    panelBg: "#EDE8DFF2", panelShadow: "0 8px 24px rgba(0,0,0,0.08)",
-    toolbarBg: "#EDE8DFEE", toolbarShadow: "0 8px 24px rgba(0,0,0,0.08)",
-    delBg: "#E8C0C0", delText: "#8B2020",
-    dimText: "#2A252055", wallNode: "#2A2520",
-    crosshairColor: "%232A2520",
+    bg0: "#EEE7DC", bg1: "#E7DFD3", bg2: "#DDD5C8", bg3: "#D3CBBE", border: "#BDB5A5",
+    text: "#3A342C", textBright: "#1C1810", textMuted: "#7A7268", textDim: "#9A9285", textFaint: "#B0A898",
+    accent: "#5A5248", accentDim: "#8A8278",
+    canvas: "#EEE7DC", gridMajor: "#BDB5A520", gridMinor: "#9A928510", gridSub: "#BDB5A5",
+    nodeStroke: "#EEE7DC", nodeFill: "#1C1810",
+    selBg: "#BDB5A540", selBorder: "#A89E8E",
+    panelBg: "#E7DFD3F5", panelShadow: "0 8px 24px rgba(0,0,0,0.10)",
+    toolbarBg: "#E7DFD3F0", toolbarShadow: "0 8px 24px rgba(0,0,0,0.10)",
+    delBg: "#DEB8B8", delText: "#7A1A1A",
+    dimText: "#1C181055", wallNode: "#1C1810",
+    crosshairColor: "%231C1810",
+    // UI accent colors — darkened for legibility on warm light background
+    uiLighting: "#7A6010", uiElec: "#1A6E3A", uiDoor: "#7A5518",
+    uiSwitch: "#7A5518", uiBudget: "#8A6A10", uiPanel: "#B02020",
+    uiConduit: "#8A5A10", uiPrewire: "#7A4818",
   }
 };
 
@@ -2036,14 +2044,14 @@ export default function TestfitTool() {
     return <g style={{ cursor: tool === "select" ? "pointer" : "inherit" }}>
       <circle cx={d.x} cy={d.y} r={wpx / 2 + 8} fill="transparent" />
       {isCaseOpening ? <>
-        <line x1={d.x - wdx * wpx / 2} y1={d.y - wdy * wpx / 2} x2={d.x + wdx * wpx / 2} y2={d.y + wdy * wpx / 2} stroke={sel ? T.nodeFill : "#C8A06080"} strokeWidth={2} strokeDasharray="4 3" />
-        <circle cx={d.x - wdx * wpx / 2} cy={d.y - wdy * wpx / 2} r={2.5} fill={sel ? T.nodeFill : "#C8A060"} />
-        <circle cx={d.x + wdx * wpx / 2} cy={d.y + wdy * wpx / 2} r={2.5} fill={sel ? T.nodeFill : "#C8A060"} />
+        <line x1={d.x - wdx * wpx / 2} y1={d.y - wdy * wpx / 2} x2={d.x + wdx * wpx / 2} y2={d.y + wdy * wpx / 2} stroke={sel ? T.nodeFill : T.uiDoor + "80"} strokeWidth={2} strokeDasharray="4 3" />
+        <circle cx={d.x - wdx * wpx / 2} cy={d.y - wdy * wpx / 2} r={2.5} fill={sel ? T.nodeFill : T.uiDoor} />
+        <circle cx={d.x + wdx * wpx / 2} cy={d.y + wdy * wpx / 2} r={2.5} fill={sel ? T.nodeFill : T.uiDoor} />
       </> : <>
-        <line x1={hx} y1={hy} x2={ex} y2={ey} stroke={sel ? T.nodeFill : "#C8A060"} strokeWidth={2} />
+        <line x1={hx} y1={hy} x2={ex} y2={ey} stroke={sel ? T.nodeFill : T.uiDoor} strokeWidth={2} />
         <path d={`M ${fx} ${fy} A ${wpx} ${wpx} 0 0 ${sweep} ${ex} ${ey}`}
-          fill="none" stroke={sel ? T.nodeFill : "#C8A06088"} strokeWidth={1} strokeDasharray="4 2" />
-        <circle cx={hx} cy={hy} r={3} fill={sel ? T.nodeFill : "#C8A060"} />
+          fill="none" stroke={sel ? T.nodeFill : T.uiDoor + "88"} strokeWidth={1} strokeDasharray="4 2" />
+        <circle cx={hx} cy={hy} r={3} fill={sel ? T.nodeFill : T.uiDoor} />
       </>}
     </g>;
   };
@@ -2082,11 +2090,19 @@ export default function TestfitTool() {
   };
 
   // Marker Symbol SVG: custom symbols for IT/MEP markers
+  // Maps bright "schematic" colors to readable equivalents in light mode
+  const uiColor = (c) => themeMode === 'dark' ? c : ({
+    '#E8D070': T.uiLighting, '#C8A060': T.uiDoor, '#E0A050': T.uiConduit,
+    '#C87840': T.uiPrewire,  '#50C878': T.uiElec,  '#E05050': T.uiPanel,
+    '#E8C840': T.uiBudget,   '#60B0E0': '#2060A0',  '#4080E0': '#1A50A0',
+  }[c] ?? c);
+
   const MarkerSymbol = ({ marker, selected }) => {
     const compData = SPEC_COMPONENTS[marker.layer]?.[marker.componentType];
     if (!compData) return null;
-    
-    const { symbol, color, letter } = compData;
+
+    const { symbol, letter } = compData;
+    const color = uiColor(compData.color);
     const r = selected ? 11 : 9;
     const strokeW = selected ? 2.5 : 1.5;
     
@@ -2232,7 +2248,7 @@ export default function TestfitTool() {
     build: { label: "1 · Build", color: "#9A9488" },
     zone: { label: "2 · Zone", color: "#50A070" },
     itmep: { label: "3 · IT / MEP", color: "#4080E0" },
-    budget: { label: "4 · Budget", color: "#E8C840" },
+    budget: { label: "4 · Budget", color: T.uiBudget },
   };
 
   const S = {
@@ -2313,11 +2329,11 @@ export default function TestfitTool() {
     sec: { marginBottom: "14px" },
     sh: { fontSize: "10px", color: T.textMuted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: "8px", fontWeight: 600 },
     smBtn: { padding: "5px 9px", background: "transparent", color: T.accent, border: "1.5px solid " + T.bg3, borderRadius: "5px", cursor: "pointer", fontSize: "10px", fontFamily: "inherit", transition: "all 0.15s ease", fontWeight: 500 },
-    bg: { position: "absolute", bottom: "56px", left: "16px", display: "flex", gap: "8px", alignItems: "center", background: T.panelBg, border: "1px solid " + T.border, borderRadius: "6px", padding: "6px 12px", zIndex: 10, fontSize: "10px", backdropFilter: "blur(12px)", boxShadow: T.panelShadow },
+    bg: { position: "absolute", bottom: "108px", left: "16px", display: "flex", gap: "8px", alignItems: "center", background: T.panelBg, border: "1px solid " + T.border, borderRadius: "6px", padding: "6px 12px", zIndex: 10, fontSize: "10px", backdropFilter: "blur(12px)", boxShadow: T.panelShadow },
     floatingToolbar: {
       position: "absolute",
       left: "50%",
-      bottom: "70px",
+      bottom: "36px",
       transform: "translateX(-50%)",
       display: "flex",
       flexDirection: "row",
@@ -2422,7 +2438,7 @@ export default function TestfitTool() {
                     />
                   </div>
                   <button 
-                    style={{ ...S.inp, cursor: "pointer", textAlign: "center", color: "#E0A050", fontSize: 10, fontWeight: 500, marginBottom: 6 }}
+                    style={{ ...S.inp, cursor: "pointer", textAlign: "center", color: T.uiConduit, fontSize: 10, fontWeight: 500, marginBottom: 6 }}
                     onClick={() => {
                       const feet = parseFloat(calibrationFeet);
                       if (feet > 0 && calibrationLine.p1 && calibrationLine.p2) {
@@ -2480,7 +2496,7 @@ export default function TestfitTool() {
                     if (!compData) return;
                     const isLighting = m.componentType?.startsWith("light_") || m.componentType?.startsWith("htrack_") || m.componentType === "sconce_prewire" || m.componentType === "pendent_prewire";
                     const key = m.componentType + (m.isNew ? "_new" : "_ab");
-                    if (!groups[key]) groups[key] = { name: compData.name, isNew: !!m.isNew, isLighting, color: isLighting ? "#E8D070" : "#50C878", ids: [] };
+                    if (!groups[key]) groups[key] = { name: compData.name, isNew: !!m.isNew, isLighting, color: isLighting ? T.uiLighting : T.uiElec, ids: [] };
                     groups[key].ids.push(m.id);
                   });
 
@@ -2544,16 +2560,16 @@ export default function TestfitTool() {
                 <div style={S.sh}>Component Layers</div>
                 {Object.entries(SPEC_LAYERS).filter(([k]) => k !== "power").map(([k, l]) => <div key={k} style={{
                   ...S.lr, 
-                  background: activeSpecLayer === k ? l.color + "20" : "transparent",
-                  border: activeSpecLayer === k ? "2px solid " + l.color + "60" : "2px solid transparent",
+                  background: activeSpecLayer === k ? uiColor(l.color) + "20" : "transparent",
+                  border: activeSpecLayer === k ? "2px solid " + uiColor(l.color) + "60" : "2px solid transparent",
                   borderRadius: "6px",
                   padding: "8px 6px",
                   margin: "2px 0",
                   transition: "all 0.15s ease"
                 }} onClick={() => { setActiveSpecLayer(k); const firstComp = Object.keys(SPEC_COMPONENTS[k])[0]; setActiveComponentType(firstComp); setT("marker"); }}>
-                  <div style={S.chk(visibleLayers[k], l.color)} onClick={e => { e.stopPropagation(); setVisibleLayers(v => ({ ...v, [k]: !v[k] })); }}>{visibleLayers[k] && "✓"}</div>
+                  <div style={S.chk(visibleLayers[k], uiColor(l.color))} onClick={e => { e.stopPropagation(); setVisibleLayers(v => ({ ...v, [k]: !v[k] })); }}>{visibleLayers[k] && "✓"}</div>
                   <span style={{ color: activeSpecLayer === k ? T.textBright : T.accent, flex: 1, fontWeight: activeSpecLayer === k ? 600 : 400 }}>{l.name}</span>
-                  <span style={{ color: activeSpecLayer === k ? l.color : T.accentDim, fontSize: 10, fontWeight: 500 }}>{markers.filter(p => p.layer === k).length}</span>
+                  <span style={{ color: activeSpecLayer === k ? uiColor(l.color) : T.accentDim, fontSize: 10, fontWeight: 500 }}>{markers.filter(p => p.layer === k).length}</span>
                 </div>)}
               </div>
               <div style={S.sec}>
@@ -2644,7 +2660,7 @@ export default function TestfitTool() {
                 })}
                 {cost.totalSf > 0 && <div style={S.cr}><span>Total area</span><span style={{ fontWeight: 500 }}>{cost.totalSf} sf</span></div>}
                 <div style={S.ct}><span>Total Estimate</span><span>{$(cost.total)}</span></div>
-                <button style={{ ...S.inp, cursor: "pointer", textAlign: "center", color: "#E8C840", background: "#2A2A26", marginTop: 10, fontSize: 10, fontWeight: 500 }}
+                <button style={{ ...S.inp, cursor: "pointer", textAlign: "center", color: T.uiBudget, marginTop: 10, fontSize: 10, fontWeight: 500 }}
                   onClick={() => {
                     const lines = [`${projectName} — Testfit Summary`, ""];
                     if (Object.keys(cost.wallFt).length) {
@@ -2723,8 +2739,8 @@ export default function TestfitTool() {
             <div style={{ borderTop: "1px solid " + T.bg3, padding: "10px 12px", background: T.bg1, flexShrink: 0 }}>
               <div style={{ fontSize: 9, color: T.textDim, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6, fontWeight: 600 }}>Visibility</div>
               {[
-                { key: "elec",  label: "Electrical", color: "#50C878", visible: visibleBuildElectrical, toggle: () => setVisibleBuildElectrical(v => !v), count: markers.filter(m => m.layer === "power" && !m.componentType?.startsWith("light_") && !m.componentType?.startsWith("htrack_") && m.componentType !== "sconce_prewire" && m.componentType !== "pendent_prewire").length },
-                { key: "light", label: "Lighting",   color: "#E8D070", visible: visibleBuildLighting,   toggle: () => setVisibleBuildLighting(v => !v),   count: markers.filter(m => m.layer === "power" && (m.componentType?.startsWith("light_") || m.componentType?.startsWith("htrack_") || m.componentType === "sconce_prewire" || m.componentType === "pendent_prewire")).length },
+                { key: "elec",  label: "Electrical", color: T.uiElec,     visible: visibleBuildElectrical, toggle: () => setVisibleBuildElectrical(v => !v), count: markers.filter(m => m.layer === "power" && !m.componentType?.startsWith("light_") && !m.componentType?.startsWith("htrack_") && m.componentType !== "sconce_prewire" && m.componentType !== "pendent_prewire").length },
+                { key: "light", label: "Lighting",   color: T.uiLighting, visible: visibleBuildLighting,   toggle: () => setVisibleBuildLighting(v => !v),   count: markers.filter(m => m.layer === "power" && (m.componentType?.startsWith("light_") || m.componentType?.startsWith("htrack_") || m.componentType === "sconce_prewire" || m.componentType === "pendent_prewire")).length },
               ].map(({ key, label, color, visible, toggle, count }) => (
                 <div key={key} style={{ ...S.lr, padding: "5px 4px", borderRadius: 6, marginBottom: 1 }}>
                   <div style={S.chk(visible, color)} onClick={toggle}>{visible && "✓"}</div>
@@ -2742,7 +2758,7 @@ export default function TestfitTool() {
           <button
             onClick={() => setView3d(v => !v)}
             title={view3d ? "Switch to 2D (` key)" : "Switch to 3D (` key)"}
-            style={{ position: "absolute", bottom: 36, right: 12, zIndex: 20, display: "flex", alignItems: "center", gap: 5, padding: "5px 10px", fontSize: 11, fontWeight: 600, borderRadius: 6, border: "1px solid " + T.border, background: view3d ? T.accent : T.panelBg, color: view3d ? "#fff" : T.textMuted, cursor: "pointer", backdropFilter: "blur(8px)", boxShadow: T.panelShadow, userSelect: "none" }}
+            style={{ position: "absolute", bottom: 70, right: 12, zIndex: 20, display: "flex", alignItems: "center", gap: 5, padding: "5px 10px", fontSize: 11, fontWeight: 600, borderRadius: 6, border: "1px solid " + T.border, background: view3d ? T.accent : T.panelBg, color: view3d ? "#fff" : T.textMuted, cursor: "pointer", backdropFilter: "blur(8px)", boxShadow: T.panelShadow, userSelect: "none" }}
           >
             {view3d ? <LayoutDashboard size={13} /> : <Box size={13} />}
             {view3d ? "2D" : "3D"}
@@ -2753,7 +2769,7 @@ export default function TestfitTool() {
             <button
               onClick={() => controls3dRef.current?.reset()}
               title="Reset camera view"
-              style={{ position: "absolute", bottom: 36, right: 76, zIndex: 20, display: "flex", alignItems: "center", justifyContent: "center", padding: "6px 8px", borderRadius: 6, border: "1px solid " + T.border, background: T.panelBg, color: T.textMuted, cursor: "pointer", backdropFilter: "blur(8px)", boxShadow: T.panelShadow, userSelect: "none" }}
+              style={{ position: "absolute", bottom: 70, right: 76, zIndex: 20, display: "flex", alignItems: "center", justifyContent: "center", padding: "6px 8px", borderRadius: 6, border: "1px solid " + T.border, background: T.panelBg, color: T.textMuted, cursor: "pointer", backdropFilter: "blur(8px)", boxShadow: T.panelShadow, userSelect: "none" }}
             >
               <RotateCcw size={14} />
             </button>
@@ -2788,7 +2804,7 @@ export default function TestfitTool() {
                 marginLeft: 2, verticalAlign: "middle", animation: "_blink 1s step-end infinite" }} />
             </div>
           )}
-          {tool === "calibrate" && (!calibrationLine || !calibrationLine.p2) && <div style={{ position: "absolute", top: "16px", left: "50%", transform: "translateX(-50%)", background: T.panelBg, border: "1px solid " + T.border, borderRadius: "6px", padding: "6px 14px", fontSize: "10px", color: "#E0A050", zIndex: 10, backdropFilter: "blur(12px)", boxShadow: T.panelShadow, fontWeight: 500 }}>
+          {tool === "calibrate" && (!calibrationLine || !calibrationLine.p2) && <div style={{ position: "absolute", top: "16px", left: "50%", transform: "translateX(-50%)", background: T.panelBg, border: "1px solid " + T.border, borderRadius: "6px", padding: "6px 14px", fontSize: "10px", color: T.uiConduit, zIndex: 10, backdropFilter: "blur(12px)", boxShadow: T.panelShadow, fontWeight: 500 }}>
             {!calibrationLine ? "Click to set first point" : "Click to set second point"}
           </div>}
 
@@ -2820,7 +2836,7 @@ export default function TestfitTool() {
               </pattern>
               {/* Pony: lighter single hatch tan */}
               <pattern id="hatch-pony" patternUnits="userSpaceOnUse" width="6" height="6">
-                <line x1="0" y1="6" x2="6" y2="0" stroke="#C8A060" strokeWidth="0.5" opacity="0.3"/>
+                <line x1="0" y1="6" x2="6" y2="0" stroke={T.uiDoor} strokeWidth="0.5" opacity="0.3"/>
               </pattern>
 
               {/* === Material-specific hatch patterns === */}
@@ -3360,14 +3376,14 @@ export default function TestfitTool() {
                     y1={calibrationLine.p1.y} 
                     x2={calibrationLine.p2?.x || (cursorPos?.x || calibrationLine.p1.x)} 
                     y2={calibrationLine.p2?.y || (cursorPos?.y || calibrationLine.p1.y)} 
-                    stroke="#E0A050" 
-                    strokeWidth={3} 
+                    stroke={T.uiConduit}
+                    strokeWidth={3}
                     strokeLinecap="round"
                     strokeDasharray={calibrationLine.p2 ? "0" : "6 4"}
                     style={{ pointerEvents: "none" }}
                   />
-                  <circle cx={calibrationLine.p1.x} cy={calibrationLine.p1.y} r={6} fill="#E0A050" />
-                  {calibrationLine.p2 && <circle cx={calibrationLine.p2.x} cy={calibrationLine.p2.y} r={6} fill="#E0A050" />}
+                  <circle cx={calibrationLine.p1.x} cy={calibrationLine.p1.y} r={6} fill={T.uiConduit} />
+                  {calibrationLine.p2 && <circle cx={calibrationLine.p2.x} cy={calibrationLine.p2.y} r={6} fill={T.uiConduit} />}
                 </g>
               )}
             </g>
@@ -3404,26 +3420,26 @@ export default function TestfitTool() {
               </div>
               {(selWall.kind === "pony") && <>
                 <div style={{ marginBottom: 8 }}><div style={S.lbl}>Height (inches)</div>
-                  <SliderInput value={selWall.ponyHeight || 42} min={12} max={60} onChange={v => updWall({ ponyHeight: v })} accent="#C8A060" textColor={T.textBright} bgColor={T.bg2} borderColor={T.border} />
+                  <SliderInput value={selWall.ponyHeight || 42} min={12} max={60} onChange={v => updWall({ ponyHeight: v })} accent={T.uiDoor} textColor={T.textBright} bgColor={T.bg2} borderColor={T.border} />
                 </div>
                 <div style={{ marginBottom: 8 }}><div style={S.lbl}>Depth (inches)</div>
-                  <SliderInput value={selWall.ponyDepth || 6} min={3} max={12} onChange={v => updWall({ ponyDepth: v })} accent="#C8A060" textColor={T.textBright} bgColor={T.bg2} borderColor={T.border} />
+                  <SliderInput value={selWall.ponyDepth || 6} min={3} max={12} onChange={v => updWall({ ponyDepth: v })} accent={T.uiDoor} textColor={T.textBright} bgColor={T.bg2} borderColor={T.border} />
                 </div>
               </>}
               <div style={{ marginBottom: 8 }}><div style={S.lbl}>Notes</div><textarea style={{ ...S.inp, height: 72, resize: "vertical" }} value={selWall.notes || ""} onChange={e => updWall({ notes: e.target.value })} placeholder="Load-bearing, plumbing chase..." /></div>
             </>; })()}
             {selectedIds.length <= 1 && selDoor && <>
-              <div style={{ fontSize: 12, color: "#C8A060", marginBottom: 10, fontWeight: 600 }}>{selDoor.doorType || "Wood"} Door · {selDoor.width}"</div>
+              <div style={{ fontSize: 12, color: T.uiDoor, marginBottom: 10, fontWeight: 600 }}>{selDoor.doorType || "Wood"} Door · {selDoor.width}"</div>
               <div style={{ marginBottom: 8 }}><div style={S.lbl}>Type</div>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
                   {DOOR_TYPES.map(t => <button key={t} style={{ padding: "6px 8px", background: (selDoor.doorType || "Wood") === t ? T.border + "60" : "transparent", color: (selDoor.doorType || "Wood") === t ? T.textBright : T.textMuted, border: "1.5px solid " + T.border, borderRadius: 5, fontSize: 9, cursor: "pointer", fontFamily: "inherit", fontWeight: 500, transition: "all 0.12s ease" }}
                     onClick={() => updDoor({ doorType: t })}>{t}</button>)}
                 </div>
               </div>
-              <div style={{ marginBottom: 10 }}><SliderInput value={selDoor.width} min={24} max={96} onChange={w => updDoor({ width: w })} accent="#C8A060" textColor={T.textBright} bgColor={T.bg2} borderColor={T.border} /></div>
+              <div style={{ marginBottom: 10 }}><SliderInput value={selDoor.width} min={24} max={96} onChange={w => updDoor({ width: w })} accent={T.uiDoor} textColor={T.textBright} bgColor={T.bg2} borderColor={T.border} /></div>
               {(selDoor.doorType || "Wood") !== "Case Opening" && <div style={{ display: "flex", gap: 6, marginBottom: 6 }}>
-                <button style={{ ...S.inp, cursor: "pointer", textAlign: "center", color: "#C8A060", fontSize: 10, flex: 1, fontWeight: 500 }} onClick={() => updDoor({ flipped: !selDoor.flipped })}>In/Out (F)</button>
-                <button style={{ ...S.inp, cursor: "pointer", textAlign: "center", color: "#C8A060", fontSize: 10, flex: 1, fontWeight: 500 }} onClick={() => updDoor({ hingeRight: !selDoor.hingeRight })}>Hinge (R)</button>
+                <button style={{ ...S.inp, cursor: "pointer", textAlign: "center", color: T.uiDoor, fontSize: 10, flex: 1, fontWeight: 500 }} onClick={() => updDoor({ flipped: !selDoor.flipped })}>In/Out (F)</button>
+                <button style={{ ...S.inp, cursor: "pointer", textAlign: "center", color: T.uiDoor, fontSize: 10, flex: 1, fontWeight: 500 }} onClick={() => updDoor({ hingeRight: !selDoor.hingeRight })}>Hinge (R)</button>
               </div>}
               <button style={S.del} onClick={delSel}>Delete</button>
             </>}
@@ -3535,11 +3551,11 @@ export default function TestfitTool() {
               const items = multiSelItems;
               const w = cv(items, "width");
               return <>
-                <div style={{ fontSize: 12, color: "#C8A060", marginBottom: 10, fontWeight: 600 }}>{items.length} Doors Selected</div>
-                <div style={{ marginBottom: 10 }}><SliderInput value={w} min={24} max={96} onChange={dw => updDoor({ width: dw })} accent="#C8A060" textColor={T.textBright} bgColor={T.bg2} borderColor={T.border} disabled={w === undefined} /></div>
+                <div style={{ fontSize: 12, color: T.uiDoor, marginBottom: 10, fontWeight: 600 }}>{items.length} Doors Selected</div>
+                <div style={{ marginBottom: 10 }}><SliderInput value={w} min={24} max={96} onChange={dw => updDoor({ width: dw })} accent={T.uiDoor} textColor={T.textBright} bgColor={T.bg2} borderColor={T.border} disabled={w === undefined} /></div>
                 <div style={{ display: "flex", gap: 6, marginBottom: 6 }}>
-                  <button style={{ ...S.inp, cursor: "pointer", textAlign: "center", color: "#C8A060", fontSize: 10, flex: 1, fontWeight: 500 }} onClick={() => updDoor({ flipped: !items[0]?.flipped })}>In/Out (F)</button>
-                  <button style={{ ...S.inp, cursor: "pointer", textAlign: "center", color: "#C8A060", fontSize: 10, flex: 1, fontWeight: 500 }} onClick={() => updDoor({ hingeRight: !items[0]?.hingeRight })}>Hinge (R)</button>
+                  <button style={{ ...S.inp, cursor: "pointer", textAlign: "center", color: T.uiDoor, fontSize: 10, flex: 1, fontWeight: 500 }} onClick={() => updDoor({ flipped: !items[0]?.flipped })}>In/Out (F)</button>
+                  <button style={{ ...S.inp, cursor: "pointer", textAlign: "center", color: T.uiDoor, fontSize: 10, flex: 1, fontWeight: 500 }} onClick={() => updDoor({ hingeRight: !items[0]?.hingeRight })}>Hinge (R)</button>
                 </div>
                 <button style={S.del} onClick={delSel}>Delete {items.length} Doors</button>
               </>;
@@ -3643,10 +3659,10 @@ export default function TestfitTool() {
 
               {wallKind === "pony" && <>
                 <div style={{ marginBottom: 8 }}><div style={S.lbl}>Height (inches)</div>
-                  <SliderInput value={ponyHeight} min={12} max={60} onChange={setPonyHeight} accent="#C8A060" textColor={T.textBright} bgColor={T.bg2} borderColor={T.border} />
+                  <SliderInput value={ponyHeight} min={12} max={60} onChange={setPonyHeight} accent={T.uiDoor} textColor={T.textBright} bgColor={T.bg2} borderColor={T.border} />
                 </div>
                 <div style={{ marginBottom: 8 }}><div style={S.lbl}>Depth (inches)</div>
-                  <SliderInput value={ponyDepth} min={3} max={12} onChange={setPonyDepth} accent="#C8A060" textColor={T.textBright} bgColor={T.bg2} borderColor={T.border} />
+                  <SliderInput value={ponyDepth} min={3} max={12} onChange={setPonyDepth} accent={T.uiDoor} textColor={T.textBright} bgColor={T.bg2} borderColor={T.border} />
                 </div>
               </>}
               <div style={{ marginBottom: 8 }}><div style={S.lbl}>Notes</div>
@@ -3655,17 +3671,17 @@ export default function TestfitTool() {
               <div style={{ fontSize: 10, color: "#5A5448", fontStyle: "italic" }}>Click to place · Shift+click to keep placing</div>
             </>; })()}
             {mode === "build" && tool === "door" && <>
-              <div style={{ fontSize: 12, color: "#C8A060", marginBottom: 10, fontWeight: 600 }}>{doorType} Door · {doorWidth}"</div>
+              <div style={{ fontSize: 12, color: T.uiDoor, marginBottom: 10, fontWeight: 600 }}>{doorType} Door · {doorWidth}"</div>
               <div style={{ marginBottom: 8 }}><div style={S.lbl}>Type</div>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
                   {DOOR_TYPES.map(t => <button key={t} style={{ padding: "6px 8px", background: doorType === t ? T.border + "60" : "transparent", color: doorType === t ? T.textBright : T.textMuted, border: "1.5px solid " + T.border, borderRadius: 5, fontSize: 9, cursor: "pointer", fontFamily: "inherit", fontWeight: 500, transition: "all 0.12s ease" }}
                     onClick={() => setDoorType(t)}>{t}</button>)}
                 </div>
               </div>
-              <div style={{ marginBottom: 10 }}><SliderInput value={doorWidth} min={24} max={96} onChange={setDoorWidth} accent="#C8A060" textColor={T.textBright} bgColor={T.bg2} borderColor={T.border} /></div>
+              <div style={{ marginBottom: 10 }}><SliderInput value={doorWidth} min={24} max={96} onChange={setDoorWidth} accent={T.uiDoor} textColor={T.textBright} bgColor={T.bg2} borderColor={T.border} /></div>
               {doorType !== "Case Opening" && <div style={{ display: "flex", gap: 6, marginBottom: 6 }}>
-                <button style={{ ...S.inp, cursor: "pointer", textAlign: "center", color: "#C8A060", fontSize: 10, flex: 1, fontWeight: 500 }} onClick={() => setDoorFlipped(f => !f)}>In/Out {doorFlipped ? "✓" : ""}</button>
-                <button style={{ ...S.inp, cursor: "pointer", textAlign: "center", color: "#C8A060", fontSize: 10, flex: 1, fontWeight: 500 }} onClick={() => setDoorHingeRight(h => !h)}>Hinge {doorHingeRight ? "R" : "L"}</button>
+                <button style={{ ...S.inp, cursor: "pointer", textAlign: "center", color: T.uiDoor, fontSize: 10, flex: 1, fontWeight: 500 }} onClick={() => setDoorFlipped(f => !f)}>In/Out {doorFlipped ? "✓" : ""}</button>
+                <button style={{ ...S.inp, cursor: "pointer", textAlign: "center", color: T.uiDoor, fontSize: 10, flex: 1, fontWeight: 500 }} onClick={() => setDoorHingeRight(h => !h)}>Hinge {doorHingeRight ? "R" : "L"}</button>
               </div>}
               <div style={{ fontSize: 10, color: "#5A5448", fontStyle: "italic" }}>Click to place · Shift+click to keep placing</div>
             </>}
@@ -3700,19 +3716,19 @@ export default function TestfitTool() {
               const active = SPEC_COMPONENTS.power[outletType];
               const isSwitch = outletType.startsWith("switch_");
               const isPanel = outletType === "panel_board";
-              const sectionColor = isPanel ? "#E05050" : isSwitch ? "#C8A060" : (active?.color || "#50C878");
+              const sectionColor = isPanel ? T.uiPanel : isSwitch ? T.uiSwitch : T.uiElec;
 
               const OUTLET_OPTS = [
-                { key: "outlet_duplex",         label: "Duplex",    color: "#50C878" },
-                { key: "outlet_quad",           label: "Quad",      color: "#50C878" },
-                { key: "outlet_duplex_surface", label: "Conduit D", color: "#E0A050" },
-                { key: "outlet_quad_surface",   label: "Conduit Q", color: "#E0A050" },
+                { key: "outlet_duplex",         label: "Duplex",    color: T.uiElec },
+                { key: "outlet_quad",           label: "Quad",      color: T.uiElec },
+                { key: "outlet_duplex_surface", label: "Conduit D", color: T.uiConduit },
+                { key: "outlet_quad_surface",   label: "Conduit Q", color: T.uiConduit },
                 { key: "outlet_ceiling",        label: "Ceiling",   color: "#60B0E0" },
               ];
               const SWITCH_OPTS = [
-                { key: "switch_single",  label: "Single\nPole",  color: "#C8A060" },
-                { key: "switch_double",  label: "Double\nPole",  color: "#C8A060" },
-                { key: "switch_dimmer", label: "Dimmer",        color: "#C8A060" },
+                { key: "switch_single",  label: "Single\nPole",  color: T.uiSwitch },
+                { key: "switch_double",  label: "Double\nPole",  color: T.uiSwitch },
+                { key: "switch_dimmer", label: "Dimmer",        color: T.uiSwitch },
               ];
 
               return <>
@@ -3775,7 +3791,7 @@ export default function TestfitTool() {
                 <div style={{ marginBottom: 14 }}>
                   {(() => {
                     const isSel = outletType === "panel_board";
-                    const pcolor = "#E05050";
+                    const pcolor = T.uiPanel;
                     return <button onClick={() => { setOutletType("panel_board"); setT("outlet"); }} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 5, padding: "8px 4px", width: "100%", background: isSel ? pcolor + "22" : "transparent", border: "1.5px solid " + (isSel ? pcolor : T.border), borderRadius: 6, cursor: "pointer", fontFamily: "inherit", transition: "all 0.12s ease" }}>
                       <svg width="28" height="36" viewBox="0 0 28 36" fill="none">
                         <rect x="3" y="2" width="22" height="32" rx="2" fill={pcolor + "18"} stroke={pcolor} strokeWidth="1.5" />
@@ -3809,14 +3825,14 @@ export default function TestfitTool() {
             })()}
             {mode === "build" && tool === "lighting" && (() => {
               const active = SPEC_COMPONENTS.power[lightingType];
-              const lightColor = "#E8D070";
+              const lightColor = T.uiLighting;
               const LIGHT_OPTS = [
-                { key: "light_can_4",    label: '4" Can',    color: "#E8D070", sym: "can"    },
-                { key: "light_can_6",    label: '6" Can',    color: "#E8D070", sym: "can6"   },
-                { key: "light_pendant",  label: "Pendant",   color: "#E8D070", sym: "pend"   },
-                { key: "light_linear_2", label: "Linear 2'", color: "#E8D070", sym: "lin2"   },
-                { key: "light_linear_4", label: "Linear 4'", color: "#E8D070", sym: "lin4"   },
-                { key: "light_sconce",   label: "Sconce",    color: "#E8D070", sym: "sconce" },
+                { key: "light_can_4",    label: '4" Can',    color: T.uiLighting, sym: "can"    },
+                { key: "light_can_6",    label: '6" Can',    color: T.uiLighting, sym: "can6"   },
+                { key: "light_pendant",  label: "Pendant",   color: T.uiLighting, sym: "pend"   },
+                { key: "light_linear_2", label: "Linear 2'", color: T.uiLighting, sym: "lin2"   },
+                { key: "light_linear_4", label: "Linear 4'", color: T.uiLighting, sym: "lin4"   },
+                { key: "light_sconce",   label: "Sconce",    color: T.uiLighting, sym: "sconce" },
               ];
               return <>
                 <div style={{ fontSize: 12, color: lightColor, marginBottom: 10, fontWeight: 600 }}>Lighting · {active?.name}</div>
@@ -3870,8 +3886,8 @@ export default function TestfitTool() {
                 <div style={{ fontSize: 9, color: T.textMuted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 5, fontWeight: 600 }}>Prewires</div>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 5, marginBottom: 14 }}>
                   {[
-                    { key: "sconce_prewire",  label: "Sconce PW",  color: "#C87840" },
-                    { key: "pendent_prewire", label: "Pendant PW", color: "#C87840" },
+                    { key: "sconce_prewire",  label: "Sconce PW",  color: T.uiPrewire },
+                    { key: "pendent_prewire", label: "Pendant PW", color: T.uiPrewire },
                   ].map(({ key: lKey, label, color }) => {
                     const isSel = lightingType === lKey;
                     return <button key={lKey} onClick={() => { setLightingType(lKey); setT("lighting"); }} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 5, padding: "8px 4px", background: isSel ? color + "22" : "transparent", border: "1.5px solid " + (isSel ? color : T.border), borderRadius: 6, cursor: "pointer", fontFamily: "inherit", transition: "all 0.12s ease" }}>
@@ -3889,8 +3905,8 @@ export default function TestfitTool() {
                 <div style={{ fontSize: 9, color: T.textMuted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 5, fontWeight: 600 }}>H-Track</div>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 5, marginBottom: 14 }}>
                   {[
-                    { key: "htrack_4", label: "4' Track", color: "#E8D070" },
-                    { key: "htrack_8", label: "8' Track", color: "#E8D070" },
+                    { key: "htrack_4", label: "4' Track", color: T.uiLighting },
+                    { key: "htrack_8", label: "8' Track", color: T.uiLighting },
                   ].map(({ key: lKey, label, color }) => {
                     const isSel = lightingType === lKey;
                     return <button key={lKey} onClick={() => { setLightingType(lKey); setT("lighting"); }} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 5, padding: "8px 4px", background: isSel ? color + "22" : "transparent", border: "1.5px solid " + (isSel ? color : T.border), borderRadius: 6, cursor: "pointer", fontFamily: "inherit", transition: "all 0.12s ease" }}>
@@ -3902,7 +3918,7 @@ export default function TestfitTool() {
                     </button>;
                   })}
                 </div>
-                {htrackAngle > 0 && lightingType.startsWith("htrack_") && <div style={{ fontSize: 9, color: "#E8D070", marginTop: -8, marginBottom: 10, fontStyle: "italic" }}>Press R to rotate 45° · {htrackAngle}°</div>}
+                {htrackAngle > 0 && lightingType.startsWith("htrack_") && <div style={{ fontSize: 9, color: T.uiLighting, marginTop: -8, marginBottom: 10, fontStyle: "italic" }}>Press R to rotate 45° · {htrackAngle}°</div>}
 
                 <div style={{ fontSize: 10, color: T.textMuted, marginBottom: 4 }}>Est. {$(active?.unitCost || 0)}</div>
                 <div style={{ fontSize: 10, color: "#5A5448", fontStyle: "italic" }}>Click to place · Shift+click to keep placing</div>
@@ -4027,7 +4043,7 @@ export default function TestfitTool() {
 
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <button style={S.toolBtn(tool === "outlet", "#50C878")} onClick={() => setT("outlet")}>
+                  <button style={S.toolBtn(tool === "outlet", T.uiElec)} onClick={() => setT("outlet")}>
                     <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
                       <circle cx="10" cy="10" r="7" stroke="#50C878" strokeWidth="1.5" />
                       <line x1="3" y1="10" x2="17" y2="10" stroke="#50C878" strokeWidth="2" />
@@ -4040,14 +4056,14 @@ export default function TestfitTool() {
 
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <button style={S.toolBtn(tool === "lighting", "#E8D070")} onClick={() => setT("lighting")}>
+                  <button style={S.toolBtn(tool === "lighting", T.uiLighting)} onClick={() => setT("lighting")}>
                     <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-                      <circle cx="10" cy="10" r="5" stroke="#E8D070" strokeWidth="1.5" />
-                      <circle cx="10" cy="10" r="2" fill="#E8D070" />
-                      <line x1="10" y1="1" x2="10" y2="4" stroke="#E8D070" strokeWidth="1.5" />
-                      <line x1="10" y1="16" x2="10" y2="19" stroke="#E8D070" strokeWidth="1.5" />
-                      <line x1="1" y1="10" x2="4" y2="10" stroke="#E8D070" strokeWidth="1.5" />
-                      <line x1="16" y1="10" x2="19" y2="10" stroke="#E8D070" strokeWidth="1.5" />
+                      <circle cx="10" cy="10" r="5" stroke={T.uiLighting} strokeWidth="1.5" />
+                      <circle cx="10" cy="10" r="2" fill={T.uiLighting} />
+                      <line x1="10" y1="1" x2="10" y2="4" stroke={T.uiLighting} strokeWidth="1.5" />
+                      <line x1="10" y1="16" x2="10" y2="19" stroke={T.uiLighting} strokeWidth="1.5" />
+                      <line x1="1" y1="10" x2="4" y2="10" stroke={T.uiLighting} strokeWidth="1.5" />
+                      <line x1="16" y1="10" x2="19" y2="10" stroke={T.uiLighting} strokeWidth="1.5" />
                     </svg>
                   </button>
                 </TooltipTrigger>
@@ -4077,7 +4093,7 @@ export default function TestfitTool() {
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <button 
-                      style={S.toolBtn(tool === "calibrate", "#E0A050")} 
+                      style={S.toolBtn(tool === "calibrate", T.uiConduit)}
                       onClick={() => setT("calibrate")}
                     >
                       <Ruler size={20} />
@@ -4112,7 +4128,7 @@ export default function TestfitTool() {
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <button 
-                      style={S.toolBtn(tool === "marker" && activeComponentType === "duplex_outlet", SPEC_LAYERS.power.color)} 
+                      style={S.toolBtn(tool === "marker" && activeComponentType === "duplex_outlet", uiColor(SPEC_LAYERS.power.color))} 
                       onClick={() => { setActiveComponentType("duplex_outlet"); setT("marker"); }}
                     >
                       <svg width="20" height="20" viewBox="0 0 20 20"><circle cx="10" cy="10" r="7" fill="#50A070" /></svg>
@@ -4123,7 +4139,7 @@ export default function TestfitTool() {
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <button 
-                      style={S.toolBtn(tool === "marker" && activeComponentType === "quad_outlet", SPEC_LAYERS.power.color)} 
+                      style={S.toolBtn(tool === "marker" && activeComponentType === "quad_outlet", uiColor(SPEC_LAYERS.power.color))} 
                       onClick={() => { setActiveComponentType("quad_outlet"); setT("marker"); }}
                     >
                       <svg width="20" height="20" viewBox="0 0 20 20"><circle cx="10" cy="10" r="7" fill="#E05050" /></svg>
@@ -4134,7 +4150,7 @@ export default function TestfitTool() {
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <button 
-                      style={S.toolBtn(tool === "marker" && activeComponentType === "dedicated_quad", SPEC_LAYERS.power.color)} 
+                      style={S.toolBtn(tool === "marker" && activeComponentType === "dedicated_quad", uiColor(SPEC_LAYERS.power.color))} 
                       onClick={() => { setActiveComponentType("dedicated_quad"); setT("marker"); }}
                     >
                       <svg width="20" height="20" viewBox="0 0 20 20"><circle cx="10" cy="10" r="7" fill="#4080E0" /></svg>
@@ -4145,7 +4161,7 @@ export default function TestfitTool() {
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <button 
-                      style={S.toolBtn(tool === "marker" && activeComponentType === "ceiling_quad", SPEC_LAYERS.power.color)} 
+                      style={S.toolBtn(tool === "marker" && activeComponentType === "ceiling_quad", uiColor(SPEC_LAYERS.power.color))} 
                       onClick={() => { setActiveComponentType("ceiling_quad"); setT("marker"); }}
                     >
                       <svg width="20" height="20" viewBox="0 0 20 20"><circle cx="10" cy="10" r="7" fill="none" stroke="#E05050" strokeWidth="2" /><line x1="3" y1="10" x2="17" y2="10" stroke="#E05050" strokeWidth="2" /><line x1="10" y1="3" x2="10" y2="17" stroke="#E05050" strokeWidth="2" /></svg>
@@ -4156,7 +4172,7 @@ export default function TestfitTool() {
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <button 
-                      style={S.toolBtn(tool === "marker" && activeComponentType === "tstat", SPEC_LAYERS.power.color)} 
+                      style={S.toolBtn(tool === "marker" && activeComponentType === "tstat", uiColor(SPEC_LAYERS.power.color))} 
                       onClick={() => { setActiveComponentType("tstat"); setT("marker"); }}
                     >
                       <svg width="20" height="20" viewBox="0 0 20 20"><circle cx="10" cy="10" r="7" fill="none" stroke="#E05050" strokeWidth="2" /><text x="10" y="13" textAnchor="middle" fontSize="10" fill="#E05050" fontWeight="bold">T</text></svg>
@@ -4167,7 +4183,7 @@ export default function TestfitTool() {
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <button 
-                      style={S.toolBtn(tool === "marker" && activeComponentType === "sconce_prewire", SPEC_LAYERS.power.color)} 
+                      style={S.toolBtn(tool === "marker" && activeComponentType === "sconce_prewire", uiColor(SPEC_LAYERS.power.color))} 
                       onClick={() => { setActiveComponentType("sconce_prewire"); setT("marker"); }}
                     >
                       <svg width="20" height="20" viewBox="0 0 20 20"><circle cx="10" cy="10" r="7" fill="none" stroke="#E05050" strokeWidth="2" /><text x="10" y="13" textAnchor="middle" fontSize="10" fill="#E05050" fontWeight="bold">S</text></svg>
@@ -4178,7 +4194,7 @@ export default function TestfitTool() {
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <button 
-                      style={S.toolBtn(tool === "marker" && activeComponentType === "pendent_prewire", SPEC_LAYERS.power.color)} 
+                      style={S.toolBtn(tool === "marker" && activeComponentType === "pendent_prewire", uiColor(SPEC_LAYERS.power.color))} 
                       onClick={() => { setActiveComponentType("pendent_prewire"); setT("marker"); }}
                     >
                       <svg width="20" height="20" viewBox="0 0 20 20"><circle cx="10" cy="10" r="7" fill="none" stroke="#E05050" strokeWidth="2" /><text x="10" y="13" textAnchor="middle" fontSize="10" fill="#E05050" fontWeight="bold">P</text></svg>
@@ -4189,7 +4205,7 @@ export default function TestfitTool() {
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <button
-                      style={S.toolBtn(tool === "marker" && activeComponentType === "htrack_4", SPEC_LAYERS.power.color)}
+                      style={S.toolBtn(tool === "marker" && activeComponentType === "htrack_4", uiColor(SPEC_LAYERS.power.color))}
                       onClick={() => { setActiveComponentType("htrack_4"); setT("marker"); }}
                     >
                       <svg width="20" height="20" viewBox="0 0 20 20"><rect x="2" y="6" width="16" height="8" fill="none" stroke="#E05050" strokeWidth="2" rx="1" /><text x="10" y="13" textAnchor="middle" fontSize="8" fill="#E05050" fontWeight="bold">4'</text></svg>
@@ -4200,7 +4216,7 @@ export default function TestfitTool() {
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <button
-                      style={S.toolBtn(tool === "marker" && activeComponentType === "htrack_8", SPEC_LAYERS.power.color)}
+                      style={S.toolBtn(tool === "marker" && activeComponentType === "htrack_8", uiColor(SPEC_LAYERS.power.color))}
                       onClick={() => { setActiveComponentType("htrack_8"); setT("marker"); }}
                     >
                       <svg width="20" height="20" viewBox="0 0 20 20"><rect x="2" y="6" width="16" height="8" fill="none" stroke="#E05050" strokeWidth="2" rx="1" /><text x="10" y="13" textAnchor="middle" fontSize="8" fill="#E05050" fontWeight="bold">8'</text></svg>
@@ -4350,7 +4366,7 @@ export default function TestfitTool() {
           )}
 
           {/* ── Bottom Status Bar ────────────────────────────────────── */}
-          <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, background: "#242422", borderTop: "1px solid #3A3A32", padding: "6px 16px", display: "flex", alignItems: "center", gap: 12, fontSize: 10, color: "#5A5448", zIndex: 10 }}>
+          <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, background: T.bg2, borderTop: "1px solid " + T.border, padding: "6px 16px", display: "flex", alignItems: "center", gap: 12, fontSize: 10, color: T.textDim, zIndex: 10 }}>
             {mode === "zone" && (
               <span style={{ color: ZONE_LIBRARY[activeZoneType]?.color || "#5A5448", fontSize: 10, fontWeight: 500 }}>
                 {ZONE_LIBRARY[activeZoneType]?.name || "—"}
@@ -4365,8 +4381,8 @@ export default function TestfitTool() {
             
             <div style={{ flex: 1 }} />
             <span style={{ fontSize: 10, color: T.textMuted }}>{Math.round(zoom * 100)}%</span>
-            <div style={{ width: 1, height: 18, background: "#3A3A32" }} />
-            <span style={{ color: "#E8C840", fontWeight: 600, fontSize: 11 }}>{$(cost.total)}</span>
+            <div style={{ width: 1, height: 18, background: T.border }} />
+            <span style={{ color: T.uiBudget, fontWeight: 600, fontSize: 11 }}>{$(cost.total)}</span>
           </div>
         </div>
       </div>
