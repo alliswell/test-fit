@@ -334,6 +334,18 @@ const DEFAULT_PHASES = [
   { id: "phase4",   name: "v3",       color: "#B06040", visible: true },
 ];
 
+// Stable sub-components for the Align & Distribute panel (hoisted to avoid remounting on every render)
+function AlignBtn({ action, label, tip, onAction, border, accent, textMuted, textBright }) {
+  const base = { flex: 1, padding: "5px 0", background: "transparent", border: "1.5px solid " + border, borderRadius: 5, cursor: "pointer", color: textMuted, fontSize: 10, fontFamily: "inherit", display: "flex", alignItems: "center", justifyContent: "center", transition: "all 0.12s ease" };
+  return (
+    <button style={base} title={tip} onClick={() => onAction(action)}
+      onMouseEnter={e => { e.currentTarget.style.borderColor = accent; e.currentTarget.style.color = textBright; }}
+      onMouseLeave={e => { e.currentTarget.style.borderColor = border; e.currentTarget.style.color = textMuted; }}>
+      {label}
+    </button>
+  );
+}
+
 export default function TestfitTool() {
   const [themeMode, setThemeMode] = useState("dark");
   const T = THEMES[themeMode];
@@ -499,6 +511,8 @@ export default function TestfitTool() {
   const [rotatingMarker, setRotatingMarker] = useState(null); // { id, cx, cy }
   const [clipboard, setClipboard] = useState(null); // { walls, nodes, doors, windows, columns, markers, zones }
   const [pasteOffset, setPasteOffset] = useState(0); // increments each paste
+  const [lastCopyInfo, setLastCopyInfo] = useState(null); // { srcItems:[{id,type,x,y}], dx, dy } for "/" repeat-distribute
+  const [repeatInput, setRepeatInput] = useState(null); // null = inactive; string = digits typed after "/"
   const [drawDim, setDrawDim] = useState(null); // null | {x1,y1} | {x1,y1,x2,y2}
   const [mode, setMode] = useState("build"); // build, zone, itmep, budget
 
@@ -891,11 +905,10 @@ export default function TestfitTool() {
     }
     // Filter hits based on current mode
     if (mode === "build") {
-      // In BUILD mode, only allow building objects
+      // Pre-build set of node IDs connected to at least one visible wall — O(walls) once vs O(nodes×walls) per node
+      const visibleWallNodeIds = new Set(walls.filter(w => phaseVisible(w.phase)).flatMap(w => [w.n1, w.n2]));
       for (const n of nodes) {
-        // Only allow selecting nodes whose walls are visible in the current phase
-        const hasVisibleWall = walls.some(w => (w.n1 === n.id || w.n2 === n.id) && phaseVisible(w.phase));
-        if (!hasVisibleWall) continue;
+        if (!visibleWallNodeIds.has(n.id)) continue;
         if (dst(pos.x, pos.y, n.x, n.y) < 10) return { type: "node", id: n.id };
       }
       for (let i = columns.length - 1; i >= 0; i--) { const col = columns[i]; if (!phaseVisible(col.phase)) continue; const rp = resolvePos(col); const r = inToPx(col.size) / 2; if (dst(pos.x, pos.y, rp.x, rp.y) < r + 4) return { type: "column", id: col.id }; }
@@ -922,7 +935,8 @@ export default function TestfitTool() {
           const lx = ddx * Math.cos(-angle) - ddy * Math.sin(-angle);
           const ly = ddx * Math.sin(-angle) + ddy * Math.cos(-angle);
           if (Math.abs(lx) <= lenPx / 2 + 8 && Math.abs(ly) <= widPx / 2 + 8) return { type: "marker", id: p.id };
-        } else if (ct?.startsWith("outlet_") || ct?.startsWith("switch_") || ct === "panel_board" || ct?.startsWith("light_") || ct === "tstat" || ct === "sconce_prewire" || ct === "pendent_prewire") {
+        } else {
+          // All other power-layer marker types (outlets, switches, lights, etc.)
           if (dst(pos.x, pos.y, rp.x, rp.y) < 16) return { type: "marker", id: p.id };
         }
       }
@@ -1126,35 +1140,69 @@ export default function TestfitTool() {
       }
       
       if (hit && e.altKey) {
-        // Option+Click: duplicate the hit object
-        const nid = uid();
-        if (hit.type === "zone") {
-          const src = zones.find(z => z.id === hit.id);
-          if (src) {
-            const dup = src.points
-              ? { ...src, id: nid, points: src.points.map(p => ({ ...p })) }
-              : { ...src, id: nid };
-            setZones(p => [...p, dup]);
-            if (src.points) {
-              const c = polyCentroid(src.points);
-              setSelectedId(nid); setSelType("zone"); setDrag({ type: "zone", id: nid, ox: pos.x - c.x, oy: pos.y - c.y, lastX: sn(c.x, snapGrid), lastY: sn(c.y, snapGrid) });
-            } else {
-              setSelectedId(nid); setSelType("zone"); setDrag({ type: "zone", id: nid, ox: pos.x - src.x, oy: pos.y - src.y });
+        // Alt+drag: duplicate selected objects and immediately start dragging the copies
+        const isMultiCopy = selectedIds.length > 1 && selectedIds.includes(hit.id);
+
+        if (isMultiCopy) {
+          // Duplicate ALL selected items and start a multi-drag with the copies
+          const srcItems = [];
+          const newColumns = [], newMarkers = [], newDoors = [], newWindows = [], newZones = [];
+          const copyIds = [];
+
+          selectedIds.forEach(id => {
+            const col = columns.find(c => c.id === id);
+            if (col) { const rp = resolvePos(col); const nid = uid(); newColumns.push({ ...col, id: nid, px: undefined, x: rp.x, y: rp.y }); srcItems.push({ id: nid, type: "column", x: rp.x, y: rp.y }); copyIds.push(nid); return; }
+            const mk = markers.find(m => m.id === id);
+            if (mk) { const rp = resolvePos(mk); const nid = uid(); newMarkers.push({ ...mk, id: nid, px: undefined, x: rp.x, y: rp.y }); srcItems.push({ id: nid, type: "marker", x: rp.x, y: rp.y }); copyIds.push(nid); return; }
+            const dr = doors.find(d => d.id === id);
+            if (dr) { const rp = resolvePos(dr); const nid = uid(); newDoors.push({ ...dr, id: nid, px: undefined, x: rp.x, y: rp.y }); srcItems.push({ id: nid, type: "door", x: rp.x, y: rp.y }); copyIds.push(nid); return; }
+            const win = windows.find(w => w.id === id);
+            if (win) { const rp = resolvePos(win); const nid = uid(); newWindows.push({ ...win, id: nid, px: undefined, x: rp.x, y: rp.y }); srcItems.push({ id: nid, type: "window", x: rp.x, y: rp.y }); copyIds.push(nid); return; }
+            const zn = zones.find(z => z.id === id);
+            if (zn) { const rpts = resolvePoints(zn); const nid = uid(); newZones.push({ ...zn, id: nid, px: undefined, points: rpts.map(p => ({ ...p })) }); const c = polyCentroid(rpts); srcItems.push({ id: nid, type: "zone", x: c.x, y: c.y }); copyIds.push(nid); return; }
+          });
+
+          if (newColumns.length) setColumns(p => [...p, ...newColumns]);
+          if (newMarkers.length) setMarkers(p => [...p, ...newMarkers]);
+          if (newDoors.length) setDoors(p => [...p, ...newDoors]);
+          if (newWindows.length) setWindows(p => [...p, ...newWindows]);
+          if (newZones.length) setZones(p => [...p, ...newZones]);
+
+          setSelectedIds(copyIds);
+          setSelectedId(copyIds[0]);
+          setSelType(hit.type);
+          // Record source positions so "/" can distribute later
+          setLastCopyInfo({ srcItems, dx: 0, dy: 0 });
+          setDrag({ type: "multi", objects: srcItems, startX: pos.x, startY: pos.y, lastX: pos.x, lastY: pos.y, isCopy: true });
+        } else {
+          // Single-item alt-drag copy
+          const nid = uid();
+          if (hit.type === "zone") {
+            const src = zones.find(z => z.id === hit.id);
+            if (src) {
+              const rpts = resolvePoints(src);
+              const dup = { ...src, id: nid, px: undefined, points: rpts.map(p => ({ ...p })) };
+              setZones(p => [...p, dup]);
+              const c = polyCentroid(rpts);
+              setSelectedId(nid); setSelType("zone");
+              setLastCopyInfo({ srcItems: [{ id: nid, type: "zone", x: c.x, y: c.y }], dx: 0, dy: 0 });
+              setDrag({ type: "zone", id: nid, ox: pos.x - c.x, oy: pos.y - c.y, lastX: sn(c.x, snapGrid), lastY: sn(c.y, snapGrid), isCopy: true });
             }
+          } else if (hit.type === "door") {
+            const src = doors.find(d => d.id === hit.id);
+            if (src) { const rp = resolvePos(src); setDoors(p => [...p, { ...src, id: nid, px: undefined, x: rp.x, y: rp.y }]); setSelectedId(nid); setSelType("door"); setLastCopyInfo({ srcItems: [{ id: nid, type: "door", x: rp.x, y: rp.y }], dx: 0, dy: 0 }); setDrag({ type: "door", id: nid, ox: pos.x - rp.x, oy: pos.y - rp.y, isCopy: true }); }
+          } else if (hit.type === "window") {
+            const src = windows.find(w => w.id === hit.id);
+            if (src) { const rp = resolvePos(src); setWindows(p => [...p, { ...src, id: nid, px: undefined, x: rp.x, y: rp.y }]); setSelectedId(nid); setSelType("window"); setLastCopyInfo({ srcItems: [{ id: nid, type: "window", x: rp.x, y: rp.y }], dx: 0, dy: 0 }); setDrag({ type: "window", id: nid, ox: pos.x - rp.x, oy: pos.y - rp.y, isCopy: true }); }
+          } else if (hit.type === "column") {
+            const src = columns.find(c => c.id === hit.id);
+            if (src) { const rp = resolvePos(src); setColumns(p => [...p, { ...src, id: nid, px: undefined, x: rp.x, y: rp.y }]); setSelectedId(nid); setSelType("column"); setLastCopyInfo({ srcItems: [{ id: nid, type: "column", x: rp.x, y: rp.y }], dx: 0, dy: 0 }); setDrag({ type: "column", id: nid, ox: pos.x - rp.x, oy: pos.y - rp.y, isCopy: true }); }
+          } else if (hit.type === "marker") {
+            const src = markers.find(m => m.id === hit.id);
+            if (src) { const rp = resolvePos(src); setMarkers(p => [...p, { ...src, id: nid, px: undefined, x: rp.x, y: rp.y }]); setSelectedId(nid); setSelType("marker"); setLastCopyInfo({ srcItems: [{ id: nid, type: "marker", x: rp.x, y: rp.y }], dx: 0, dy: 0 }); setDrag({ type: "marker", id: nid, ox: pos.x - rp.x, oy: pos.y - rp.y, isCopy: true }); }
           }
-        } else if (hit.type === "door") {
-          const src = doors.find(d => d.id === hit.id);
-          if (src) { setDoors(p => [...p, { ...src, id: nid }]); setSelectedId(nid); setSelType("door"); setDrag({ type: "door", id: nid, ox: pos.x - src.x, oy: pos.y - src.y }); }
-        } else if (hit.type === "window") {
-          const src = windows.find(w => w.id === hit.id);
-          if (src) { setWindows(p => [...p, { ...src, id: nid }]); setSelectedId(nid); setSelType("window"); setDrag({ type: "window", id: nid, ox: pos.x - src.x, oy: pos.y - src.y }); }
-        } else if (hit.type === "column") {
-          const src = columns.find(c => c.id === hit.id);
-          if (src) { setColumns(p => [...p, { ...src, id: nid }]); setSelectedId(nid); setSelType("column"); setDrag({ type: "column", id: nid, ox: pos.x - src.x, oy: pos.y - src.y }); }
-        } else if (hit.type === "marker") {
-          const src = markers.find(m => m.id === hit.id);
-          if (src) { setMarkers(p => [...p, { ...src, id: nid }]); setSelectedId(nid); setSelType("marker"); setDrag({ type: "marker", id: nid, ox: pos.x - src.x, oy: pos.y - src.y }); }
         }
+        setSelectedIds([]);
         return;
       }
       if (hit) {
@@ -1385,7 +1433,7 @@ export default function TestfitTool() {
         }
       }
     }
-  }, [tool, activeZoneType, activeSpecLayer, s2c, findNear, findDimSnap, hitTest, walls, wc, zones, markers, doors, windows, columns, viewOff, drawChain, commitWallSegment, spaceHeld, doorWidth, windowWidth, columnSize, columnShape, snapToWall, snapGrid, activeComponentType, selectedIds, bgImage, bgOffset, gn, calibrationLine, drawDim, dims, nodes, pxPerFoot, zoneEdge, resolvePos, resolvePoints]);
+  }, [tool, activeZoneType, activeSpecLayer, s2c, findNear, findDimSnap, hitTest, walls, wc, zones, markers, doors, windows, columns, viewOff, drawChain, commitWallSegment, spaceHeld, doorWidth, windowWidth, columnSize, columnShape, snapToWall, snapGrid, activeComponentType, selectedIds, bgImage, bgOffset, gn, calibrationLine, drawDim, dims, nodes, pxPerFoot, zoneEdge, resolvePos, resolvePoints, activePhase]);
 
   const onMove = useCallback((e) => {
     if (panning && panSt) { setViewOff({ x: e.clientX - panSt.x, y: e.clientY - panSt.y }); return; }
@@ -1805,9 +1853,9 @@ export default function TestfitTool() {
       
       // Check nodes
       if (mode === "build") {
+        const visibleWallNodeIds = new Set(walls.filter(w => phaseVisible(w.phase)).flatMap(w => [w.n1, w.n2]));
         nodes.forEach(n => {
-          const hasVisibleWall = walls.some(w => (w.n1 === n.id || w.n2 === n.id) && phaseVisible(w.phase));
-          if (!hasVisibleWall) return;
+          if (!visibleWallNodeIds.has(n.id)) return;
           if (n.x >= minX && n.x <= maxX && n.y >= minY && n.y <= maxY) {
             selected.push({ id: n.id, type: "node" });
           }
@@ -1842,6 +1890,13 @@ export default function TestfitTool() {
           const rp = resolvePos(c);
           if (rp.x >= minX && rp.x <= maxX && rp.y >= minY && rp.y <= maxY) {
             selected.push({ id: c.id, type: "column" });
+          }
+        });
+        markers.forEach(m => {
+          if (!phaseVisible(m.phase)) return;
+          const rp = resolvePos(m);
+          if (rp.x >= minX && rp.x <= maxX && rp.y >= minY && rp.y <= maxY) {
+            selected.push({ id: m.id, type: "marker" });
           }
         });
       } else if (mode === "zone") {
@@ -1894,9 +1949,29 @@ export default function TestfitTool() {
       setNodes(prev => prev.filter(n => n.id !== src));
       setSelectedId(tgt); setSelType("node");
     }
+    // When a copy-drag finishes, record the total displacement so "/" can distribute intermediates
+    if (drag?.isCopy && drag.type === "multi") {
+      const dx = drag.lastX - drag.startX, dy = drag.lastY - drag.startY;
+      if (dx !== 0 || dy !== 0) setLastCopyInfo(prev => prev ? { ...prev, dx, dy } : null);
+    } else if (drag?.isCopy) {
+      // Single-item copy: compute displacement from first srcItem position to its current resolved position
+      setLastCopyInfo(prev => {
+        if (!prev || prev.srcItems.length !== 1) return prev;
+        const item = prev.srcItems[0];
+        let el = null;
+        if (item.type === "column") el = columns.find(c => c.id === item.id);
+        else if (item.type === "marker") el = markers.find(m => m.id === item.id);
+        else if (item.type === "door") el = doors.find(d => d.id === item.id);
+        else if (item.type === "window") el = windows.find(w => w.id === item.id);
+        else if (item.type === "zone") { const z = zones.find(z => z.id === item.id); if (z) { const c = polyCentroid(resolvePoints(z)); return { ...prev, dx: c.x - item.x, dy: c.y - item.y }; } }
+        if (!el) return prev;
+        const rp = resolvePos(el);
+        return { ...prev, dx: rp.x - item.x, dy: rp.y - item.y };
+      });
+    }
     // No re-clipping on zone drag/vertex drag end — user controls shape manually
     setDrag(null); setResize(null); setPanning(false); setPanSt(null); setHoverNid(null); setRotatingMarker(null); setSmartGuides([]);
-  }, [drag, resize, hoverNid, marquee, selectedIds, selectedId, mode, nodes, walls, doors, windows, zones, markers, columns, phaseVisible, resolvePos, resolvePoints, wc]);
+  }, [drag, resize, hoverNid, marquee, selectedIds, selectedId, mode, nodes, walls, doors, windows, zones, markers, columns, phaseVisible, resolvePos, resolvePoints, wc, lastCopyInfo]);
 
   // Smooth zoom centered on cursor
   const onWheel = useCallback((e) => {
@@ -2160,6 +2235,45 @@ export default function TestfitTool() {
         }
         if (key === "Escape" && dimInput !== "") { setDimInput(""); return; }
       }
+      // ── Repeat-distribute mode ("/" then a number then Enter) ─────────────
+      if (repeatInput !== null) {
+        e.preventDefault();
+        if (/^[0-9]$/.test(e.key)) { setRepeatInput(prev => prev + e.key); return; }
+        if (e.key === "Backspace") { setRepeatInput(prev => prev.slice(0, -1)); return; }
+        if (e.key === "Enter" && repeatInput !== "" && lastCopyInfo) {
+          const n = parseInt(repeatInput, 10);
+          if (n >= 1 && (lastCopyInfo.dx !== 0 || lastCopyInfo.dy !== 0)) {
+            const { srcItems, dx, dy } = lastCopyInfo;
+            const step = 1 / (n + 1);
+            const newCols = [], newMks = [], newDrs = [], newWins = [], newZns = [];
+            const newIds = [];
+            for (let i = 1; i <= n; i++) {
+              const frac = i * step;
+              srcItems.forEach(item => {
+                const nid = uid();
+                newIds.push(nid);
+                const nx = item.x + dx * frac, ny = item.y + dy * frac;
+                if (item.type === "column") { const src = columns.find(c => c.id === item.id); if (src) newCols.push({ ...src, id: nid, px: undefined, x: nx, y: ny }); }
+                else if (item.type === "marker") { const src = markers.find(m => m.id === item.id); if (src) newMks.push({ ...src, id: nid, px: undefined, x: nx, y: ny }); }
+                else if (item.type === "door") { const src = doors.find(d => d.id === item.id); if (src) newDrs.push({ ...src, id: nid, px: undefined, x: nx, y: ny }); }
+                else if (item.type === "window") { const src = windows.find(w => w.id === item.id); if (src) newWins.push({ ...src, id: nid, px: undefined, x: nx, y: ny }); }
+                else if (item.type === "zone") { const src = zones.find(z => z.id === item.id); if (src) { const c = polyCentroid(resolvePoints(src)); const odx = nx - c.x, ody = ny - c.y; newZns.push({ ...src, id: nid, px: undefined, points: resolvePoints(src).map(p => ({ x: p.x + odx, y: p.y + ody })) }); } }
+              });
+            }
+            if (newCols.length) setColumns(p => [...p, ...newCols]);
+            if (newMks.length) setMarkers(p => [...p, ...newMks]);
+            if (newDrs.length) setDoors(p => [...p, ...newDrs]);
+            if (newWins.length) setWindows(p => [...p, ...newWins]);
+            if (newZns.length) setZones(p => [...p, ...newZns]);
+            if (newIds.length) { setSelectedIds(newIds); setSelectedId(newIds[0]); }
+          }
+          setRepeatInput(null);
+          return;
+        }
+        if (e.key === "Escape") { setRepeatInput(null); return; }
+        return;
+      }
+
       const k = e.key.toUpperCase();
       if (e.key === " ") { e.preventDefault(); setSpaceHeld(true); return; }
       if (k === "Z" && (e.ctrlKey || e.metaKey) && e.shiftKey) { e.preventDefault(); redo(); return; }
@@ -2242,17 +2356,32 @@ export default function TestfitTool() {
       }
       if (e.key === "0" || e.key === "Home") { e.preventDefault(); fitAll(); }
       if (e.key === "`") { e.preventDefault(); setView3d(v => !v); }
+      if (e.key === "/" && lastCopyInfo && (lastCopyInfo.dx !== 0 || lastCopyInfo.dy !== 0)) { e.preventDefault(); setRepeatInput(""); return; }
     };
     const up = (e) => { if (e.key === " ") setSpaceHeld(false); };
     window.addEventListener("keydown", down);
     window.addEventListener("keyup", up);
     return () => { window.removeEventListener("keydown", down); window.removeEventListener("keyup", up); };
-  }, [selectedId, selectedIds, selType, delSel, selDoor, selWindow, undo, redo, fitAll, dimInput, cursorPos, drawChain, pxPerFoot, commitWallSegment, tool, findNear, walls, nodes, doors, windows, columns, markers, zones, clipboard, pasteOffset, outletType, htrackAngle, lightingType]);
+  }, [selectedId, selectedIds, selType, delSel, selDoor, selWindow, undo, redo, fitAll, dimInput, cursorPos, drawChain, pxPerFoot, commitWallSegment, tool, findNear, walls, nodes, doors, windows, columns, markers, zones, clipboard, pasteOffset, outletType, htrackAngle, lightingType, lastCopyInfo, repeatInput, resolvePos, resolvePoints]);
 
   const $ = (n) => "$" + n.toLocaleString();
   const font = "'SF Mono','Consolas','Monaco',monospace";
   const nodeConns = useMemo(() => { const c = {}; walls.forEach(w => { c[w.n1] = (c[w.n1] || 0) + 1; c[w.n2] = (c[w.n2] || 0) + 1; }); return c; }, [walls]);
   const nodeWallsMap = useMemo(() => { const m = {}; walls.forEach(w => { if (!m[w.n1]) m[w.n1] = []; if (!m[w.n2]) m[w.n2] = []; m[w.n1].push(w); m[w.n2].push(w); }); return m; }, [walls]);
+
+  // 3D data — only resolved when the 3D view is open; avoids filtering/mapping every render
+  const data3d = useMemo(() => {
+    if (!view3d) return null;
+    return {
+      walls: walls.filter(w => phaseVisible(w.phase)),
+      nodes: nodes.map(n => { const r = gn(n.id); return r ? { ...n, x: r.x, y: r.y } : n; }),
+      doors: doors.filter(d => phaseVisible(d.phase)).map(d => ({ ...d, ...resolvePos(d) })),
+      windows: windows.filter(w => phaseVisible(w.phase)).map(w => ({ ...w, ...resolvePos(w) })),
+      columns: columns.filter(c => phaseVisible(c.phase)).map(c => ({ ...c, ...resolvePos(c) })),
+      zones: zones.filter(z => phaseVisible(z.phase)).map(z => z.points ? { ...z, points: resolvePoints(z) } : z),
+      markers: markers.filter(m => phaseVisible(m.phase)).map(m => ({ ...m, ...resolvePos(m) })),
+    };
+  }, [view3d, walls, nodes, doors, windows, columns, zones, markers, phaseVisible, gn, resolvePos, resolvePoints]);
 
   const DimLbl = ({ cx, cy, text, angle, off = -14, color = T.dimText }) => {
     let a = angle; if (a > 90) a -= 180; if (a < -90) a += 180;
@@ -3160,18 +3289,15 @@ export default function TestfitTool() {
             </Tooltip>
           </div>
 
-          {view3d && (
+          {view3d && data3d && (
             <TestFit3D
-              walls={walls.filter(w => phaseVisible(w.phase))}
-              nodes={nodes.map(n => {
-                const resolved = gn(n.id);
-                return resolved ? { ...n, x: resolved.x, y: resolved.y } : n;
-              })}
-              doors={doors.filter(d => phaseVisible(d.phase)).map(d => ({ ...d, ...resolvePos(d) }))}
-              windows={windows.filter(w => phaseVisible(w.phase)).map(w => ({ ...w, ...resolvePos(w) }))}
-              columns={columns.filter(c => phaseVisible(c.phase)).map(c => ({ ...c, ...resolvePos(c) }))}
-              zones={zones.filter(z => phaseVisible(z.phase)).map(z => z.points ? { ...z, points: resolvePoints(z) } : z)}
-              markers={markers.filter(m => phaseVisible(m.phase)).map(m => ({ ...m, ...resolvePos(m) }))}
+              walls={data3d.walls}
+              nodes={data3d.nodes}
+              doors={data3d.doors}
+              windows={data3d.windows}
+              columns={data3d.columns}
+              zones={data3d.zones}
+              markers={data3d.markers}
               dims={dims}
               pxPerFoot={pxPerFoot} ceilingHeight={ceilingHeight} T={T} themeMode={themeMode}
               controlsRef={controls3dRef} mode={mode}
@@ -3191,6 +3317,14 @@ export default function TestfitTool() {
               Previewing {pp?.name ?? "Existing"}
             </div>;
           })()}
+
+          {repeatInput !== null && (
+            <div style={{ position: "absolute", top: 12, left: "50%", transform: "translateX(-50%)", display: "flex", alignItems: "center", gap: 8, background: T.panelBg, border: "1px solid " + T.accent + "88", borderRadius: 20, padding: "5px 16px", fontSize: 11, color: T.textBright, fontWeight: 600, zIndex: 25, backdropFilter: "blur(12px)", boxShadow: T.panelShadow, letterSpacing: "0.02em" }}>
+              <span style={{ color: T.accent }}>/</span>
+              <span style={{ minWidth: 20, textAlign: "center" }}>{repeatInput || "…"}</span>
+              <span style={{ color: T.textMuted, fontSize: 10, fontWeight: 400 }}>copies · Enter to place · Esc to cancel</span>
+            </div>
+          )}
 
           {drawChain && !view3d && <div style={{ position: "absolute", top: "16px", left: "50%", transform: "translateX(-50%)", background: T.panelBg, border: "1px solid " + T.border, borderRadius: "6px", padding: "6px 14px", fontSize: "10px", color: MODES[mode].color, zIndex: 10, backdropFilter: "blur(12px)", boxShadow: T.panelShadow, fontWeight: 500 }}>
             Click to place · Double-click to finish · Shift: 45° snap · Type length to lock
@@ -4029,40 +4163,25 @@ export default function TestfitTool() {
               </>;
             })()}
             {/* Multi-select panels */}
-            {selectedIds.length > 1 && multiSelType && multiSelType !== "wall" && (() => {
-              const btnStyle = {
-                flex: 1, padding: "5px 0", background: "transparent", border: "1.5px solid " + T.border,
-                borderRadius: 5, cursor: "pointer", color: T.textMuted, fontSize: 10, fontFamily: "inherit",
-                display: "flex", alignItems: "center", justifyContent: "center",
-                transition: "all 0.12s ease",
-              };
-              const Row = ({ children }) => <div style={{ display: "flex", gap: 4, marginBottom: 4 }}>{children}</div>;
-              const Btn = ({ action, label, tip }) => (
-                <button style={btnStyle} title={tip}
-                  onClick={() => alignDistribute(action)}
-                  onMouseEnter={e => { e.currentTarget.style.borderColor = T.accent; e.currentTarget.style.color = T.textBright; }}
-                  onMouseLeave={e => { e.currentTarget.style.borderColor = T.border; e.currentTarget.style.color = T.textMuted; }}>
-                  {label}
-                </button>
-              );
-              return <div style={{ marginBottom: 10 }}>
+            {selectedIds.length > 1 && multiSelType && multiSelType !== "wall" && (
+              <div style={{ marginBottom: 10 }}>
                 <div style={S.lbl}>Align & Distribute</div>
-                <Row>
-                  <Btn action="alignLeft"    label="⬤◌◌" tip="Align Left" />
-                  <Btn action="alignCenterH" label="◌⬤◌" tip="Align Center (H)" />
-                  <Btn action="alignRight"   label="◌◌⬤" tip="Align Right" />
-                </Row>
-                <Row>
-                  <Btn action="alignTop"     label="▲" tip="Align Top" />
-                  <Btn action="alignMiddleV" label="↕" tip="Align Middle (V)" />
-                  <Btn action="alignBottom"  label="▼" tip="Align Bottom" />
-                </Row>
-                {selectedIds.length > 2 && <Row>
-                  <Btn action="distributeH" label="⇔ Space H" tip="Distribute Horizontally" />
-                  <Btn action="distributeV" label="⇕ Space V" tip="Distribute Vertically" />
-                </Row>}
-              </div>;
-            })()}
+                <div style={{ display: "flex", gap: 4, marginBottom: 4 }}>
+                  <AlignBtn action="alignLeft"    label="⬤◌◌" tip="Align Left"       onAction={alignDistribute} border={T.border} accent={T.accent} textMuted={T.textMuted} textBright={T.textBright} />
+                  <AlignBtn action="alignCenterH" label="◌⬤◌" tip="Align Center (H)" onAction={alignDistribute} border={T.border} accent={T.accent} textMuted={T.textMuted} textBright={T.textBright} />
+                  <AlignBtn action="alignRight"   label="◌◌⬤" tip="Align Right"      onAction={alignDistribute} border={T.border} accent={T.accent} textMuted={T.textMuted} textBright={T.textBright} />
+                </div>
+                <div style={{ display: "flex", gap: 4, marginBottom: 4 }}>
+                  <AlignBtn action="alignTop"     label="▲" tip="Align Top"        onAction={alignDistribute} border={T.border} accent={T.accent} textMuted={T.textMuted} textBright={T.textBright} />
+                  <AlignBtn action="alignMiddleV" label="↕" tip="Align Middle (V)" onAction={alignDistribute} border={T.border} accent={T.accent} textMuted={T.textMuted} textBright={T.textBright} />
+                  <AlignBtn action="alignBottom"  label="▼" tip="Align Bottom"     onAction={alignDistribute} border={T.border} accent={T.accent} textMuted={T.textMuted} textBright={T.textBright} />
+                </div>
+                {selectedIds.length > 2 && <div style={{ display: "flex", gap: 4, marginBottom: 4 }}>
+                  <AlignBtn action="distributeH" label="⇔ Space H" tip="Distribute Horizontally" onAction={alignDistribute} border={T.border} accent={T.accent} textMuted={T.textMuted} textBright={T.textBright} />
+                  <AlignBtn action="distributeV" label="⇕ Space V" tip="Distribute Vertically"   onAction={alignDistribute} border={T.border} accent={T.accent} textMuted={T.textMuted} textBright={T.textBright} />
+                </div>}
+              </div>
+            )}
             {selectedIds.length > 1 && multiSelType === "wall" && (() => {
               const items = multiSelItems;
               const kind = cv(items, "kind") || "existing";
