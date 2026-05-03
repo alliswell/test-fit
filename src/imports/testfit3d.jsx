@@ -864,7 +864,7 @@ export default function TestFit3D({
 
         <OrbitControls ref={controlsRef} enableDamping dampingFactor={0.08} zoomSpeed={0.5} minPolarAngle={0} maxPolarAngle={Math.PI / 2 - 0.04} target={[0, 0, 0]} />
         <CameraRig camDist={camDist} controlsRef={controlsRef} />
-        {style3d === "detailed" && <FilmEffect intensity={0.28} />}
+        {style3d === "detailed" && <FilmEffect intensity={0.85} />}
 
         <FloorPlane zones={zones} cx={cx} cz={cz} pxPerFoot={pxPerFoot} T={T} zoneLibrary={zoneLibrary} style3d={style3d} />
         <Grid args={[500, 500]} cellSize={1} sectionSize={10} cellColor={gridCell} sectionColor={gridSec} position={[gridOffX, 0.002, gridOffZ]} fadeDistance={camDist * 2.5} fadeStrength={1.2} />

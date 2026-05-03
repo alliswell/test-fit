@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from "react";
-import { MousePointer2, X, Plus, DoorOpen, Ruler, Box, LayoutDashboard, RotateCcw, Undo2, Redo2, Tag, Settings, ChevronDown, ChevronRight, Trash2, History, GitBranch } from "lucide-react";
+import { MousePointer2, X, Plus, DoorOpen, Ruler, Box, LayoutDashboard, RotateCcw, RotateCw, Undo2, Redo2, Tag, Settings, ChevronDown, ChevronRight, Trash2, History, GitBranch } from "lucide-react";
 import ZONE_LIBRARY_DEFAULTS from "../data/zone-library.json";
 import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "../app/components/ui/tooltip";
 import TestFit3D from "./testfit3d";
@@ -551,6 +551,10 @@ export default function TestfitTool() {
   const [visibleLayers, setVisibleLayers] = useState({ power: true, av: true, it: true, mep: true, security: true });
   const [visibleBuildElectrical, setVisibleBuildElectrical] = useState(true);
   const [visibleBuildLighting, setVisibleBuildLighting] = useState(true);
+  const [visibleZones, setVisibleZones] = useState(true);
+  const [visibleDims, setVisibleDims] = useState(true);
+  const [visibleLabels, setVisibleLabels] = useState(true);
+  const [visibleRevClouds, setVisibleRevClouds] = useState(true);
   const [selectedIds, setSelectedIds] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const [selType, setSelType] = useState(null);
@@ -624,7 +628,10 @@ export default function TestfitTool() {
 
   // Dynamic snap grid: 1" at 300%+, 3" at 150%+, 1' otherwise
   const snapGrid = zoom >= 3 ? pxPerFoot / 12 : zoom >= 1.5 ? pxPerFoot / 4 : pxPerFoot;
+  const [canvasRotation, setCanvasRotation] = useState(0); // multiples of 45, −315…315, wraps through 0
+  const [canvasRotNoTransition, setCanvasRotNoTransition] = useState(false);
   const cvs = useRef(null);
+  const cvsContainer = useRef(null); // unrotated container for hit-testing
   const fRef = useRef(null);
   const loadRef = useRef(null);
 
@@ -870,17 +877,20 @@ export default function TestfitTool() {
 
   // Snap for dimension tool: snaps to any significant point on canvas
   const findDimSnap = useCallback((x, y) => {
-    let best = null, bd = SNAP_R * 1.5; // slightly larger snap radius
-    const check = (px, py) => { const d = dst(x, y, px, py); if (d < bd) { best = { x: px, y: py }; bd = d; } };
-    nodes.forEach(n => check(n.x, n.y));
-    walls.forEach(w => { const c = wc(w); if (c) check((c.x1+c.x2)/2, (c.y1+c.y2)/2); }); // wall midpoints
+    let best = null, bd = SNAP_R * 1.5;
+    const check = (px, py, anchorId = null, anchorType = null) => {
+      const d = dst(x, y, px, py);
+      if (d < bd) { best = { x: px, y: py, anchorId, anchorType }; bd = d; }
+    };
+    nodes.forEach(n => { const rn = gn(n.id); if (rn) check(rn.x, rn.y, n.id, "node"); });
+    walls.forEach(w => { const c = wc(w); if (c) check((c.x1+c.x2)/2, (c.y1+c.y2)/2, w.id, "wall-mid"); });
     doors.forEach(d => check(d.x, d.y));
     windows.forEach(w => check(w.x, w.y));
     columns.forEach(c => check(c.x, c.y));
     markers.forEach(m => check(m.x, m.y));
     zones.forEach(z => { if (z.points) z.points.forEach(pt => check(pt.x, pt.y)); });
     return best;
-  }, [nodes, walls, doors, windows, columns, markers, zones, wc]);
+  }, [nodes, walls, doors, windows, columns, markers, zones, wc, gn]);
 
   // Snap a point to the nearest wall — returns {x, y, angle, wallId} or null
   const snapToWall = useCallback((px, py, maxDist = 20) => {
@@ -928,6 +938,18 @@ export default function TestfitTool() {
   }, []);
   useEffect(() => { load(); }, [load]);
   useEffect(() => { const t = setTimeout(save, 800); return () => clearTimeout(t); }, [save]);
+
+  // After animating to ±360° (visually = 0°), silently snap back to 0 with no transition
+  useEffect(() => {
+    if (canvasRotation !== 360 && canvasRotation !== -360) return;
+    const t = setTimeout(() => {
+      setCanvasRotNoTransition(true);
+      setCanvasRotation(0);
+      // Re-enable transition after one frame so the next click animates normally
+      requestAnimationFrame(() => requestAnimationFrame(() => setCanvasRotNoTransition(false)));
+    }, 270); // just after the 250ms transition completes
+    return () => clearTimeout(t);
+  }, [canvasRotation]);
   
   // Sync activeComponentType with activeSpecLayer when layer changes
   useEffect(() => {
@@ -939,7 +961,24 @@ export default function TestfitTool() {
     }
   }, [mode, activeSpecLayer, activeComponentType]);
 
-  const s2c = useCallback((cx, cy) => { const r = cvs.current?.getBoundingClientRect(); if (!r) return { x: 0, y: 0 }; return { x: (cx - r.left - viewOff.x) / zoom, y: (cy - r.top - viewOff.y) / zoom }; }, [viewOff, zoom]);
+  const s2c = useCallback((cx, cy) => {
+    // Use the container div (unaffected by SVG CSS rotation) for stable bounds
+    const r = (cvsContainer.current ?? cvs.current)?.getBoundingClientRect();
+    if (!r) return { x: 0, y: 0 };
+    // Un-rotate the cursor around the visual center before applying pan/zoom
+    let dx = cx - (r.left + r.width / 2);
+    let dy = cy - (r.top + r.height / 2);
+    if (canvasRotation !== 0) {
+      const rad = -canvasRotation * Math.PI / 180;
+      const cos = Math.cos(rad), sin = Math.sin(rad);
+      const rdx = dx * cos - dy * sin;
+      const rdy = dx * sin + dy * cos;
+      dx = rdx; dy = rdy;
+    }
+    const urx = dx + r.left + r.width / 2;
+    const ury = dy + r.top + r.height / 2;
+    return { x: (urx - r.left - viewOff.x) / zoom, y: (ury - r.top - viewOff.y) / zoom };
+  }, [viewOff, zoom, canvasRotation]);
 
   // Commit a wall segment in the chain
   const commitWallSegment = useCallback((fromNodeId, fromX, fromY, toX, toY, kind) => {
@@ -998,6 +1037,22 @@ export default function TestfitTool() {
 
   // Hit test
   // Resolve a label's leader tip to its live canvas position (follows anchor object when set)
+  // Resolves the live x1/y1/x2/y2 of a dim from its stored anchors.
+  // Node and wall-mid anchors track their geometry, all others fall back to stored coords.
+  const resolveDimEndpoints = useCallback((d) => {
+    const ep = (x, y, anchorId, anchorType) => {
+      if (!anchorId) return { x, y };
+      if (anchorType === "node") { const n = gn(anchorId); return n ? { x: n.x, y: n.y } : { x, y }; }
+      if (anchorType === "wall-mid") { const w = walls.find(w => w.id === anchorId); if (w) { const c = wc(w); if (c) return { x: (c.x1+c.x2)/2, y: (c.y1+c.y2)/2 }; } }
+      if (anchorType === "column") { const col = columns.find(c => c.id === anchorId); if (col) return resolvePos(col); }
+      if (anchorType === "marker") { const m = markers.find(m => m.id === anchorId); if (m) return resolvePos(m); }
+      return { x, y };
+    };
+    const p1 = ep(d.x1, d.y1, d.anchor1Id, d.anchor1Type);
+    const p2 = ep(d.x2, d.y2, d.anchor2Id, d.anchor2Type);
+    return { x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y };
+  }, [gn, walls, columns, markers, resolvePos, wc]);
+
   const resolveLeaderTip = useCallback((lbl) => {
     if (lbl.lx == null) return { lx: null, ly: null };
     if (!lbl.anchorId) return { lx: lbl.lx, ly: lbl.ly };
@@ -1125,7 +1180,7 @@ export default function TestfitTool() {
             return { type: "revcloud-vertex", id: rc.id, vertexIndex: vi };
         for (let ei = 0; ei < rc.points.length; ei++) {
           const ej = (ei + 1) % rc.points.length;
-          if (ptSeg(pos.x, pos.y, rc.points[ei].x, rc.points[ei].y, rc.points[ej].x, rc.points[ej].y) < 7)
+          if (ptSeg(pos.x, pos.y, rc.points[ei].x, rc.points[ei].y, rc.points[ej].x, rc.points[ej].y) < 10)
             return { type: "revcloud-edge", id: rc.id, edgeIndex: ei };
         }
       }
@@ -1138,7 +1193,7 @@ export default function TestfitTool() {
   const onDown = useCallback((e) => {
     // Pan with middle click or spacebar held
     if (e.button === 1 || (e.button === 0 && (tool === "pan" || spaceHeld))) {
-      setPanning(true); setPanSt({ x: e.clientX - viewOff.x, y: e.clientY - viewOff.y }); return;
+      setPanning(true); setPanSt({ sx: e.clientX, sy: e.clientY, ox: viewOff.x, oy: viewOff.y }); return;
     }
     const pos = s2c(e.clientX, e.clientY);
     let sx = sn(pos.x, snapGrid), sy = sn(pos.y, snapGrid);
@@ -1247,18 +1302,22 @@ export default function TestfitTool() {
       const snap = findDimSnap(pos.x, pos.y);
       const px = snap ? snap.x : sx, py = snap ? snap.y : sy;
       if (!drawDim) {
-        setDrawDim({ x1: px, y1: py });
+        setDrawDim({ x1: px, y1: py, anchor1Id: snap?.anchorId ?? null, anchor1Type: snap?.anchorType ?? null });
       } else if (!("x2" in drawDim)) {
         if (Math.hypot(px - drawDim.x1, py - drawDim.y1) < 4) return;
-        setDrawDim({ ...drawDim, x2: px, y2: py });
+        setDrawDim({ ...drawDim, x2: px, y2: py, anchor2Id: snap?.anchorId ?? null, anchor2Type: snap?.anchorType ?? null });
       } else {
         const ddx = drawDim.x2 - drawDim.x1, ddy = drawDim.y2 - drawDim.y1;
         const dlen = Math.hypot(ddx, ddy);
         if (dlen < 1) { setDrawDim(null); return; }
         const nnx = -ddy / dlen, nny = ddx / dlen;
         const off = (pos.x - drawDim.x1) * nnx + (pos.y - drawDim.y1) * nny;
-        setDims(prev => [...prev, { id: uid(), x1: drawDim.x1, y1: drawDim.y1, x2: drawDim.x2, y2: drawDim.y2, offset: off }]);
-        if (e.shiftKey) { setDrawDim(null); } // Shift: keep drawing more dims from fresh start
+        setDims(prev => [...prev, {
+          id: uid(), x1: drawDim.x1, y1: drawDim.y1, x2: drawDim.x2, y2: drawDim.y2, offset: off,
+          anchor1Id: drawDim.anchor1Id ?? null, anchor1Type: drawDim.anchor1Type ?? null,
+          anchor2Id: drawDim.anchor2Id ?? null, anchor2Type: drawDim.anchor2Type ?? null,
+        }]);
+        if (e.shiftKey) { setDrawDim(null); }
         else { setDrawDim(null); setT("select"); }
       }
       return;
@@ -1342,10 +1401,20 @@ export default function TestfitTool() {
         if (isMultiCopy) {
           // Duplicate ALL selected items and start a multi-drag with the copies
           const srcItems = [];
-          const newColumns = [], newMarkers = [], newDoors = [], newWindows = [], newZones = [], newLabels = [];
+          const newColumns = [], newMarkers = [], newDoors = [], newWindows = [], newZones = [], newLabels = [], newNodes = [], newWalls = [];
           const copyIds = [];
 
+          // Pre-pass: build node ID remap so wall copies can reference new node IDs
+          const nodeIdMap = new Map();
+          selectedIds.forEach(id => { if (nodes.find(n => n.id === id)) nodeIdMap.set(id, uid()); });
+
           selectedIds.forEach(id => {
+            // Nodes — must come before walls; drag.objects includes nodes so walls follow automatically
+            const nd = nodes.find(n => n.id === id);
+            if (nd) { const nid = nodeIdMap.get(id); const rp = resolvePos(nd); newNodes.push({ ...nd, id: nid, px: undefined, x: rp.x, y: rp.y }); srcItems.push({ id: nid, type: "node", x: rp.x, y: rp.y }); copyIds.push(nid); return; }
+            // Walls — remap n1/n2 to new node IDs; walls follow nodes during drag so not added to srcItems
+            const wl = walls.find(w => w.id === id);
+            if (wl) { const nid = uid(); newWalls.push({ ...wl, id: nid, n1: nodeIdMap.get(wl.n1) ?? wl.n1, n2: nodeIdMap.get(wl.n2) ?? wl.n2 }); copyIds.push(nid); return; }
             const col = columns.find(c => c.id === id);
             if (col) { const rp = resolvePos(col); const nid = uid(); newColumns.push({ ...col, id: nid, px: undefined, x: rp.x, y: rp.y }); srcItems.push({ id: nid, type: "column", x: rp.x, y: rp.y }); copyIds.push(nid); return; }
             const mk = markers.find(m => m.id === id);
@@ -1360,12 +1429,14 @@ export default function TestfitTool() {
             if (lb) { const nid = uid(); newLabels.push({ ...lb, id: nid }); srcItems.push({ id: nid, type: "label", x: lb.x, y: lb.y }); copyIds.push(nid); return; }
           });
 
+          if (newNodes.length)   setNodes(p => [...p, ...newNodes]);
+          if (newWalls.length)   setWalls(p => [...p, ...newWalls]);
           if (newColumns.length) setColumns(p => [...p, ...newColumns]);
           if (newMarkers.length) setMarkers(p => [...p, ...newMarkers]);
-          if (newDoors.length) setDoors(p => [...p, ...newDoors]);
+          if (newDoors.length)   setDoors(p => [...p, ...newDoors]);
           if (newWindows.length) setWindows(p => [...p, ...newWindows]);
-          if (newZones.length) setZones(p => [...p, ...newZones]);
-          if (newLabels.length) setLabels(p => [...p, ...newLabels]);
+          if (newZones.length)   setZones(p => [...p, ...newZones]);
+          if (newLabels.length)  setLabels(p => [...p, ...newLabels]);
 
           setSelectedIds(copyIds);
           setSelectedId(copyIds[0]);
@@ -1385,7 +1456,7 @@ export default function TestfitTool() {
               const c = polyCentroid(rpts);
               setSelectedId(nid); setSelType("zone");
               setLastCopyInfo({ srcItems: [{ id: nid, type: "zone", x: c.x, y: c.y }], dx: 0, dy: 0 });
-              setDrag({ type: "zone", id: nid, ox: pos.x - c.x, oy: pos.y - c.y, lastX: sn(c.x, snapGrid), lastY: sn(c.y, snapGrid), isCopy: true });
+              setDrag({ type: "zone", id: nid, ox: pos.x - c.x, oy: pos.y - c.y, startX: sn(c.x, snapGrid), startY: sn(c.y, snapGrid), startPts: rpts.map(p => ({ ...p })), lastX: sn(c.x, snapGrid), lastY: sn(c.y, snapGrid), isCopy: true });
             }
           } else if (hit.type === "door") {
             const src = doors.find(d => d.id === hit.id);
@@ -1656,12 +1727,21 @@ export default function TestfitTool() {
             }
           }
           else if (hit.type === "revcloud-edge") {
-            if (e.detail === 2) {
-              const rc = revClouds.find(r => r.id === hit.id);
-              if (rc) {
+            const rc = revClouds.find(r => r.id === hit.id);
+            if (rc) {
+              if (e.detail === 2) {
+                // Double-click: insert a new vertex on this edge
                 const newPts = [...rc.points];
                 newPts.splice((hit.edgeIndex + 1) % rc.points.length, 0, { x: sn(pos.x, snapGrid), y: sn(pos.y, snapGrid) });
                 setRevClouds(p => p.map(r => r.id === hit.id ? { ...r, points: newPts } : r));
+              } else {
+                // Single drag: move both endpoints of this edge together
+                const ei = hit.edgeIndex, ej = (hit.edgeIndex + 1) % rc.points.length;
+                const a = rc.points[ei], b = rc.points[ej];
+                setDrag({ type: "revcloud-edge", id: hit.id, edgeIndex: ei,
+                  ox: pos.x, oy: pos.y,
+                  startA: { ...a }, startB: { ...b },
+                  cursor: wallResizeCursor(a.x, a.y, b.x, b.y) });
               }
             }
           }
@@ -1693,7 +1773,18 @@ export default function TestfitTool() {
   }, [tool, activeZoneType, activeSpecLayer, s2c, findNear, findDimSnap, hitTest, walls, wc, zones, markers, doors, windows, columns, labels, revClouds, viewOff, drawChain, commitWallSegment, spaceHeld, doorWidth, windowWidth, columnSize, columnShape, snapToWall, snapGrid, activeComponentType, selectedIds, bgImage, bgOffset, gn, calibrationLine, drawDim, dims, nodes, pxPerFoot, zoneEdge, resolvePos, resolvePoints, activePhase, addingLeaderToId, snapLabelAnchor, drawRevCloud, polyCentroid]);
 
   const onMove = useCallback((e) => {
-    if (panning && panSt) { setViewOff({ x: e.clientX - panSt.x, y: e.clientY - panSt.y }); return; }
+    if (panning && panSt) {
+      const dsx = e.clientX - panSt.sx, dsy = e.clientY - panSt.sy;
+      let dvx = dsx, dvy = dsy;
+      if (canvasRotation !== 0) {
+        const rad = -canvasRotation * Math.PI / 180;
+        const cos = Math.cos(rad), sin = Math.sin(rad);
+        dvx = dsx * cos - dsy * sin;
+        dvy = dsx * sin + dsy * cos;
+      }
+      setViewOff({ x: panSt.ox + dvx, y: panSt.oy + dvy });
+      return;
+    }
     const pos = s2c(e.clientX, e.clientY);
     let sx = sn(pos.x, snapGrid), sy = sn(pos.y, snapGrid);
 
@@ -2101,13 +2192,13 @@ export default function TestfitTool() {
         }));
       }
       else if (drag.type === "dim") {
-        // Dragging the dim line adjusts offset (perpendicular distance from p1-p2 line)
         const dim = dims.find(x => x.id === drag.id);
         if (dim) {
-          const ddx = dim.x2 - dim.x1, ddy = dim.y2 - dim.y1, dlen = Math.hypot(ddx, ddy);
+          const re = resolveDimEndpoints(dim);
+          const ddx = re.x2 - re.x1, ddy = re.y2 - re.y1, dlen = Math.hypot(ddx, ddy);
           if (dlen > 0) {
             const nnx = -ddy / dlen, nny = ddx / dlen;
-            const newOff = (pos.x - dim.x1) * nnx + (pos.y - dim.y1) * nny;
+            const newOff = (pos.x - re.x1) * nnx + (pos.y - re.y1) * nny;
             setDims(p => p.map(x => x.id === drag.id ? { ...x, offset: newOff } : x));
           }
         }
@@ -2115,6 +2206,19 @@ export default function TestfitTool() {
       else if (drag.type === "label") {
         const newX = sn(pos.x - drag.ox, snapGrid), newY = sn(pos.y - drag.oy, snapGrid);
         setLabels(p => p.map(l => l.id !== drag.id ? l : { ...l, x: newX, y: newY }));
+      }
+      else if (drag.type === "revcloud-edge") {
+        const dx = pos.x - drag.ox, dy = pos.y - drag.oy;
+        const ei = drag.edgeIndex;
+        setRevClouds(p => p.map(r => {
+          if (r.id !== drag.id) return r;
+          const ej = (ei + 1) % r.points.length;
+          return { ...r, points: r.points.map((pt, i) => {
+            if (i === ei) return { x: sn(drag.startA.x + dx, snapGrid), y: sn(drag.startA.y + dy, snapGrid) };
+            if (i === ej) return { x: sn(drag.startB.x + dx, snapGrid), y: sn(drag.startB.y + dy, snapGrid) };
+            return pt;
+          })};
+        }));
       }
       else if (drag.type === "revcloud-vertex") {
         const newX = sn(pos.x - drag.ox, snapGrid), newY = sn(pos.y - drag.oy, snapGrid);
@@ -2159,7 +2263,7 @@ export default function TestfitTool() {
         return { ...z, x, y, w, h };
       }));
     }
-  }, [panning, panSt, drawChain, drag, resize, s2c, findNear, findDimSnap, walls, wc, tool, snapToWall, snapGrid, marquee, calibrationLine, dims, drawDim, zones, zoom, rotatingMarker, outletType, lightingType, htrackAngle, nodes, doors, windows, columns, markers, activePhase, snapLabelAnchor, revClouds, drawRevCloud]);
+  }, [panning, panSt, canvasRotation, drawChain, drag, resize, s2c, findNear, findDimSnap, walls, wc, tool, snapToWall, snapGrid, marquee, calibrationLine, dims, drawDim, zones, zoom, rotatingMarker, outletType, lightingType, htrackAngle, nodes, doors, windows, columns, markers, activePhase, snapLabelAnchor, revClouds, drawRevCloud, resolveDimEndpoints]);
 
   const onUp = useCallback((e) => {
     // Commit label placement
@@ -2343,11 +2447,20 @@ export default function TestfitTool() {
   const onWheel = useCallback((e) => {
     e.preventDefault();
     const factor = 1 - e.deltaY * 0.001;
-    const r = cvs.current?.getBoundingClientRect();
+    // Use unrotated container bounds so zoom pivot is in SVG viewport space
+    const r = (cvsContainer.current ?? cvs.current)?.getBoundingClientRect();
     if (!r) return;
-    // Cursor position relative to the SVG element
-    const mx = e.clientX - r.left;
-    const my = e.clientY - r.top;
+    const scx = r.left + r.width / 2, scy = r.top + r.height / 2;
+    let dx = e.clientX - scx, dy = e.clientY - scy;
+    if (canvasRotation !== 0) {
+      const rad = -canvasRotation * Math.PI / 180;
+      const cos = Math.cos(rad), sin = Math.sin(rad);
+      const rdx = dx * cos - dy * sin, rdy = dx * sin + dy * cos;
+      dx = rdx; dy = rdy;
+    }
+    // Position in SVG viewport pixels (same as if no rotation)
+    const mx = dx + r.width / 2;
+    const my = dy + r.height / 2;
     setZoom(z => {
       const newZ = Math.max(0.15, Math.min(4, z * factor));
       const scale = newZ / z;
@@ -2358,7 +2471,7 @@ export default function TestfitTool() {
       }));
       return newZ;
     });
-  }, []);
+  }, [canvasRotation]);
 
   const cost = useMemo(() => {
     const zc = zones.map(z => {
@@ -3627,26 +3740,44 @@ export default function TestfitTool() {
               </div>
             </>}
           </div>
-          {/* ── Build mode visibility toggles — pinned to sidebar bottom ── */}
-          {mode === "build" && (
-            <div style={{ borderTop: "1px solid " + T.bg3, padding: "10px 12px", background: T.bg1, flexShrink: 0 }}>
-              <div style={{ fontSize: 9, color: T.textDim, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6, fontWeight: 600 }}>Visibility</div>
-              {[
-                { key: "elec",  label: "Electrical", color: T.uiElec,     visible: visibleBuildElectrical, toggle: () => setVisibleBuildElectrical(v => !v), count: markers.filter(m => m.layer === "power" && !m.componentType?.startsWith("light_") && !m.componentType?.startsWith("htrack_") && m.componentType !== "sconce_prewire" && m.componentType !== "pendent_prewire").length },
-                { key: "light", label: "Lighting",   color: T.uiLighting, visible: visibleBuildLighting,   toggle: () => setVisibleBuildLighting(v => !v),   count: markers.filter(m => m.layer === "power" && (m.componentType?.startsWith("light_") || m.componentType?.startsWith("htrack_") || m.componentType === "sconce_prewire" || m.componentType === "pendent_prewire")).length },
-              ].map(({ key, label, color, visible, toggle, count }) => (
-                <div key={key} style={{ ...S.lr, padding: "5px 4px", borderRadius: 6, marginBottom: 1 }}>
-                  <div style={S.chk(visible, color)} onClick={toggle}>{visible && "✓"}</div>
-                  <span style={{ color: visible ? T.accent : T.textMuted, flex: 1, fontSize: 11 }}>{label}</span>
-                  <span style={{ color: visible ? color : T.accentDim, fontSize: 10, fontWeight: 500 }}>{count}</span>
-                </div>
-              ))}
-            </div>
-          )}
+          {/* ── Visibility panel — all modes ── */}
+          {(() => {
+            const isLightComp = ct => ct?.startsWith("light_") || ct?.startsWith("htrack_") || ct === "sconce_prewire" || ct === "pendent_prewire";
+            const rows = [
+              // Universal items
+              { key: "zones",      label: "Zones",          color: T.uiZone ?? "#6A9BCC", visible: visibleZones,          toggle: () => setVisibleZones(v => !v),          count: zones.length },
+              { key: "dims",       label: "Dimensions",     color: T.dimText,              visible: visibleDims,           toggle: () => setVisibleDims(v => !v),           count: dims.length },
+              { key: "labels",     label: "Labels",         color: T.textBright,           visible: visibleLabels,         toggle: () => setVisibleLabels(v => !v),         count: labels.length },
+              { key: "revClouds",  label: "Rev Clouds",     color: "#E05252",              visible: visibleRevClouds,      toggle: () => setVisibleRevClouds(v => !v),      count: revClouds.length },
+              // Build-specific
+              ...(mode === "build" ? [
+                { key: "elec",   label: "Electrical", color: T.uiElec,     visible: visibleBuildElectrical, toggle: () => setVisibleBuildElectrical(v => !v), count: markers.filter(m => m.layer === "power" && !isLightComp(m.componentType)).length },
+                { key: "light",  label: "Lighting",   color: T.uiLighting, visible: visibleBuildLighting,   toggle: () => setVisibleBuildLighting(v => !v),   count: markers.filter(m => m.layer === "power" && isLightComp(m.componentType)).length },
+              ] : []),
+              // ITMEP spec layers
+              ...(mode === "itmep" ? Object.entries(SPEC_LAYERS).filter(([k]) => k !== "power").map(([k, l]) => ({
+                key: k, label: l.name, color: uiColor(l.color), visible: visibleLayers[k],
+                toggle: () => setVisibleLayers(v => ({ ...v, [k]: !v[k] })),
+                count: markers.filter(m => m.layer === k).length,
+              })) : []),
+            ];
+            return (
+              <div style={{ borderTop: "1px solid " + T.bg3, padding: "10px 12px", background: T.bg1, flexShrink: 0 }}>
+                <div style={{ fontSize: 9, color: T.textDim, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6, fontWeight: 600 }}>Visibility</div>
+                {rows.map(({ key, label, color, visible, toggle, count }) => (
+                  <div key={key} style={{ ...S.lr, padding: "4px 4px", borderRadius: 6, marginBottom: 1 }}>
+                    <div style={S.chk(visible, color)} onClick={toggle}>{visible && "✓"}</div>
+                    <span style={{ color: visible ? T.accent : T.textMuted, flex: 1, fontSize: 11 }}>{label}</span>
+                    <span style={{ color: visible ? color : T.accentDim, fontSize: 10, fontWeight: 500 }}>{count}</span>
+                  </div>
+                ))}
+              </div>
+            );
+          })()}
         </div>
 
         {/* ── Canvas ──────────────────────────────────────────────── */}
-        <div style={S.cv}>
+        <div ref={cvsContainer} style={S.cv}>
           {/* 3D controls row — all buttons inline at bottom-right */}
           <div style={{ position: "absolute", bottom: 40, right: 12, zIndex: 20, display: "flex", alignItems: "center", gap: 4 }}>
             {view3d && (<>
@@ -3677,6 +3808,31 @@ export default function TestfitTool() {
               </Tooltip>
               <div style={{ width: 1, height: 20, background: T.border, margin: "0 2px" }} />
             </>)}
+            {!view3d && <>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button onClick={() => setCanvasRotation(r => { const n = r - 45; return n < -360 ? 0 : n; })}
+                    style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: "6px 8px", borderRadius: 6, border: "1px solid " + T.border, background: T.panelBg, color: T.textMuted, cursor: "pointer", backdropFilter: "blur(8px)", boxShadow: T.panelShadow, userSelect: "none" }}>
+                    <RotateCcw size={14} />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="top" sideOffset={8}>Rotate view −45°</TooltipContent>
+              </Tooltip>
+              <button onClick={() => setCanvasRotation(0)}
+                style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: "4px 7px", borderRadius: 6, border: "1px solid " + T.border, background: canvasRotation !== 0 ? T.accent + "22" : T.panelBg, color: canvasRotation !== 0 ? T.accent : T.textMuted, cursor: canvasRotation !== 0 ? "pointer" : "default", backdropFilter: "blur(8px)", boxShadow: T.panelShadow, userSelect: "none", fontSize: 10, fontFamily: "inherit", fontWeight: 600, minWidth: 32 }}>
+                {canvasRotation !== 0 ? `${canvasRotation}°` : "0°"}
+              </button>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button onClick={() => setCanvasRotation(r => { const n = r + 45; return n > 360 ? 0 : n; })}
+                    style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: "6px 8px", borderRadius: 6, border: "1px solid " + T.border, background: T.panelBg, color: T.textMuted, cursor: "pointer", backdropFilter: "blur(8px)", boxShadow: T.panelShadow, userSelect: "none" }}>
+                    <RotateCw size={14} />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="top" sideOffset={8}>Rotate view +45°</TooltipContent>
+              </Tooltip>
+              <div style={{ width: 1, height: 20, background: T.border, margin: "0 2px" }} />
+            </>}
             <Tooltip>
               <TooltipTrigger asChild>
                 <button onClick={() => setView3d(v => !v)} title={view3d ? "Switch to 2D (` key)" : "Switch to 3D (` key)"} style={{ display: "flex", alignItems: "center", gap: 5, padding: "5px 10px", fontSize: 11, fontWeight: 600, borderRadius: 6, border: "1px solid " + T.border, background: view3d ? T.accent : T.panelBg, color: view3d ? "#fff" : T.textMuted, cursor: "pointer", backdropFilter: "blur(8px)", boxShadow: T.panelShadow, userSelect: "none" }}>
@@ -3848,7 +4004,7 @@ export default function TestfitTool() {
           })()}
 
           <svg ref={cvs} width="100%" height="100%"
-            style={{ cursor: (panning || spaceHeld) ? "grabbing" : resize ? ({ n:"ns-resize",s:"ns-resize",e:"ew-resize",w:"ew-resize",ne:"nesw-resize",sw:"nesw-resize",nw:"nwse-resize",se:"nwse-resize" }[resize.edge] || "nwse-resize") : (drag?.type === "zone-edge" && drag.cursor) ? drag.cursor : zoneEdge ? zoneEdge.cursor : cadCrosshair(T.crosshairColor), userSelect: "none", display: view3d ? "none" : undefined }}
+            style={{ cursor: (panning || spaceHeld) ? "grabbing" : resize ? ({ n:"ns-resize",s:"ns-resize",e:"ew-resize",w:"ew-resize",ne:"nesw-resize",sw:"nesw-resize",nw:"nwse-resize",se:"nwse-resize" }[resize.edge] || "nwse-resize") : (drag?.type === "zone-edge" && drag.cursor) ? drag.cursor : (drag?.type === "revcloud-edge" && drag.cursor) ? drag.cursor : zoneEdge ? zoneEdge.cursor : cadCrosshair(T.crosshairColor), userSelect: "none", display: view3d ? "none" : undefined, transform: canvasRotation ? `rotate(${canvasRotation}deg)` : undefined, transformOrigin: "center", transition: canvasRotNoTransition ? "none" : "transform 0.25s cubic-bezier(0.4,0,0.2,1)" }}
             onMouseDown={onDown} onMouseMove={onMove} onMouseUp={onUp} onMouseLeave={onUp} onWheel={onWheel}>
             <defs>
               <filter id="glow-budget" x="-50%" y="-50%" width="200%" height="200%">
@@ -4230,7 +4386,8 @@ export default function TestfitTool() {
               {/* Dimension strings */}
               {showDims && dims.map(d => {
                 const sel = selectedId === d.id && selType === "dim";
-                return <g key={d.id} onClick={() => { setSelectedId(d.id); setSelType("dim"); }}><DimString d={d} sel={sel} /></g>;
+                const dr = { ...d, ...resolveDimEndpoints(d) };
+                return <g key={d.id} onClick={() => { setSelectedId(d.id); setSelType("dim"); }}><DimString d={dr} sel={sel} /></g>;
               })}
 
               {/* Labels & Callouts */}
@@ -4304,12 +4461,21 @@ export default function TestfitTool() {
                 const sel = selectedId === rc.id && selType === "revcloud";
                 const d = revCloudPath(rc.points, rc.arcR ?? 8);
                 const c = polyCentroid(rc.points);
-                return <g key={rc.id} style={{ cursor: tool === "select" ? "pointer" : "inherit" }}
+                return <g key={rc.id} style={{ cursor: tool === "select" ? (sel ? "move" : "pointer") : "inherit" }}
                   onClick={() => { if (tool === "select") { setSelectedId(rc.id); setSelType("revcloud"); setSelectedIds([rc.id]); } }}>
+                  {/* Interior hit area — move cursor */}
                   <path d={d} fill="transparent" stroke="none" />
+                  {/* Visual fill + stroke */}
                   <path d={d} fill={rc.color + "18"} stroke={rc.color} strokeWidth={sel ? 2 : 1.5}
                     strokeLinejoin="round" strokeLinecap="round" style={{ pointerEvents: "none" }} />
                   {sel && <path d={d} fill="none" stroke={rc.color} strokeWidth={5} opacity={0.15} style={{ pointerEvents: "none" }} />}
+                  {/* Per-edge transparent hit lines — each carries its own directional resize cursor */}
+                  {sel && rc.points.map((a, ei) => {
+                    const b = rc.points[(ei + 1) % rc.points.length];
+                    return <line key={ei} x1={a.x} y1={a.y} x2={b.x} y2={b.y}
+                      stroke="transparent" strokeWidth={16} strokeLinecap="round"
+                      style={{ cursor: wallResizeCursor(a.x, a.y, b.x, b.y) }} />;
+                  })}
                   {rc.label && <text x={c.x} y={c.y} textAnchor="middle" dominantBaseline="middle"
                     fontSize={10} fill={rc.color} fontFamily="inherit" style={{ pointerEvents: "none" }}>{rc.label}</text>}
                   {sel && rc.points.map((p, i) => <circle key={i} cx={p.x} cy={p.y} r={5}
@@ -5363,29 +5529,67 @@ export default function TestfitTool() {
 
           {bgImage && <div style={S.bg}><span style={{ color: T.textMuted, fontSize: 10, fontWeight: 500 }}>Underlay</span><input type="range" min="0" max="100" value={bgOpacity * 100} onChange={e => setBgOpacity(e.target.value / 100)} style={{ width: 70, accentColor: "#9A9488", height: 4 }} /><span style={{ fontSize: 10, fontWeight: 500 }}>{Math.round(bgOpacity * 100)}%</span></div>}
 
-          {/* ── Floating Toolbar ────────────────────────────────────── */}
-          {mode === "build" && (
-            <div style={S.floatingToolbar}>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button 
-                    style={S.toolBtn(tool === "select")} 
-                    onClick={() => setT("select")}
-                  >
-                    <MousePointer2 size={20} />
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent side="top" sideOffset={8}>Select (V)</TooltipContent>
-              </Tooltip>
-              
+          {/* ── Floating Toolbar (all modes) ────────────────────────── */}
+          <div style={S.floatingToolbar}>
+
+            {/* ── Universal tools (Select · Dim · Label · RevCloud) ── */}
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button style={S.toolBtn(tool === "select")} onClick={() => setT("select")}>
+                  <MousePointer2 size={20} />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="top" sideOffset={8}>Select (V)</TooltipContent>
+            </Tooltip>
+
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button style={S.toolBtn(tool === "dim", T.dimText)} onClick={() => setT("dim")}>
+                  <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                    <line x1="3" y1="10" x2="17" y2="10" stroke={T.dimText} strokeWidth="1" />
+                    <line x1="3" y1="6" x2="3" y2="14" stroke={T.dimText} strokeWidth="1.5" />
+                    <line x1="17" y1="6" x2="17" y2="14" stroke={T.dimText} strokeWidth="1.5" />
+                    <line x1="3" y1="7" x2="5.5" y2="10" stroke={T.dimText} strokeWidth="1" />
+                    <line x1="3" y1="13" x2="5.5" y2="10" stroke={T.dimText} strokeWidth="1" />
+                    <line x1="17" y1="7" x2="14.5" y2="10" stroke={T.dimText} strokeWidth="1" />
+                    <line x1="17" y1="13" x2="14.5" y2="10" stroke={T.dimText} strokeWidth="1" />
+                  </svg>
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="top" sideOffset={8}>Dimension (M)</TooltipContent>
+            </Tooltip>
+
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button style={S.toolBtn(tool === "label", T.textBright)} onClick={() => setT("label")}>
+                  <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                    <text x="10" y="15" textAnchor="middle" fontSize="15" fontWeight="700"
+                      fill={tool === "label" ? T.textBright : T.textMuted} fontFamily="sans-serif">T</text>
+                  </svg>
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="top" sideOffset={8}>Label / Callout (T)</TooltipContent>
+            </Tooltip>
+
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button style={S.toolBtn(tool === "revcloud", "#E05252")} onClick={() => setT("revcloud")}>
+                  <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                    <path d="M10 16 A3 3 0 0 1 4 16 A3 3 0 0 1 2 11 A3 3 0 0 1 5 6 A3 3 0 0 1 10 5 A3 3 0 0 1 15 6 A3 3 0 0 1 18 11 A3 3 0 0 1 16 16 Z"
+                      stroke={tool === "revcloud" ? "#E05252" : T.textMuted} strokeWidth="1.5" strokeLinejoin="round" />
+                  </svg>
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="top" sideOffset={8}>Revision Cloud (N)</TooltipContent>
+            </Tooltip>
+
+            {/* ── Build-mode tools ───────────────────────────────────── */}
+            {mode === "build" && <>
               <div style={S.toolSep} />
-              
+
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <button
-                    style={S.toolBtn(tool === "wall", WALL_KINDS[wallKind].color)}
-                    onClick={() => setT("wall")}
-                  >
+                  <button style={S.toolBtn(tool === "wall", WALL_KINDS[wallKind].color)} onClick={() => setT("wall")}>
                     <WallIcon />
                   </button>
                 </TooltipTrigger>
@@ -5396,22 +5600,16 @@ export default function TestfitTool() {
 
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <button
-                    style={S.toolBtn(tool === "door")}
-                    onClick={() => setT("door")}
-                  >
+                  <button style={S.toolBtn(tool === "door")} onClick={() => setT("door")}>
                     <DoorOpen size={20} />
                   </button>
                 </TooltipTrigger>
                 <TooltipContent side="top" sideOffset={8}>Door</TooltipContent>
               </Tooltip>
-              
+
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <button 
-                    style={S.toolBtn(tool === "window")} 
-                    onClick={() => setT("window")}
-                  >
+                  <button style={S.toolBtn(tool === "window")} onClick={() => setT("window")}>
                     <WindowIcon />
                   </button>
                 </TooltipTrigger>
@@ -5422,10 +5620,7 @@ export default function TestfitTool() {
 
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <button
-                    style={S.toolBtn(tool === "column")}
-                    onClick={() => setT("column")}
-                  >
+                  <button style={S.toolBtn(tool === "column")} onClick={() => setT("column")}>
                     <ColumnIcon />
                   </button>
                 </TooltipTrigger>
@@ -5463,195 +5658,27 @@ export default function TestfitTool() {
                 <TooltipContent side="top" sideOffset={8}>Lighting (L)</TooltipContent>
               </Tooltip>
 
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button style={S.toolBtn(tool === "dim", T.dimText)} onClick={() => setT("dim")}>
-                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-                      <line x1="3" y1="10" x2="17" y2="10" stroke={T.dimText} strokeWidth="1" />
-                      <line x1="3" y1="6" x2="3" y2="14" stroke={T.dimText} strokeWidth="1.5" />
-                      <line x1="17" y1="6" x2="17" y2="14" stroke={T.dimText} strokeWidth="1.5" />
-                      <line x1="3" y1="7" x2="5.5" y2="10" stroke={T.dimText} strokeWidth="1" />
-                      <line x1="3" y1="13" x2="5.5" y2="10" stroke={T.dimText} strokeWidth="1" />
-                      <line x1="17" y1="7" x2="14.5" y2="10" stroke={T.dimText} strokeWidth="1" />
-                      <line x1="17" y1="13" x2="14.5" y2="10" stroke={T.dimText} strokeWidth="1" />
-                    </svg>
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent side="top" sideOffset={8}>Dimension (M)</TooltipContent>
-              </Tooltip>
-
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button style={S.toolBtn(tool === "label", T.textBright)} onClick={() => setT("label")}>
-                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-                      <text x="10" y="15" textAnchor="middle" fontSize="15" fontWeight="700"
-                        fill={tool === "label" ? T.textBright : T.textMuted} fontFamily="sans-serif">T</text>
-                    </svg>
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent side="top" sideOffset={8}>Label / Callout (T)</TooltipContent>
-              </Tooltip>
-
-              <div style={S.toolSep} />
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button style={S.toolBtn(tool === "revcloud", "#E05252")} onClick={() => setT("revcloud")}>
-                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-                      <path d="M10 16 A3 3 0 0 1 4 16 A3 3 0 0 1 2 11 A3 3 0 0 1 5 6 A3 3 0 0 1 10 5 A3 3 0 0 1 15 6 A3 3 0 0 1 18 11 A3 3 0 0 1 16 16 Z"
-                        stroke={tool === "revcloud" ? "#E05252" : T.textMuted} strokeWidth="1.5" strokeLinejoin="round" />
-                    </svg>
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent side="top" sideOffset={8}>Revision Cloud (N)</TooltipContent>
-              </Tooltip>
-
-              {bgImage && (<>
+              {bgImage && <>
                 <div style={S.toolSep} />
-                
                 <Tooltip>
                   <TooltipTrigger asChild>
-                    <button 
-                      style={S.toolBtn(tool === "calibrate", T.uiConduit)}
-                      onClick={() => setT("calibrate")}
-                    >
+                    <button style={S.toolBtn(tool === "calibrate", T.uiConduit)} onClick={() => setT("calibrate")}>
                       <Ruler size={20} />
                     </button>
                   </TooltipTrigger>
                   <TooltipContent side="top" sideOffset={8}>Calibrate Scale</TooltipContent>
                 </Tooltip>
-              </>)}
-            </div>
-          )}
-
-
-          {/* ── IT/MEP Toolbar ──────────────────────────────────��──────── */}
-          {mode === "itmep" && (
-            <div style={S.floatingToolbar}>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button 
-                    style={S.toolBtn(tool === "select")} 
-                    onClick={() => setT("select")}
-                  >
-                    <MousePointer2 size={20} />
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent side="top" sideOffset={8}>Select (V)</TooltipContent>
-              </Tooltip>
-              
-              <div style={S.toolSep} />
-              
-              {/* Power components (now in Build mode — hidden here) */}
-              {activeSpecLayer === "power" && false && <>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button 
-                      style={S.toolBtn(tool === "marker" && activeComponentType === "duplex_outlet", uiColor(SPEC_LAYERS.power.color))} 
-                      onClick={() => { setActiveComponentType("duplex_outlet"); setT("marker"); }}
-                    >
-                      <svg width="20" height="20" viewBox="0 0 20 20"><circle cx="10" cy="10" r="7" fill="#50A070" /></svg>
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent side="top" sideOffset={8}>Duplex Outlet</TooltipContent>
-                </Tooltip>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button 
-                      style={S.toolBtn(tool === "marker" && activeComponentType === "quad_outlet", uiColor(SPEC_LAYERS.power.color))} 
-                      onClick={() => { setActiveComponentType("quad_outlet"); setT("marker"); }}
-                    >
-                      <svg width="20" height="20" viewBox="0 0 20 20"><circle cx="10" cy="10" r="7" fill="#E05050" /></svg>
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent side="top" sideOffset={8}>Quad Outlet</TooltipContent>
-                </Tooltip>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button 
-                      style={S.toolBtn(tool === "marker" && activeComponentType === "dedicated_quad", uiColor(SPEC_LAYERS.power.color))} 
-                      onClick={() => { setActiveComponentType("dedicated_quad"); setT("marker"); }}
-                    >
-                      <svg width="20" height="20" viewBox="0 0 20 20"><circle cx="10" cy="10" r="7" fill="#4080E0" /></svg>
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent side="top" sideOffset={8}>Dedicated Quad Circuit</TooltipContent>
-                </Tooltip>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button 
-                      style={S.toolBtn(tool === "marker" && activeComponentType === "ceiling_quad", uiColor(SPEC_LAYERS.power.color))} 
-                      onClick={() => { setActiveComponentType("ceiling_quad"); setT("marker"); }}
-                    >
-                      <svg width="20" height="20" viewBox="0 0 20 20"><circle cx="10" cy="10" r="7" fill="none" stroke="#E05050" strokeWidth="2" /><line x1="3" y1="10" x2="17" y2="10" stroke="#E05050" strokeWidth="2" /><line x1="10" y1="3" x2="10" y2="17" stroke="#E05050" strokeWidth="2" /></svg>
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent side="top" sideOffset={8}>Ceiling Quad Outlet</TooltipContent>
-                </Tooltip>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button 
-                      style={S.toolBtn(tool === "marker" && activeComponentType === "tstat", uiColor(SPEC_LAYERS.power.color))} 
-                      onClick={() => { setActiveComponentType("tstat"); setT("marker"); }}
-                    >
-                      <svg width="20" height="20" viewBox="0 0 20 20"><circle cx="10" cy="10" r="7" fill="none" stroke="#E05050" strokeWidth="2" /><text x="10" y="13" textAnchor="middle" fontSize="10" fill="#E05050" fontWeight="bold">T</text></svg>
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent side="top" sideOffset={8}>T-Stat</TooltipContent>
-                </Tooltip>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button 
-                      style={S.toolBtn(tool === "marker" && activeComponentType === "sconce_prewire", uiColor(SPEC_LAYERS.power.color))} 
-                      onClick={() => { setActiveComponentType("sconce_prewire"); setT("marker"); }}
-                    >
-                      <svg width="20" height="20" viewBox="0 0 20 20"><circle cx="10" cy="10" r="7" fill="none" stroke="#E05050" strokeWidth="2" /><text x="10" y="13" textAnchor="middle" fontSize="10" fill="#E05050" fontWeight="bold">S</text></svg>
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent side="top" sideOffset={8}>Sconce Prewire</TooltipContent>
-                </Tooltip>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button 
-                      style={S.toolBtn(tool === "marker" && activeComponentType === "pendent_prewire", uiColor(SPEC_LAYERS.power.color))} 
-                      onClick={() => { setActiveComponentType("pendent_prewire"); setT("marker"); }}
-                    >
-                      <svg width="20" height="20" viewBox="0 0 20 20"><circle cx="10" cy="10" r="7" fill="none" stroke="#E05050" strokeWidth="2" /><text x="10" y="13" textAnchor="middle" fontSize="10" fill="#E05050" fontWeight="bold">P</text></svg>
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent side="top" sideOffset={8}>Pendent Prewire</TooltipContent>
-                </Tooltip>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button
-                      style={S.toolBtn(tool === "marker" && activeComponentType === "htrack_4", uiColor(SPEC_LAYERS.power.color))}
-                      onClick={() => { setActiveComponentType("htrack_4"); setT("marker"); }}
-                    >
-                      <svg width="20" height="20" viewBox="0 0 20 20"><rect x="2" y="6" width="16" height="8" fill="none" stroke="#E05050" strokeWidth="2" rx="1" /><text x="10" y="13" textAnchor="middle" fontSize="8" fill="#E05050" fontWeight="bold">4'</text></svg>
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent side="top" sideOffset={8}>H-Track 4'</TooltipContent>
-                </Tooltip>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button
-                      style={S.toolBtn(tool === "marker" && activeComponentType === "htrack_8", uiColor(SPEC_LAYERS.power.color))}
-                      onClick={() => { setActiveComponentType("htrack_8"); setT("marker"); }}
-                    >
-                      <svg width="20" height="20" viewBox="0 0 20 20"><rect x="2" y="6" width="16" height="8" fill="none" stroke="#E05050" strokeWidth="2" rx="1" /><text x="10" y="13" textAnchor="middle" fontSize="8" fill="#E05050" fontWeight="bold">8'</text></svg>
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent side="top" sideOffset={8}>H-Track 8'</TooltipContent>
-                </Tooltip>
               </>}
-              
-              {/* AV components */}
+            </>}
+
+            {/* ── ITMEP-mode tools (power layer handled in Build mode) ── */}
+            {mode === "itmep" && activeSpecLayer !== "power" && <>
+              <div style={S.toolSep} />
+
               {activeSpecLayer === "av" && <>
                 <Tooltip>
                   <TooltipTrigger asChild>
-                    <button 
-                      style={S.toolBtn(tool === "marker" && activeComponentType === "wall_speaker", SPEC_LAYERS.av.color)} 
-                      onClick={() => { setActiveComponentType("wall_speaker"); setT("marker"); }}
-                    >
+                    <button style={S.toolBtn(tool === "marker" && activeComponentType === "wall_speaker", SPEC_LAYERS.av.color)} onClick={() => { setActiveComponentType("wall_speaker"); setT("marker"); }}>
                       <span style={{ fontSize: 16 }}>🔊</span>
                     </button>
                   </TooltipTrigger>
@@ -5659,10 +5686,7 @@ export default function TestfitTool() {
                 </Tooltip>
                 <Tooltip>
                   <TooltipTrigger asChild>
-                    <button 
-                      style={S.toolBtn(tool === "marker" && activeComponentType === "subwoofer", SPEC_LAYERS.av.color)} 
-                      onClick={() => { setActiveComponentType("subwoofer"); setT("marker"); }}
-                    >
+                    <button style={S.toolBtn(tool === "marker" && activeComponentType === "subwoofer", SPEC_LAYERS.av.color)} onClick={() => { setActiveComponentType("subwoofer"); setT("marker"); }}>
                       <span style={{ fontSize: 16 }}>📻</span>
                     </button>
                   </TooltipTrigger>
@@ -5670,10 +5694,7 @@ export default function TestfitTool() {
                 </Tooltip>
                 <Tooltip>
                   <TooltipTrigger asChild>
-                    <button 
-                      style={S.toolBtn(tool === "marker" && activeComponentType === "pendant_speaker", SPEC_LAYERS.av.color)} 
-                      onClick={() => { setActiveComponentType("pendant_speaker"); setT("marker"); }}
-                    >
+                    <button style={S.toolBtn(tool === "marker" && activeComponentType === "pendant_speaker", SPEC_LAYERS.av.color)} onClick={() => { setActiveComponentType("pendant_speaker"); setT("marker"); }}>
                       <span style={{ fontSize: 16 }}>🔈</span>
                     </button>
                   </TooltipTrigger>
@@ -5681,25 +5702,18 @@ export default function TestfitTool() {
                 </Tooltip>
                 <Tooltip>
                   <TooltipTrigger asChild>
-                    <button 
-                      style={S.toolBtn(tool === "marker" && activeComponentType === "speaker_line", SPEC_LAYERS.av.color)} 
-                      onClick={() => { setActiveComponentType("speaker_line"); setT("marker"); }}
-                    >
+                    <button style={S.toolBtn(tool === "marker" && activeComponentType === "speaker_line", SPEC_LAYERS.av.color)} onClick={() => { setActiveComponentType("speaker_line"); setT("marker"); }}>
                       <span style={{ fontSize: 16 }}>📡</span>
                     </button>
                   </TooltipTrigger>
                   <TooltipContent side="top" sideOffset={8}>Speaker Line</TooltipContent>
                 </Tooltip>
               </>}
-              
-              {/* IT components */}
+
               {activeSpecLayer === "it" && <>
                 <Tooltip>
                   <TooltipTrigger asChild>
-                    <button 
-                      style={S.toolBtn(tool === "marker" && activeComponentType === "router", SPEC_LAYERS.it.color)} 
-                      onClick={() => { setActiveComponentType("router"); setT("marker"); }}
-                    >
+                    <button style={S.toolBtn(tool === "marker" && activeComponentType === "router", SPEC_LAYERS.it.color)} onClick={() => { setActiveComponentType("router"); setT("marker"); }}>
                       <span style={{ fontSize: 16 }}>📶</span>
                     </button>
                   </TooltipTrigger>
@@ -5707,25 +5721,18 @@ export default function TestfitTool() {
                 </Tooltip>
                 <Tooltip>
                   <TooltipTrigger asChild>
-                    <button 
-                      style={S.toolBtn(tool === "marker" && activeComponentType === "access_point", SPEC_LAYERS.it.color)} 
-                      onClick={() => { setActiveComponentType("access_point"); setT("marker"); }}
-                    >
+                    <button style={S.toolBtn(tool === "marker" && activeComponentType === "access_point", SPEC_LAYERS.it.color)} onClick={() => { setActiveComponentType("access_point"); setT("marker"); }}>
                       <span style={{ fontSize: 16 }}>📡</span>
                     </button>
                   </TooltipTrigger>
                   <TooltipContent side="top" sideOffset={8}>Access Point</TooltipContent>
                 </Tooltip>
               </>}
-              
-              {/* MEP components */}
+
               {activeSpecLayer === "mep" && <>
                 <Tooltip>
                   <TooltipTrigger asChild>
-                    <button 
-                      style={S.toolBtn(tool === "marker" && activeComponentType === "drain_line", SPEC_LAYERS.mep.color)} 
-                      onClick={() => { setActiveComponentType("drain_line"); setT("marker"); }}
-                    >
+                    <button style={S.toolBtn(tool === "marker" && activeComponentType === "drain_line", SPEC_LAYERS.mep.color)} onClick={() => { setActiveComponentType("drain_line"); setT("marker"); }}>
                       <svg width="20" height="20" viewBox="0 0 20 20"><circle cx="10" cy="10" r="7" fill="none" stroke="#50A070" strokeWidth="2" /><text x="10" y="13" textAnchor="middle" fontSize="10" fill="#50A070" fontWeight="bold">D</text></svg>
                     </button>
                   </TooltipTrigger>
@@ -5733,25 +5740,18 @@ export default function TestfitTool() {
                 </Tooltip>
                 <Tooltip>
                   <TooltipTrigger asChild>
-                    <button 
-                      style={S.toolBtn(tool === "marker" && activeComponentType === "water_line", SPEC_LAYERS.mep.color)} 
-                      onClick={() => { setActiveComponentType("water_line"); setT("marker"); }}
-                    >
+                    <button style={S.toolBtn(tool === "marker" && activeComponentType === "water_line", SPEC_LAYERS.mep.color)} onClick={() => { setActiveComponentType("water_line"); setT("marker"); }}>
                       <svg width="20" height="20" viewBox="0 0 20 20"><circle cx="10" cy="10" r="7" fill="none" stroke="#5050A0" strokeWidth="2" /><text x="10" y="13" textAnchor="middle" fontSize="10" fill="#5050A0" fontWeight="bold">W</text></svg>
                     </button>
                   </TooltipTrigger>
                   <TooltipContent side="top" sideOffset={8}>Water Line</TooltipContent>
                 </Tooltip>
               </>}
-              
-              {/* Security components */}
+
               {activeSpecLayer === "security" && <>
                 <Tooltip>
                   <TooltipTrigger asChild>
-                    <button 
-                      style={S.toolBtn(tool === "marker" && activeComponentType === "white_camera", SPEC_LAYERS.security.color)} 
-                      onClick={() => { setActiveComponentType("white_camera"); setT("marker"); }}
-                    >
+                    <button style={S.toolBtn(tool === "marker" && activeComponentType === "white_camera", SPEC_LAYERS.security.color)} onClick={() => { setActiveComponentType("white_camera"); setT("marker"); }}>
                       <svg width="20" height="20" viewBox="0 0 20 20"><circle cx="10" cy="10" r="7" fill="none" stroke="#E8E0D0" strokeWidth="2" /><text x="10" y="13" textAnchor="middle" fontSize="10" fill="#E8E0D0" fontWeight="bold">C</text></svg>
                     </button>
                   </TooltipTrigger>
@@ -5759,10 +5759,7 @@ export default function TestfitTool() {
                 </Tooltip>
                 <Tooltip>
                   <TooltipTrigger asChild>
-                    <button 
-                      style={S.toolBtn(tool === "marker" && activeComponentType === "black_camera", SPEC_LAYERS.security.color)} 
-                      onClick={() => { setActiveComponentType("black_camera"); setT("marker"); }}
-                    >
+                    <button style={S.toolBtn(tool === "marker" && activeComponentType === "black_camera", SPEC_LAYERS.security.color)} onClick={() => { setActiveComponentType("black_camera"); setT("marker"); }}>
                       <svg width="20" height="20" viewBox="0 0 20 20"><circle cx="10" cy="10" r="7" fill="none" stroke="#2A2A26" strokeWidth="2" /><text x="10" y="13" textAnchor="middle" fontSize="10" fill="#2A2A26" fontWeight="bold">C</text></svg>
                     </button>
                   </TooltipTrigger>
@@ -5770,18 +5767,16 @@ export default function TestfitTool() {
                 </Tooltip>
                 <Tooltip>
                   <TooltipTrigger asChild>
-                    <button 
-                      style={S.toolBtn(tool === "marker" && activeComponentType === "outdoor_camera", SPEC_LAYERS.security.color)} 
-                      onClick={() => { setActiveComponentType("outdoor_camera"); setT("marker"); }}
-                    >
+                    <button style={S.toolBtn(tool === "marker" && activeComponentType === "outdoor_camera", SPEC_LAYERS.security.color)} onClick={() => { setActiveComponentType("outdoor_camera"); setT("marker"); }}>
                       <svg width="20" height="20" viewBox="0 0 20 20"><circle cx="10" cy="10" r="7" fill="none" stroke="#556B2F" strokeWidth="2" /><text x="10" y="13" textAnchor="middle" fontSize="10" fill="#556B2F" fontWeight="bold">O</text></svg>
                     </button>
                   </TooltipTrigger>
                   <TooltipContent side="top" sideOffset={8}>Outdoor Camera</TooltipContent>
                 </Tooltip>
               </>}
-            </div>
-          )}
+            </>}
+
+          </div>
 
           {/* ── Bottom Status Bar ────────────────────────────────────── */}
           <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, background: T.bg2, borderTop: "1px solid " + T.border, padding: "6px 16px", display: "flex", alignItems: "center", gap: 12, fontSize: 10, color: T.textDim, zIndex: 10 }}>
@@ -5791,7 +5786,7 @@ export default function TestfitTool() {
               </span>
             )}
 
-            {mode === "itmep" && (
+            {mode === "itmep" && activeSpecLayer !== "power" && (
               <span style={{ color: SPEC_LAYERS[activeSpecLayer]?.color || "#5A5448", fontSize: 10, fontWeight: 500 }}>
                 {SPEC_COMPONENTS[activeSpecLayer]?.[activeComponentType]?.icon} {SPEC_COMPONENTS[activeSpecLayer]?.[activeComponentType]?.name}
               </span>
