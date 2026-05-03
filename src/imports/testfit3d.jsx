@@ -2,6 +2,10 @@ import { useState, useMemo, useRef, useEffect } from "react";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { OrbitControls, Grid, Text, Billboard } from "@react-three/drei";
 import * as THREE from "three";
+import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
+import { RenderPass }     from "three/examples/jsm/postprocessing/RenderPass.js";
+import { FilmPass }       from "three/examples/jsm/postprocessing/FilmPass.js";
+import { OutputPass }     from "three/examples/jsm/postprocessing/OutputPass.js";
 
 // ─── Constants ─────────────────────────────────────────────────────────────────
 const WALL_KINDS = {
@@ -730,6 +734,34 @@ function FloorPlane({ zones, cx, cz, pxPerFoot, T, zoneLibrary, style3d = "clay"
   );
 }
 
+// Film grain (Detailed mode only). renderPriority=1 tells R3F to skip its
+// default auto-render; the composer's RenderPass owns the frame instead.
+function FilmEffect({ intensity = 0.28 }) {
+  const { gl, scene, camera, size } = useThree();
+  const composerRef = useRef();
+
+  // Build composer once — no size dep so resize never triggers a full rebuild.
+  useEffect(() => {
+    const composer = new EffectComposer(gl);
+    composer.addPass(new RenderPass(scene, camera));
+    composer.addPass(new FilmPass(intensity, false));
+    composer.addPass(new OutputPass());
+    composerRef.current = composer;
+    return () => { composer.dispose(); };
+  }, [gl, scene, camera, intensity]);
+
+  // Resize separately — cheap setSize call, no GPU resource reallocation.
+  useEffect(() => {
+    composerRef.current?.setSize(size.width, size.height);
+  }, [size.width, size.height]);
+
+  useFrame((_, delta) => {
+    composerRef.current?.render(delta);
+  }, 1);
+
+  return null;
+}
+
 // ─── Camera auto-fit on every mount ───────────────────────────────────────────
 // Runs inside the Canvas so it can access useThree(). Imperatively sets the
 // camera position and tells OrbitControls to treat it as the "home" state so
@@ -832,6 +864,7 @@ export default function TestFit3D({
 
         <OrbitControls ref={controlsRef} enableDamping dampingFactor={0.08} zoomSpeed={0.5} minPolarAngle={0} maxPolarAngle={Math.PI / 2 - 0.04} target={[0, 0, 0]} />
         <CameraRig camDist={camDist} controlsRef={controlsRef} />
+        {style3d === "detailed" && <FilmEffect intensity={0.28} />}
 
         <FloorPlane zones={zones} cx={cx} cz={cz} pxPerFoot={pxPerFoot} T={T} zoneLibrary={zoneLibrary} style3d={style3d} />
         <Grid args={[500, 500]} cellSize={1} sectionSize={10} cellColor={gridCell} sectionColor={gridSec} position={[gridOffX, 0.002, gridOffZ]} fadeDistance={camDist * 2.5} fadeStrength={1.2} />

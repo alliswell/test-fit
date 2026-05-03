@@ -642,17 +642,23 @@ export default function TestfitTool() {
     return phaseIdx <= activeIdx;
   }, [phases, effectivePhase]);
 
-  // Returns true if a marker should be visible at the current effective phase.
-  // Extends phaseVisible with deletedAtPhase support for cross-phase soft-deletion.
-  const markerVisible = useCallback((m) => {
-    if (!phaseVisible(m.phase)) return false;
-    if (m.deletedAtPhase) {
-      const activeIdx  = phases.findIndex(p => p.id === effectivePhase);
-      const deletedIdx = phases.findIndex(p => p.id === m.deletedAtPhase);
-      if (deletedIdx !== -1 && deletedIdx <= activeIdx) return false;
-    }
-    return true;
-  }, [phaseVisible, phases, effectivePhase]);
+  // Like phaseVisible but also respects deletedAtPhase for cross-phase soft-deletion.
+  // useMemo builds the index Map once per phases/effectivePhase change (not per marker).
+  const markerVisible = useMemo(() => {
+    const idxMap = new Map(phases.map((p, i) => [p.id, i]));
+    const activeIdx = idxMap.get(effectivePhase) ?? -1;
+    return (m) => {
+      if (m.phase) {
+        const pi = idxMap.get(m.phase);
+        if (pi !== undefined && pi > activeIdx) return false;
+      }
+      if (m.deletedAtPhase) {
+        const di = idxMap.get(m.deletedAtPhase);
+        if (di !== undefined && di <= activeIdx) return false;
+      }
+      return true;
+    };
+  }, [phases, effectivePhase]);
 
   // ── Project management ─────────────────────────────────────────────
   const getProjectData = useCallback(() => ({
@@ -1343,7 +1349,7 @@ export default function TestfitTool() {
             const col = columns.find(c => c.id === id);
             if (col) { const rp = resolvePos(col); const nid = uid(); newColumns.push({ ...col, id: nid, px: undefined, x: rp.x, y: rp.y }); srcItems.push({ id: nid, type: "column", x: rp.x, y: rp.y }); copyIds.push(nid); return; }
             const mk = markers.find(m => m.id === id);
-            if (mk) { const rp = resolvePos(mk); const nid = uid(); newMarkers.push({ ...mk, id: nid, px: undefined, x: rp.x, y: rp.y }); srcItems.push({ id: nid, type: "marker", x: rp.x, y: rp.y }); copyIds.push(nid); return; }
+            if (mk) { const rp = resolvePos(mk); const nid = uid(); newMarkers.push({ ...mk, id: nid, px: undefined, x: rp.x, y: rp.y, deletedAtPhase: undefined }); srcItems.push({ id: nid, type: "marker", x: rp.x, y: rp.y }); copyIds.push(nid); return; }
             const dr = doors.find(d => d.id === id);
             if (dr) { const rp = resolvePos(dr); const nid = uid(); newDoors.push({ ...dr, id: nid, px: undefined, x: rp.x, y: rp.y }); srcItems.push({ id: nid, type: "door", x: rp.x, y: rp.y }); copyIds.push(nid); return; }
             const win = windows.find(w => w.id === id);
@@ -1392,7 +1398,7 @@ export default function TestfitTool() {
             if (src) { const rp = resolvePos(src); setColumns(p => [...p, { ...src, id: nid, px: undefined, x: rp.x, y: rp.y }]); setSelectedId(nid); setSelType("column"); setLastCopyInfo({ srcItems: [{ id: nid, type: "column", x: rp.x, y: rp.y }], dx: 0, dy: 0 }); setDrag({ type: "column", id: nid, ox: pos.x - rp.x, oy: pos.y - rp.y, isCopy: true }); }
           } else if (hit.type === "marker") {
             const src = markers.find(m => m.id === hit.id);
-            if (src) { const rp = resolvePos(src); setMarkers(p => [...p, { ...src, id: nid, px: undefined, x: rp.x, y: rp.y }]); setSelectedId(nid); setSelType("marker"); setLastCopyInfo({ srcItems: [{ id: nid, type: "marker", x: rp.x, y: rp.y }], dx: 0, dy: 0 }); setDrag({ type: "marker", id: nid, ox: pos.x - rp.x, oy: pos.y - rp.y, isCopy: true }); }
+            if (src) { const rp = resolvePos(src); setMarkers(p => [...p, { ...src, id: nid, px: undefined, x: rp.x, y: rp.y, deletedAtPhase: undefined }]); setSelectedId(nid); setSelType("marker"); setLastCopyInfo({ srcItems: [{ id: nid, type: "marker", x: rp.x, y: rp.y }], dx: 0, dy: 0 }); setDrag({ type: "marker", id: nid, ox: pos.x - rp.x, oy: pos.y - rp.y, isCopy: true }); }
           } else if (hit.type === "label") {
             const src = labels.find(l => l.id === hit.id);
             if (src) { setLabels(p => [...p, { ...src, id: nid }]); setSelectedId(nid); setSelType("label"); setLastCopyInfo({ srcItems: [{ id: nid, type: "label", x: src.x, y: src.y }], dx: 0, dy: 0 }); setDrag({ type: "label", id: nid, ox: pos.x - src.x, oy: pos.y - src.y, isCopy: true }); }
@@ -2424,13 +2430,12 @@ export default function TestfitTool() {
   };
 
   const delSel = useCallback(() => {
-    // Returns the index of a phase id in the phases array (undefined → treated as activePhase)
     const pIdx = (id) => phases.findIndex(p => p.id === (id ?? activePhase));
-    // Phase-aware marker delete: hard-delete if created in same/newer phase, soft-delete otherwise
+    const activeIdx = pIdx(activePhase);
     const phaseDeleteMarkers = (p, matchFn) => p.reduce((acc, m) => {
       if (!matchFn(m)) { acc.push(m); return acc; }
-      if (pIdx(m.phase) >= pIdx(activePhase)) return acc;          // same/newer → hard delete
-      acc.push({ ...m, deletedAtPhase: activePhase });              // earlier → soft delete
+      if (pIdx(m.phase) >= activeIdx) return acc;
+      acc.push({ ...m, deletedAtPhase: activePhase });
       return acc;
     }, []);
 
@@ -2644,7 +2649,7 @@ export default function TestfitTool() {
                 newIds.push(nid);
                 const nx = item.x + dx * frac, ny = item.y + dy * frac;
                 if (item.type === "column") { const src = columns.find(c => c.id === item.id); if (src) newCols.push({ ...src, id: nid, px: undefined, x: nx, y: ny }); }
-                else if (item.type === "marker") { const src = markers.find(m => m.id === item.id); if (src) newMks.push({ ...src, id: nid, px: undefined, x: nx, y: ny }); }
+                else if (item.type === "marker") { const src = markers.find(m => m.id === item.id); if (src) newMks.push({ ...src, id: nid, px: undefined, x: nx, y: ny, deletedAtPhase: undefined }); }
                 else if (item.type === "door") { const src = doors.find(d => d.id === item.id); if (src) newDrs.push({ ...src, id: nid, px: undefined, x: nx, y: ny }); }
                 else if (item.type === "window") { const src = windows.find(w => w.id === item.id); if (src) newWins.push({ ...src, id: nid, px: undefined, x: nx, y: ny }); }
                 else if (item.type === "zone") { const src = zones.find(z => z.id === item.id); if (src) { const c = polyCentroid(resolvePoints(src)); const odx = nx - c.x, ody = ny - c.y; newZns.push({ ...src, id: nid, px: undefined, points: resolvePoints(src).map(p => ({ x: p.x + odx, y: p.y + ody })) }); } }
@@ -2701,7 +2706,7 @@ export default function TestfitTool() {
         const newDoors = clipboard.doors.map(d => ({ ...d, id: uid(), x: d.x + off, y: d.y + off }));
         const newWindows = clipboard.windows.map(w => ({ ...w, id: uid(), x: w.x + off, y: w.y + off }));
         const newColumns = clipboard.columns.map(c => ({ ...c, id: uid(), x: c.x + off, y: c.y + off }));
-        const newMarkers = clipboard.markers.map(m => ({ ...m, id: uid(), x: m.x + off, y: m.y + off }));
+        const newMarkers = clipboard.markers.map(m => ({ ...m, id: uid(), x: m.x + off, y: m.y + off, deletedAtPhase: undefined }));
         const newZones = clipboard.zones.map(z => z.points
           ? { ...z, id: uid(), points: z.points.map(pt => ({ x: pt.x + off, y: pt.y + off })) }
           : { ...z, id: uid(), x: z.x + off, y: z.y + off });
@@ -2773,9 +2778,9 @@ export default function TestfitTool() {
       windows: windows.filter(w => phaseVisible(w.phase)).map(w => ({ ...w, ...resolvePos(w) })),
       columns: columns.filter(c => phaseVisible(c.phase)).map(c => ({ ...c, ...resolvePos(c) })),
       zones: zones.filter(z => phaseVisible(z.phase)).map(z => z.points ? { ...z, points: resolvePoints(z) } : z),
-      markers: markers.filter(m => phaseVisible(m.phase)).map(m => ({ ...m, ...resolvePos(m) })),
+      markers: markers.filter(m => markerVisible(m)).map(m => ({ ...m, ...resolvePos(m) })),
     };
-  }, [view3d, walls, nodes, doors, windows, columns, zones, markers, phaseVisible, gn, resolvePos, resolvePoints]);
+  }, [view3d, walls, nodes, doors, windows, columns, zones, markers, phaseVisible, markerVisible, gn, resolvePos, resolvePoints]);
 
   const DimLbl = ({ cx, cy, text, angle, off = -14, color = T.dimText }) => {
     let a = angle; if (a > 90) a -= 180; if (a < -90) a += 180;
@@ -4497,7 +4502,7 @@ export default function TestfitTool() {
 
               {/* Markers (top) */}
               {markers.map(p => {
-                if (!phaseVisible(p.phase)) return null;
+                if (!markerVisible(p)) return null;
                 const rp = resolvePos(p);
                 const p_r = rp.x !== p.x || rp.y !== p.y ? { ...p, x: rp.x, y: rp.y } : p;
                 const l = SPEC_LAYERS[p_r.layer];
