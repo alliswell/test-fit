@@ -334,7 +334,64 @@ const DEFAULT_PHASES = [
   { id: "phase4",   name: "v3",       color: "#B06040", visible: true },
 ];
 
+// Shared label bounding box — single source of truth for both rendering and hit-testing
+const LABEL_MAX_W = 160;
+function wrapLabelLines(text, fontSize) {
+  const charW = fontSize * 0.6;
+  const maxChars = Math.max(1, Math.floor((LABEL_MAX_W - 16) / charW));
+  const result = [];
+  for (const rawLine of (text || "").split("\n")) {
+    if (!rawLine) { result.push(""); continue; }
+    const words = rawLine.split(" ");
+    let cur = "";
+    for (const word of words) {
+      const next = cur ? cur + " " + word : word;
+      if (next.length <= maxChars || !cur) { cur = next; }
+      else { result.push(cur); cur = word; }
+    }
+    if (cur) result.push(cur);
+  }
+  return result.length ? result : [""];
+}
+function labelBounds(lbl) {
+  const lineH = Math.round(lbl.fontSize * 1.4);
+  const lines = wrapLabelLines(lbl.text, lbl.fontSize);
+  const charW = lbl.fontSize * 0.6;
+  const w = Math.min(Math.max(...lines.map(l => l.length * charW), 20) + 16, LABEL_MAX_W);
+  const h = lines.length * lineH + 8;
+  return { w: Math.max(w, 36), h: Math.max(h, lbl.fontSize + 8), lines, lineH };
+}
+
 // Stable sub-components for the Align & Distribute panel (hoisted to avoid remounting on every render)
+function LabelAnnotation({ lbl, sel, tool, bg }) {
+  const labelFont = "'Inter', 'SF Pro', system-ui, sans-serif";
+  const fontW = lbl.bold ? 700 : 400;
+  const fontStyle = lbl.italic ? "italic" : "normal";
+  const { w: approxW, h: approxH, lines, lineH } = labelBounds(lbl);
+  const color = lbl.color;
+  const firstLineY = lbl.y - ((lines.length - 1) * lineH) / 2;
+  return <g style={{ cursor: tool === "select" ? "pointer" : "inherit" }}>
+    {lbl.lx != null && <>
+      <line x1={lbl.lx} y1={lbl.ly} x2={lbl.x} y2={lbl.y}
+        stroke={color} strokeWidth={sel ? 1.5 : 1} opacity={0.85} style={{ pointerEvents: "none" }} />
+      <circle cx={lbl.lx} cy={lbl.ly} r={3} fill={color} opacity={0.85} style={{ pointerEvents: "none" }} />
+    </>}
+    <rect x={lbl.x - approxW / 2} y={lbl.y - approxH / 2} width={approxW} height={approxH}
+      fill={bg} fillOpacity={0.9} stroke={color} strokeWidth={sel ? 1.5 : 1} strokeOpacity={0.75} rx={3} />
+    {sel && <rect x={lbl.x - approxW / 2 - 4} y={lbl.y - approxH / 2 - 4}
+      width={approxW + 8} height={approxH + 8} fill="none"
+      stroke={color} strokeWidth={1} strokeDasharray="4 3" rx={4} opacity={0.5} style={{ pointerEvents: "none" }} />}
+    {lbl.text
+      ? lines.map((line, i) => (
+          <text key={i} x={lbl.x} y={firstLineY + i * lineH} textAnchor="middle" dominantBaseline="middle"
+            fontSize={lbl.fontSize} fontWeight={fontW} fontStyle={fontStyle}
+            fill={color} fontFamily={labelFont} style={{ pointerEvents: "none" }}>{line || " "}</text>
+        ))
+      : <text x={lbl.x} y={lbl.y} textAnchor="middle" dominantBaseline="middle"
+          fontSize={lbl.fontSize} fill={color} opacity={0.35} fontFamily={labelFont} style={{ pointerEvents: "none" }}>Label…</text>}
+  </g>;
+}
+
 function AlignBtn({ action, label, tip, onAction, border, accent, textMuted, textBright }) {
   const base = { flex: 1, padding: "5px 0", background: "transparent", border: "1.5px solid " + border, borderRadius: 5, cursor: "pointer", color: textMuted, fontSize: 10, fontFamily: "inherit", display: "flex", alignItems: "center", justifyContent: "center", transition: "all 0.12s ease" };
   return (
@@ -344,6 +401,29 @@ function AlignBtn({ action, label, tip, onAction, border, accent, textMuted, tex
       {label}
     </button>
   );
+}
+
+function revCloudPath(points, arcR) {
+  if (points.length < 3) return "";
+  let signed = 0;
+  for (let i = 0; i < points.length; i++) {
+    const j = (i + 1) % points.length;
+    signed += (points[j].x - points[i].x) * (points[j].y + points[i].y);
+  }
+  const sweep = signed < 0 ? 1 : 0;
+  let d = `M ${points[0].x} ${points[0].y}`;
+  for (let i = 0; i < points.length; i++) {
+    const a = points[i], b = points[(i + 1) % points.length];
+    const len = Math.hypot(b.x - a.x, b.y - a.y);
+    if (len < 0.001) continue;
+    const count = Math.max(1, Math.round(len / (arcR * 2)));
+    const sx = (b.x - a.x) / count, sy = (b.y - a.y) / count;
+    for (let j = 0; j < count; j++) {
+      const ex = a.x + sx * (j + 1), ey = a.y + sy * (j + 1);
+      d += ` A ${arcR} ${arcR} 0 0 ${sweep} ${ex} ${ey}`;
+    }
+  }
+  return d + " Z";
 }
 
 export default function TestfitTool() {
@@ -358,6 +438,12 @@ export default function TestfitTool() {
   const [windows, setWindows] = useState([]); // {id, x, y, angle, width}
   const [columns, setColumns] = useState([]); // {id, x, y, size, shape:"circle"|"square"}
   const [dims, setDims] = useState([]); // [{id, x1, y1, x2, y2, offset}]
+  const [labels, setLabels] = useState([]); // [{id, x, y, text, fontSize, bold, italic, color, phase, lx, ly, anchorId, anchorType}]
+  const [revClouds, setRevClouds] = useState([]); // [{id, points:[{x,y}], arcR:8, label:"", color:"#E05252", phase}]
+  const [drawRevCloud, setDrawRevCloud] = useState(null); // null | {points:[{x,y}]}
+  const [editingLabelId, setEditingLabelId] = useState(null);
+  const [addingLeaderToId, setAddingLeaderToId] = useState(null);
+  const [editingLabelText, setEditingLabelText] = useState("");
   const [bgImage, setBgImage] = useState(null);
   const [bgOpacity, setBgOpacity] = useState(0.35);
   const [bgScale, setBgScale] = useState(1);
@@ -406,7 +492,7 @@ export default function TestfitTool() {
 
   const snapshot = useCallback(() => {
     if (skipSnapshotRef.current) { skipSnapshotRef.current = false; return; }
-    const state = JSON.stringify({ nodes, walls, zones, markers, doors, windows, columns, dims });
+    const state = JSON.stringify({ nodes, walls, zones, markers, doors, windows, columns, dims, labels, revClouds });
     const idx = historyIdxRef.current;
     // Trim any redo states ahead of current
     const hist = historyRef.current.slice(0, idx + 1);
@@ -418,7 +504,7 @@ export default function TestfitTool() {
     historyIdxRef.current = hist.length - 1;
     setCanUndo(hist.length > 1);
     setCanRedo(false);
-  }, [nodes, walls, zones, markers, doors, windows, columns, dims]);
+  }, [nodes, walls, zones, markers, doors, windows, columns, dims, labels, revClouds]);
 
   // Take snapshot after every meaningful state change (debounced)
   const snapshotTimer = useRef(null);
@@ -436,7 +522,7 @@ export default function TestfitTool() {
     skipSnapshotRef.current = true;
     setNodes(state.nodes); setWalls(state.walls); setZones(state.zones);
     setMarkers(state.markers); setDoors(state.doors); setWindows(state.windows);
-    setColumns(state.columns || []); setDims(state.dims || []);
+    setColumns(state.columns || []); setDims(state.dims || []); setLabels(state.labels || []); setRevClouds(state.revClouds || []);
     setSelectedId(null); setSelType(null);
     setCanUndo(newIdx > 0);
     setCanRedo(true);
@@ -451,7 +537,7 @@ export default function TestfitTool() {
     skipSnapshotRef.current = true;
     setNodes(state.nodes); setWalls(state.walls); setZones(state.zones);
     setMarkers(state.markers); setDoors(state.doors); setWindows(state.windows);
-    setColumns(state.columns || []); setDims(state.dims || []);
+    setColumns(state.columns || []); setDims(state.dims || []); setLabels(state.labels || []); setRevClouds(state.revClouds || []);
     setSelectedId(null); setSelType(null);
     setCanUndo(true);
     setCanRedo(newIdx < historyRef.current.length - 1);
@@ -480,6 +566,7 @@ export default function TestfitTool() {
   const controls3dRef = useRef(null);
   const [show3dLabels, setShow3dLabels] = useState(false);
   const [show3dDims,   setShow3dDims]   = useState(false);
+  const [style3d, setStyle3d] = useState("clay"); // "clay" | "xray" | "detailed"
   const [doorWidth, setDoorWidth] = useState(36);
   const [windowWidth, setWindowWidth] = useState(36);
   const [columnSize, setColumnSize] = useState(12); // inches
@@ -555,13 +642,25 @@ export default function TestfitTool() {
     return phaseIdx <= activeIdx;
   }, [phases, effectivePhase]);
 
+  // Returns true if a marker should be visible at the current effective phase.
+  // Extends phaseVisible with deletedAtPhase support for cross-phase soft-deletion.
+  const markerVisible = useCallback((m) => {
+    if (!phaseVisible(m.phase)) return false;
+    if (m.deletedAtPhase) {
+      const activeIdx  = phases.findIndex(p => p.id === effectivePhase);
+      const deletedIdx = phases.findIndex(p => p.id === m.deletedAtPhase);
+      if (deletedIdx !== -1 && deletedIdx <= activeIdx) return false;
+    }
+    return true;
+  }, [phaseVisible, phases, effectivePhase]);
+
   // ── Project management ─────────────────────────────────────────────
   const getProjectData = useCallback(() => ({
-    projectName, nodes, walls, zones, markers, doors, windows, columns, dims,
+    projectName, nodes, walls, zones, markers, doors, windows, columns, dims, labels, revClouds,
     bgOpacity, bgScale, bgOffset, pxPerFoot, showDims, zoneLibrary,
     phases, activePhase, versions,
     version: "testfit-v7",
-  }), [projectName, nodes, walls, zones, markers, doors, windows, columns, dims, bgOpacity, bgScale, bgOffset, pxPerFoot, showDims, zoneLibrary, phases, activePhase, versions]);
+  }), [projectName, nodes, walls, zones, markers, doors, windows, columns, dims, labels, revClouds, bgOpacity, bgScale, bgOffset, pxPerFoot, showDims, zoneLibrary, phases, activePhase, versions]);
 
   const exportProject = useCallback(() => {
     const data = getProjectData();
@@ -586,7 +685,7 @@ export default function TestfitTool() {
     setProjectName(d.projectName || "Restored");
     setNodes(arr(d.nodes)); setWalls(arr(d.walls)); setZones(arr(d.zones));
     setMarkers(arr(d.markers)); setDoors(arr(d.doors)); setWindows(arr(d.windows));
-    setColumns(arr(d.columns)); setDims(arr(d.dims));
+    setColumns(arr(d.columns)); setDims(arr(d.dims)); setLabels(arr(d.labels)); setRevClouds(arr(d.revClouds));
     setBgOpacity(d.bgOpacity ?? 0.35); setBgScale(d.bgScale ?? 1);
     setBgOffset(d.bgOffset ?? { x: 0, y: 0 });
     if (d.pxPerFoot) setPxPerFoot(d.pxPerFoot);
@@ -670,7 +769,7 @@ export default function TestfitTool() {
         setMarkers(arr(d.markers)); setDoors(arr(d.doors));
         const migratedCutouts = arr(d.cutouts).map(c => ({ ...c, type: "Cut Opening" }));
         setWindows([...arr(d.windows), ...migratedCutouts]);
-        setColumns(arr(d.columns)); setDims(arr(d.dims));
+        setColumns(arr(d.columns)); setDims(arr(d.dims)); setLabels(arr(d.labels)); setRevClouds(arr(d.revClouds));
         setBgOpacity(d.bgOpacity ?? 0.35); setBgScale(d.bgScale ?? 1);
         setBgOffset(d.bgOffset ?? { x: 0, y: 0 });
         if (d.pxPerFoot) setPxPerFoot(d.pxPerFoot);
@@ -690,7 +789,7 @@ export default function TestfitTool() {
 
   const newProject = useCallback(() => {
     setProjectName("New Club"); setNodes([]); setWalls([]); setZones([]);
-    setMarkers([]); setDoors([]); setWindows([]); setDims([]);
+    setMarkers([]); setDoors([]); setWindows([]); setDims([]); setLabels([]); setRevClouds([]);
     setBgImage(null); setBgOpacity(0.35); setBgScale(1); setBgOffset({ x: 0, y: 0 });
     setPxPerFoot(20); setShowDims(true); setShowGrid(true);
     setSelectedId(null); setSelType(null); setDrawChain(null); setDrawPolyZone(null); setCursorPos(null);
@@ -801,12 +900,12 @@ export default function TestfitTool() {
 
   // Save/Load
   const save = useCallback(async () => {
-    const payload = JSON.stringify({ projectName, nodes, walls, zones, markers, doors, windows, columns, dims, bgOpacity, bgScale, bgOffset, pxPerFoot, showDims });
+    const payload = JSON.stringify({ projectName, nodes, walls, zones, markers, doors, windows, columns, dims, labels, revClouds, bgOpacity, bgScale, bgOffset, pxPerFoot, showDims });
     try {
       if (window.storage) { await window.storage.set("testfit:v4", payload); }
       else { localStorage.setItem("testfit:v4", payload); }
     } catch (e) { console.warn("Auto-save failed:", e); }
-  }, [projectName, nodes, walls, zones, markers, doors, windows, columns, dims, bgOpacity, bgScale, bgOffset, pxPerFoot, showDims]);
+  }, [projectName, nodes, walls, zones, markers, doors, windows, columns, dims, labels, revClouds, bgOpacity, bgScale, bgOffset, pxPerFoot, showDims]);
   const load = useCallback(async () => {
     try {
       let raw = null;
@@ -816,7 +915,7 @@ export default function TestfitTool() {
         const d = JSON.parse(raw);
         const migratedCutouts = (d.cutouts || []).map(c => ({ ...c, type: "Cut Opening" }));
         const loadedNodes = d.nodes || [];
-        setProjectName(d.projectName || "New Club"); setNodes(loadedNodes); setWalls(d.walls || []); setZones(d.zones || []); setMarkers(d.markers || []); setDoors(d.doors || []); setWindows([...(d.windows || []), ...migratedCutouts]); setColumns(d.columns || []); setDims(d.dims || []); setBgOpacity(d.bgOpacity ?? 0.35); setBgScale(d.bgScale ?? 1); setBgOffset(d.bgOffset ?? { x: 0, y: 0 }); if (d.pxPerFoot) setPxPerFoot(d.pxPerFoot); if (d.showDims !== undefined) setShowDims(d.showDims);
+        setProjectName(d.projectName || "New Club"); setNodes(loadedNodes); setWalls(d.walls || []); setZones(d.zones || []); setMarkers(d.markers || []); setDoors(d.doors || []); setWindows([...(d.windows || []), ...migratedCutouts]); setColumns(d.columns || []); setDims(d.dims || []); setLabels(d.labels || []); setRevClouds(d.revClouds || []); setBgOpacity(d.bgOpacity ?? 0.35); setBgScale(d.bgScale ?? 1); setBgOffset(d.bgOffset ?? { x: 0, y: 0 }); if (d.pxPerFoot) setPxPerFoot(d.pxPerFoot); if (d.showDims !== undefined) setShowDims(d.showDims);
         if (loadedNodes.length) setTimeout(() => fitAll(loadedNodes), 50);
       }
     } catch (e) { console.warn("Auto-load failed:", e); }
@@ -892,6 +991,30 @@ export default function TestfitTool() {
   }, [findNear, wc, wallMaterial, wallPaintColor, wallPaintFinish, wallNotes, ponyHeight, ponyDepth, activePhase]);
 
   // Hit test
+  // Resolve a label's leader tip to its live canvas position (follows anchor object when set)
+  const resolveLeaderTip = useCallback((lbl) => {
+    if (lbl.lx == null) return { lx: null, ly: null };
+    if (!lbl.anchorId) return { lx: lbl.lx, ly: lbl.ly };
+    if (lbl.anchorType === "node") { const n = nodes.find(n => n.id === lbl.anchorId); return n ? { lx: n.x, ly: n.y } : { lx: lbl.lx, ly: lbl.ly }; }
+    if (lbl.anchorType === "column") { const c = columns.find(c => c.id === lbl.anchorId); return c ? { lx: c.x, ly: c.y } : { lx: lbl.lx, ly: lbl.ly }; }
+    if (lbl.anchorType === "marker") { const m = markers.find(m => m.id === lbl.anchorId); if (m) { const rp = resolvePos(m); return { lx: rp.x, ly: rp.y }; } return { lx: lbl.lx, ly: lbl.ly }; }
+    return { lx: lbl.lx, ly: lbl.ly };
+  }, [nodes, columns, markers, resolvePos]);
+
+  // Snap a point and identify which object it's anchoring to
+  const snapLabelAnchor = useCallback((px, py) => {
+    const near = findNear(px, py);
+    if (near) return { x: near.x, y: near.y, anchorId: near.id, anchorType: "node" };
+    for (const c of columns) { if (dst(px, py, c.x, c.y) < SNAP_R * 1.5) return { x: c.x, y: c.y, anchorId: c.id, anchorType: "column" }; }
+    for (const m of markers) { const rp = resolvePos(m); if (dst(px, py, rp.x, rp.y) < SNAP_R * 1.5) return { x: rp.x, y: rp.y, anchorId: m.id, anchorType: "marker" }; }
+    for (const rc of revClouds) { for (const pt of rc.points) { if (dst(px, py, pt.x, pt.y) < SNAP_R * 1.5) return { x: pt.x, y: pt.y, anchorId: rc.id, anchorType: "revcloud" }; } }
+    const snapPt = findDimSnap(px, py);
+    if (snapPt) return { x: snapPt.x, y: snapPt.y, anchorId: null, anchorType: null };
+    const ws = snapToWall(px, py, SNAP_R * 2);
+    if (ws) return { x: ws.x, y: ws.y, anchorId: null, anchorType: null };
+    return { x: px, y: py, anchorId: null, anchorType: null };
+  }, [findNear, findDimSnap, snapToWall, columns, markers, resolvePos, revClouds]);
+
   const hitTest = useCallback((pos) => {
     // Dim strings are always selectable in any mode
     for (let i = dims.length - 1; i >= 0; i--) {
@@ -915,7 +1038,7 @@ export default function TestfitTool() {
       for (let i = markers.length - 1; i >= 0; i--) {
         const p = markers[i];
         if (p.layer !== "power") continue;
-        if (!phaseVisible(p.phase)) continue;
+        if (!markerVisible(p)) continue;
         const rp = resolvePos(p);
         const ct = p.componentType;
         const isHtrack = ct === "htrack_4" || ct === "htrack_8" || ct === "htrack";
@@ -970,10 +1093,41 @@ export default function TestfitTool() {
         else { if (pos.x >= z.x && pos.x <= z.x + z.w && pos.y >= z.y && pos.y <= z.y + z.h) return { type: "zone", id: z.id }; }
       }
     } else if (mode === "itmep") {
-      for (let i = markers.length - 1; i >= 0; i--) { const p = markers[i]; if (!phaseVisible(p.phase)) continue; const rp = resolvePos(p); if (dst(pos.x, pos.y, rp.x, rp.y) < 14) return { type: "marker", id: p.id }; }
+      for (let i = markers.length - 1; i >= 0; i--) { const p = markers[i]; if (!markerVisible(p)) continue; const rp = resolvePos(p); if (dst(pos.x, pos.y, rp.x, rp.y) < 14) return { type: "marker", id: p.id }; }
+    }
+    for (let i = labels.length - 1; i >= 0; i--) {
+      const lbl = labels[i];
+      if (!phaseVisible(lbl.phase)) continue;
+      // Leader tip hit (small circle, checked before box so tip is always reachable)
+      if (lbl.lx != null) {
+        const tip = resolveLeaderTip(lbl);
+        if (dst(pos.x, pos.y, tip.lx, tip.ly) <= 8) return { type: "label-tip", id: lbl.id };
+      }
+      const { w, h } = labelBounds(lbl);
+      if (pos.x >= lbl.x - w / 2 && pos.x <= lbl.x + w / 2 &&
+          pos.y >= lbl.y - h / 2 && pos.y <= lbl.y + h / 2)
+        return { type: "label", id: lbl.id };
+    }
+    // RevCloud hit testing
+    for (let i = revClouds.length - 1; i >= 0; i--) {
+      const rc = revClouds[i];
+      if (!phaseVisible(rc.phase)) continue;
+      const isSel = selectedId === rc.id && selType === "revcloud";
+      if (isSel) {
+        for (let vi = 0; vi < rc.points.length; vi++)
+          if (dst(pos.x, pos.y, rc.points[vi].x, rc.points[vi].y) < SNAP_R)
+            return { type: "revcloud-vertex", id: rc.id, vertexIndex: vi };
+        for (let ei = 0; ei < rc.points.length; ei++) {
+          const ej = (ei + 1) % rc.points.length;
+          if (ptSeg(pos.x, pos.y, rc.points[ei].x, rc.points[ei].y, rc.points[ej].x, rc.points[ej].y) < 7)
+            return { type: "revcloud-edge", id: rc.id, edgeIndex: ei };
+        }
+      }
+      if (rc.points.length >= 3 && pointInPoly(pos.x, pos.y, rc.points))
+        return { type: "revcloud", id: rc.id };
     }
     return null;
-  }, [mode, nodes, walls, zones, markers, doors, windows, columns, dims, wc, inToPx, selectedId, selectedIds, resolvePos, resolvePoints, phaseVisible]);
+  }, [mode, nodes, walls, zones, markers, doors, windows, columns, dims, labels, revClouds, wc, inToPx, selectedId, selectedIds, selType, resolvePos, resolvePoints, phaseVisible, resolveLeaderTip]);
 
   const onDown = useCallback((e) => {
     // Pan with middle click or spacebar held
@@ -1069,7 +1223,7 @@ export default function TestfitTool() {
       const snap = wallSnap ? snapToWall(pos.x, pos.y, Infinity) : null;
       const ox = snap ? snap.x : sx, oy = snap ? snap.y : sy;
       const angleRad = outletType.startsWith("htrack_") ? (htrackAngle * Math.PI / 180) : (snap ? (snap.angle * Math.PI / 180) : 0);
-      setMarkers(p => [...p, { id: nid, layer: "power", componentType: outletType, x: ox, y: oy, angle: angleRad, isNew: outletIsNew, label: SPEC_COMPONENTS.power[outletType].name, notes: "" }]);
+      setMarkers(p => [...p, { id: nid, layer: "power", componentType: outletType, x: ox, y: oy, angle: angleRad, isNew: outletIsNew, label: SPEC_COMPONENTS.power[outletType].name, notes: "", phase: activePhase }]);
       if (e.shiftKey) { setSelectedId(null); setSelType(null); } else { setSelectedId(nid); setSelType("marker"); setTool("select"); setGhostPos(null); }
       return;
     }
@@ -1079,7 +1233,7 @@ export default function TestfitTool() {
       const snap = isCeiling ? null : snapToWall(pos.x, pos.y, Infinity);
       const ox = snap ? snap.x : sx, oy = snap ? snap.y : sy;
       const angleRad = lightingType.startsWith("htrack_") ? (htrackAngle * Math.PI / 180) : (snap ? (snap.angle * Math.PI / 180) : 0);
-      setMarkers(p => [...p, { id: nid, layer: "power", componentType: lightingType, x: ox, y: oy, angle: angleRad, isNew: lightingIsNew, label: SPEC_COMPONENTS.power[lightingType].name, notes: "" }]);
+      setMarkers(p => [...p, { id: nid, layer: "power", componentType: lightingType, x: ox, y: oy, angle: angleRad, isNew: lightingIsNew, label: SPEC_COMPONENTS.power[lightingType].name, notes: "", phase: activePhase }]);
       if (e.shiftKey) { setSelectedId(null); setSelType(null); } else { setSelectedId(nid); setSelType("marker"); setTool("select"); setGhostPos(null); }
       return;
     }
@@ -1114,6 +1268,42 @@ export default function TestfitTool() {
       }
       return;
     }
+    if (tool === "revcloud") {
+      const near = findNear(pos.x, pos.y);
+      const cx = near ? near.x : sx, cy = near ? near.y : sy;
+      if (!drawRevCloud) {
+        setDrawRevCloud({ points: [{ x: cx, y: cy }] });
+      } else {
+        const pts = drawRevCloud.points;
+        const distToFirst = dst(cx, cy, pts[0].x, pts[0].y);
+        if (pts.length >= 3 && distToFirst < SNAP_R * 1.5) {
+          const nid = uid();
+          setRevClouds(prev => [...prev, { id: nid, points: pts, arcR: 8, label: "", color: "#E05252", phase: activePhase }]);
+          setDrawRevCloud(null);
+          setSelectedId(nid); setSelType("revcloud"); setSelectedIds([nid]);
+          setT("select");
+        } else {
+          const last = pts[pts.length - 1];
+          if (dst(cx, cy, last.x, last.y) > 4)
+            setDrawRevCloud({ points: [...pts, { x: cx, y: cy }] });
+        }
+      }
+      return;
+    }
+    // "Add Leader" mode: next click sets leader anchor
+    if (addingLeaderToId) {
+      const { x, y, anchorId, anchorType } = snapLabelAnchor(pos.x, pos.y);
+      setLabels(p => p.map(l => l.id !== addingLeaderToId ? l : { ...l, lx: x, ly: y, anchorId, anchorType }));
+      setAddingLeaderToId(null);
+      e.stopPropagation();
+      return;
+    }
+    if (tool === "label") {
+      const { x: startX, y: startY, anchorId: startAnchorId, anchorType: startAnchorType } = snapLabelAnchor(pos.x, pos.y);
+      setDrag({ type: "label-place", startX, startY, startAnchorId, startAnchorType, snapped: !!(startAnchorId || startX !== pos.x || startY !== pos.y) });
+      e.stopPropagation();
+      return;
+    }
     if (tool === "select") {
       const hit = hitTest(pos);
       
@@ -1146,7 +1336,7 @@ export default function TestfitTool() {
         if (isMultiCopy) {
           // Duplicate ALL selected items and start a multi-drag with the copies
           const srcItems = [];
-          const newColumns = [], newMarkers = [], newDoors = [], newWindows = [], newZones = [];
+          const newColumns = [], newMarkers = [], newDoors = [], newWindows = [], newZones = [], newLabels = [];
           const copyIds = [];
 
           selectedIds.forEach(id => {
@@ -1160,6 +1350,8 @@ export default function TestfitTool() {
             if (win) { const rp = resolvePos(win); const nid = uid(); newWindows.push({ ...win, id: nid, px: undefined, x: rp.x, y: rp.y }); srcItems.push({ id: nid, type: "window", x: rp.x, y: rp.y }); copyIds.push(nid); return; }
             const zn = zones.find(z => z.id === id);
             if (zn) { const rpts = resolvePoints(zn); const nid = uid(); newZones.push({ ...zn, id: nid, px: undefined, points: rpts.map(p => ({ ...p })) }); const c = polyCentroid(rpts); srcItems.push({ id: nid, type: "zone", x: c.x, y: c.y }); copyIds.push(nid); return; }
+            const lb = labels.find(l => l.id === id);
+            if (lb) { const nid = uid(); newLabels.push({ ...lb, id: nid }); srcItems.push({ id: nid, type: "label", x: lb.x, y: lb.y }); copyIds.push(nid); return; }
           });
 
           if (newColumns.length) setColumns(p => [...p, ...newColumns]);
@@ -1167,6 +1359,7 @@ export default function TestfitTool() {
           if (newDoors.length) setDoors(p => [...p, ...newDoors]);
           if (newWindows.length) setWindows(p => [...p, ...newWindows]);
           if (newZones.length) setZones(p => [...p, ...newZones]);
+          if (newLabels.length) setLabels(p => [...p, ...newLabels]);
 
           setSelectedIds(copyIds);
           setSelectedId(copyIds[0]);
@@ -1200,6 +1393,9 @@ export default function TestfitTool() {
           } else if (hit.type === "marker") {
             const src = markers.find(m => m.id === hit.id);
             if (src) { const rp = resolvePos(src); setMarkers(p => [...p, { ...src, id: nid, px: undefined, x: rp.x, y: rp.y }]); setSelectedId(nid); setSelType("marker"); setLastCopyInfo({ srcItems: [{ id: nid, type: "marker", x: rp.x, y: rp.y }], dx: 0, dy: 0 }); setDrag({ type: "marker", id: nid, ox: pos.x - rp.x, oy: pos.y - rp.y, isCopy: true }); }
+          } else if (hit.type === "label") {
+            const src = labels.find(l => l.id === hit.id);
+            if (src) { setLabels(p => [...p, { ...src, id: nid }]); setSelectedId(nid); setSelType("label"); setLastCopyInfo({ srcItems: [{ id: nid, type: "label", x: src.x, y: src.y }], dx: 0, dy: 0 }); setDrag({ type: "label", id: nid, ox: pos.x - src.x, oy: pos.y - src.y, isCopy: true }); }
           }
         }
         setSelectedIds([]);
@@ -1246,17 +1442,29 @@ export default function TestfitTool() {
             const column = columns.find(c => c.id === id);
             if (column) {
               initialPositions.push({ id, type: "column", x: column.x, y: column.y });
+              return;
+            }
+            const lbl = labels.find(l => l.id === id);
+            if (lbl) {
+              initialPositions.push({ id, type: "label", x: lbl.x, y: lbl.y, lx: lbl.lx, ly: lbl.ly });
+              return;
+            }
+            const rc = revClouds.find(r => r.id === id);
+            if (rc) {
+              const c = polyCentroid(rc.points);
+              const startLabelPositions = labels.filter(l => l.anchorType === "revcloud" && l.anchorId === id).map(l => ({ id: l.id, x: l.x, y: l.y, lx: l.lx, ly: l.ly }));
+              initialPositions.push({ id, type: "revcloud", centroid: c, points: rc.points.map(p => ({ ...p })), startLabelPositions });
             }
           });
-          
+
           setDrag({ type: "multi", objects: initialPositions, startX: pos.x, startY: pos.y, lastX: pos.x, lastY: pos.y });
-          setSelectedId(hit.id); setSelType(hit.type);
+          setSelectedId(hit.id); setSelType(hit.type === "label-tip" ? "label" : hit.type);
         } else {
           // Clear multi-selection when clicking on a single object (unless shift is held)
           if (!e.shiftKey) {
             setSelectedIds([hit.id]);
           }
-          setSelectedId(hit.id); setSelType(hit.type);
+          setSelectedId(hit.id); setSelType(hit.type === "label-tip" ? "label" : hit.type);
           if (hit.type === "node") {
             if (e.detail === 2) {
               // Double-click node: merge two walls by removing this node
@@ -1306,7 +1514,7 @@ export default function TestfitTool() {
               setNodes(p => [...p, { id: newNodeId, x: newX, y: newY }]);
               // Original wall keeps n1→newNode, new wall goes newNode→n2
               const origN2 = w.n2;
-              setWalls(p => [...p.map(ww => ww.id === w.id ? { ...ww, n2: newNodeId } : ww), { id: newWallId, n1: newNodeId, n2: origN2, kind: w.kind }]);
+              setWalls(p => [...p.map(ww => ww.id === w.id ? { ...ww, n2: newNodeId } : ww), { ...w, id: newWallId, n1: newNodeId, n2: origN2 }]);
               setSelectedId(newNodeId); setSelType("node");
             }
           } else {
@@ -1419,6 +1627,49 @@ export default function TestfitTool() {
           else if (hit.type === "window") { const w = windows.find(ww => ww.id === hit.id); if (w) { const rp = resolvePos(w); setDrag({ type: "window", id: hit.id, ox: pos.x - rp.x, oy: pos.y - rp.y }); } }
           else if (hit.type === "column") { const c = columns.find(cc => cc.id === hit.id); if (c) { const rp = resolvePos(c); setDrag({ type: "column", id: hit.id, ox: pos.x - rp.x, oy: pos.y - rp.y }); } }
           else if (hit.type === "dim") { setDrag({ type: "dim", id: hit.id }); }
+          else if (hit.type === "label-tip") {
+            setSelectedId(hit.id); setSelType("label"); setSelectedIds([hit.id]);
+            setDrag({ type: "label-tip", id: hit.id, snapX: null, snapY: null, snapped: false, snapAnchorId: null, snapAnchorType: null });
+          }
+          else if (hit.type === "label") {
+            if (e.detail < 2) {
+              const hitLbl = labels.find(l => l.id === hit.id);
+              setDrag({ type: "label", id: hit.id, ox: pos.x - (hitLbl?.x ?? 0), oy: pos.y - (hitLbl?.y ?? 0) });
+            }
+            // double-click handled by onClick on the <g> via e.detail >= 2
+          }
+          else if (hit.type === "revcloud-vertex") {
+            const rc = revClouds.find(r => r.id === hit.id);
+            if (rc) {
+              if (e.detail === 2 && rc.points.length > 3)
+                setRevClouds(p => p.map(r => r.id === hit.id ? { ...r, points: r.points.filter((_, i) => i !== hit.vertexIndex) } : r));
+              else if (e.detail < 2) {
+                const vt = rc.points[hit.vertexIndex];
+                setDrag({ type: "revcloud-vertex", id: hit.id, vertexIndex: hit.vertexIndex, ox: pos.x - vt.x, oy: pos.y - vt.y, origVx: vt.x, origVy: vt.y });
+              }
+            }
+          }
+          else if (hit.type === "revcloud-edge") {
+            if (e.detail === 2) {
+              const rc = revClouds.find(r => r.id === hit.id);
+              if (rc) {
+                const newPts = [...rc.points];
+                newPts.splice((hit.edgeIndex + 1) % rc.points.length, 0, { x: sn(pos.x, snapGrid), y: sn(pos.y, snapGrid) });
+                setRevClouds(p => p.map(r => r.id === hit.id ? { ...r, points: newPts } : r));
+              }
+            }
+          }
+          else if (hit.type === "revcloud") {
+            const rc = revClouds.find(r => r.id === hit.id);
+            if (rc) {
+              const c = polyCentroid(rc.points);
+              const startLabelPositions = labels
+                .filter(l => l.anchorType === "revcloud" && l.anchorId === rc.id)
+                .map(l => ({ id: l.id, x: l.x, y: l.y, lx: l.lx, ly: l.ly }));
+              setDrag({ type: "revcloud", id: hit.id, ox: pos.x - c.x, oy: pos.y - c.y,
+                startX: c.x, startY: c.y, startPts: rc.points.map(p => ({ ...p })), startLabelPositions });
+            }
+          }
         }
       } else {
         // No hit — Alt+drag moves underlay image, otherwise start marquee selection
@@ -1433,7 +1684,7 @@ export default function TestfitTool() {
         }
       }
     }
-  }, [tool, activeZoneType, activeSpecLayer, s2c, findNear, findDimSnap, hitTest, walls, wc, zones, markers, doors, windows, columns, viewOff, drawChain, commitWallSegment, spaceHeld, doorWidth, windowWidth, columnSize, columnShape, snapToWall, snapGrid, activeComponentType, selectedIds, bgImage, bgOffset, gn, calibrationLine, drawDim, dims, nodes, pxPerFoot, zoneEdge, resolvePos, resolvePoints, activePhase]);
+  }, [tool, activeZoneType, activeSpecLayer, s2c, findNear, findDimSnap, hitTest, walls, wc, zones, markers, doors, windows, columns, labels, revClouds, viewOff, drawChain, commitWallSegment, spaceHeld, doorWidth, windowWidth, columnSize, columnShape, snapToWall, snapGrid, activeComponentType, selectedIds, bgImage, bgOffset, gn, calibrationLine, drawDim, dims, nodes, pxPerFoot, zoneEdge, resolvePos, resolvePoints, activePhase, addingLeaderToId, snapLabelAnchor, drawRevCloud, polyCentroid]);
 
   const onMove = useCallback((e) => {
     if (panning && panSt) { setViewOff({ x: e.clientX - panSt.x, y: e.clientY - panSt.y }); return; }
@@ -1488,6 +1739,26 @@ export default function TestfitTool() {
     if (tool === "select" && !drag) { const near = findNear(pos.x, pos.y); setHoverNid(near ? near.id : null); }
     if (tool === "dim") { const dsnap = findDimSnap(pos.x, pos.y); setGhostPos(dsnap ? { x: dsnap.x, y: dsnap.y, snapped: true } : { x: pos.x, y: pos.y, snapped: false }); }
     if (tool === "zone" || tool === "marker" || tool === "column") { setGhostPos({ x: sx, y: sy }); }
+    if (tool === "revcloud") {
+      const near = findNear(pos.x, pos.y);
+      setGhostPos(near ? { x: near.x, y: near.y, snapped: true } : { x: sx, y: sy, snapped: false });
+    }
+    if (tool === "label") {
+      const snap = snapLabelAnchor(pos.x, pos.y);
+      setGhostPos({ x: snap.x, y: snap.y, snapped: !!(snap.anchorId || snap.x !== pos.x || snap.y !== pos.y) });
+    }
+    // Leader tip drag: snap to objects and update ghost for snap indicator
+    if (drag?.type === "label-tip") {
+      const { x, y, anchorId, anchorType } = snapLabelAnchor(pos.x, pos.y);
+      setGhostPos({ x, y, snapped: !!anchorId });
+      setDrag(d => ({ ...d, snapX: x, snapY: y, snapAnchorId: anchorId, snapAnchorType: anchorType, snapped: !!anchorId }));
+      return;
+    }
+    if (drag?.type === "label-place") {
+      const snap = snapLabelAnchor(pos.x, pos.y);
+      setGhostPos({ x: snap.x, y: snap.y, snapped: !!(snap.anchorId || snap.x !== pos.x || snap.y !== pos.y) });
+      return;
+    }
     if (tool === "door" || tool === "window") {
       const snap = snapToWall(pos.x, pos.y);
       if (snap) setGhostPos({ x: snap.x, y: snap.y, angle: snap.angle, snapped: true });
@@ -1623,6 +1894,20 @@ export default function TestfitTool() {
                 if (c.id !== obj.id) return c;
                 if (activePhase && activePhase !== "existing") { const base = c.px?.[activePhase] ?? { x: c.x, y: c.y }; return { ...c, px: { ...c.px, [activePhase]: { x: base.x + dx, y: base.y + dy } } }; }
                 return { ...c, x: c.x + dx, y: c.y + dy };
+              }));
+            } else if (obj.type === "label") {
+              setLabels(p => p.map(l => l.id !== obj.id ? l : { ...l, x: l.x + dx, y: l.y + dy }));
+            } else if (obj.type === "revcloud") {
+              const rdx = sn(pos.x, snapGrid) - drag.startX, rdy = sn(pos.y, snapGrid) - drag.startY;
+              setRevClouds(p => p.map(r => r.id !== obj.id ? r
+                : { ...r, points: obj.points.map(pt => ({ x: pt.x + rdx, y: pt.y + rdy })) }));
+              // move labels anchored to this cloud that aren't themselves in the multi-selection
+              const selSet = new Set(selectedIds);
+              setLabels(p => p.map(l => {
+                if (l.anchorType !== "revcloud" || l.anchorId !== obj.id || selSet.has(l.id)) return l;
+                const lp = obj.startLabelPositions?.find(lsp => lsp.id === l.id);
+                if (!lp || lp.lx == null) return l; // no leader → text stays put
+                return { ...l, lx: lp.lx + rdx, ly: lp.ly + rdy }; // only leader tip moves
               }));
             }
           });
@@ -1821,6 +2106,35 @@ export default function TestfitTool() {
           }
         }
       }
+      else if (drag.type === "label") {
+        const newX = sn(pos.x - drag.ox, snapGrid), newY = sn(pos.y - drag.oy, snapGrid);
+        setLabels(p => p.map(l => l.id !== drag.id ? l : { ...l, x: newX, y: newY }));
+      }
+      else if (drag.type === "revcloud-vertex") {
+        const newX = sn(pos.x - drag.ox, snapGrid), newY = sn(pos.y - drag.oy, snapGrid);
+        setRevClouds(p => p.map(r => r.id !== drag.id ? r
+          : { ...r, points: r.points.map((pt, i) => i === drag.vertexIndex ? { x: newX, y: newY } : pt) }));
+        setLabels(p => p.map(l => {
+          if (l.anchorType !== "revcloud" || l.anchorId !== drag.id) return l;
+          const atTip = l.lx != null && Math.abs(l.lx - drag.origVx) < 1 && Math.abs(l.ly - drag.origVy) < 1;
+          if (atTip) return { ...l, lx: newX, ly: newY };
+          return l;
+        }));
+      }
+      else if (drag.type === "revcloud") {
+        const dx = sn(pos.x - drag.ox, snapGrid) - drag.startX;
+        const dy = sn(pos.y - drag.oy, snapGrid) - drag.startY;
+        setRevClouds(p => p.map(r => r.id !== drag.id ? r
+          : { ...r, points: drag.startPts.map(pt => ({ x: pt.x + dx, y: pt.y + dy })) }));
+        if (drag.startLabelPositions?.length) {
+          const posMap = new Map(drag.startLabelPositions.map(lp => [lp.id, lp]));
+          setLabels(p => p.map(l => {
+            const lp = posMap.get(l.id);
+            if (!lp || lp.lx == null) return l; // no leader → text stays put
+            return { ...l, lx: lp.lx + dx, ly: lp.ly + dy }; // only leader tip moves
+          }));
+        }
+      }
       else if (drag.type === "underlay") {
         setBgOffset({ x: pos.x - drag.ox, y: pos.y - drag.oy });
       }
@@ -1839,9 +2153,44 @@ export default function TestfitTool() {
         return { ...z, x, y, w, h };
       }));
     }
-  }, [panning, panSt, drawChain, drag, resize, s2c, findNear, findDimSnap, walls, wc, tool, snapToWall, snapGrid, marquee, calibrationLine, dims, drawDim, zones, zoom, rotatingMarker, outletType, lightingType, htrackAngle, nodes, doors, windows, columns, markers, activePhase]);
+  }, [panning, panSt, drawChain, drag, resize, s2c, findNear, findDimSnap, walls, wc, tool, snapToWall, snapGrid, marquee, calibrationLine, dims, drawDim, zones, zoom, rotatingMarker, outletType, lightingType, htrackAngle, nodes, doors, windows, columns, markers, activePhase, snapLabelAnchor, revClouds, drawRevCloud]);
 
   const onUp = useCallback((e) => {
+    // Commit label placement
+    if (drag?.type === "label-tip") {
+      const pos = s2c(e.clientX, e.clientY);
+      const { x, y, anchorId, anchorType } = snapLabelAnchor(pos.x, pos.y);
+      setLabels(p => p.map(l => l.id !== drag.id ? l : { ...l, lx: x, ly: y, anchorId, anchorType }));
+      setDrag(null); setGhostPos(null);
+      return;
+    }
+    if (drag?.type === "label-place") {
+      const rawPos = s2c(e.clientX, e.clientY);
+      const endSnap = snapLabelAnchor(rawPos.x, rawPos.y);
+      const dx = endSnap.x - drag.startX, dy = endSnap.y - drag.startY;
+      const isLeader = Math.hypot(dx, dy) > 8;
+      const nid = uid();
+      const rcAnchorId = drag.startAnchorType === "revcloud" ? drag.startAnchorId : endSnap.anchorType === "revcloud" ? endSnap.anchorId : null;
+      const rcColor = rcAnchorId ? revClouds.find(r => r.id === rcAnchorId)?.color : null;
+      const defaultColor = rcColor ?? (themeMode === "dark" ? "#F0EDE6" : "#1A1812");
+      const newLabel = {
+        id: nid, phase: activePhase,
+        x: isLeader ? endSnap.x : drag.startX,
+        y: isLeader ? endSnap.y : drag.startY,
+        text: "",
+        fontSize: 12, bold: false, italic: false,
+        color: defaultColor,
+        lx: isLeader ? drag.startX : null,
+        ly: isLeader ? drag.startY : null,
+        anchorId: isLeader ? (drag.startAnchorId ?? null) : null,
+        anchorType: isLeader ? (drag.startAnchorType ?? null) : null,
+      };
+      setLabels(p => [...p, newLabel]);
+      setEditingLabelId(nid);
+      setEditingLabelText("");
+      setDrag(null);
+      return;
+    }
     // Finish marquee selection
     if (marquee) {
       const minX = Math.min(marquee.startX, marquee.endX);
@@ -1893,11 +2242,22 @@ export default function TestfitTool() {
           }
         });
         markers.forEach(m => {
-          if (!phaseVisible(m.phase)) return;
+          if (!markerVisible(m)) return;
           const rp = resolvePos(m);
           if (rp.x >= minX && rp.x <= maxX && rp.y >= minY && rp.y <= maxY) {
             selected.push({ id: m.id, type: "marker" });
           }
+        });
+        labels.forEach(lbl => {
+          if (!phaseVisible(lbl.phase)) return;
+          if (lbl.x >= minX && lbl.x <= maxX && lbl.y >= minY && lbl.y <= maxY)
+            selected.push({ id: lbl.id, type: "label" });
+        });
+        revClouds.forEach(rc => {
+          if (!phaseVisible(rc.phase)) return;
+          const c = polyCentroid(rc.points);
+          if (c.x >= minX && c.x <= maxX && c.y >= minY && c.y <= maxY)
+            selected.push({ id: rc.id, type: "revcloud" });
         });
       } else if (mode === "zone") {
         zones.forEach(z => {
@@ -1911,7 +2271,7 @@ export default function TestfitTool() {
         });
       } else if (mode === "itmep") {
         markers.forEach(m => {
-          if (!phaseVisible(m.phase)) return;
+          if (!markerVisible(m)) return;
           const rp = resolvePos(m);
           if (rp.x >= minX && rp.x <= maxX && rp.y >= minY && rp.y <= maxY) {
             selected.push({ id: m.id, type: "marker" });
@@ -1971,7 +2331,7 @@ export default function TestfitTool() {
     }
     // No re-clipping on zone drag/vertex drag end — user controls shape manually
     setDrag(null); setResize(null); setPanning(false); setPanSt(null); setHoverNid(null); setRotatingMarker(null); setSmartGuides([]);
-  }, [drag, resize, hoverNid, marquee, selectedIds, selectedId, mode, nodes, walls, doors, windows, zones, markers, columns, phaseVisible, resolvePos, resolvePoints, wc, lastCopyInfo]);
+  }, [drag, resize, hoverNid, marquee, selectedIds, selectedId, mode, nodes, walls, doors, windows, zones, markers, columns, labels, revClouds, phaseVisible, resolvePos, resolvePoints, wc, lastCopyInfo, s2c, themeMode, activePhase, snapLabelAnchor]);
 
   // Smooth zoom centered on cursor
   const onWheel = useCallback((e) => {
@@ -2026,6 +2386,8 @@ export default function TestfitTool() {
   const selDoor = useMemo(() => selType === "door" ? doors.find(d => d.id === selectedId) : null, [selType, selectedId, doors]);
   const selWindow = useMemo(() => selType === "window" ? windows.find(w => w.id === selectedId) : null, [selType, selectedId, windows]);
   const selColumn = useMemo(() => selType === "column" ? columns.find(c => c.id === selectedId) : null, [selType, selectedId, columns]);
+  const selLabel = useMemo(() => (selType === "label" || selType === "label-tip") ? labels.find(l => l.id === selectedId) : null, [selType, selectedId, labels]);
+  const selRevCloud = useMemo(() => selType === "revcloud" ? revClouds.find(r => r.id === selectedId) : null, [selType, selectedId, revClouds]);
 
   // Multi-select support
   const multiSelType = useMemo(() => {
@@ -2062,6 +2424,16 @@ export default function TestfitTool() {
   };
 
   const delSel = useCallback(() => {
+    // Returns the index of a phase id in the phases array (undefined → treated as activePhase)
+    const pIdx = (id) => phases.findIndex(p => p.id === (id ?? activePhase));
+    // Phase-aware marker delete: hard-delete if created in same/newer phase, soft-delete otherwise
+    const phaseDeleteMarkers = (p, matchFn) => p.reduce((acc, m) => {
+      if (!matchFn(m)) { acc.push(m); return acc; }
+      if (pIdx(m.phase) >= pIdx(activePhase)) return acc;          // same/newer → hard delete
+      acc.push({ ...m, deletedAtPhase: activePhase });              // earlier → soft delete
+      return acc;
+    }, []);
+
     // Delete all selected objects if multiple are selected
     if (selectedIds.length > 0) {
       const idsToDelete = new Set(selectedIds);
@@ -2090,9 +2462,11 @@ export default function TestfitTool() {
       setWindows(p => p.filter(w => !idsToDelete.has(w.id)));
       setColumns(p => p.filter(c => !idsToDelete.has(c.id)));
       setZones(p => p.filter(z => !idsToDelete.has(z.id)));
-      setMarkers(p => p.filter(m => !idsToDelete.has(m.id)));
+      setMarkers(p => phaseDeleteMarkers(p, m => idsToDelete.has(m.id)));
       setDims(p => p.filter(d => !idsToDelete.has(d.id)));
-      
+      setLabels(p => p.filter(l => !idsToDelete.has(l.id)));
+      setRevClouds(p => p.filter(r => !idsToDelete.has(r.id)));
+
       setSelectedIds([]);
       setSelectedId(null);
       setSelType(null);
@@ -2105,10 +2479,12 @@ export default function TestfitTool() {
       else if (selType === "window") setWindows(p => p.filter(w => w.id !== selectedId));
       else if (selType === "column") setColumns(p => p.filter(c => c.id !== selectedId));
       else if (selType === "dim") setDims(p => p.filter(d => d.id !== selectedId));
-      else { setZones(p => p.filter(z => z.id !== selectedId)); setMarkers(p => p.filter(x => x.id !== selectedId)); }
-      setSelectedId(null); setSelType(null);
+      else if (selType === "label" || selType === "label-tip") setLabels(p => p.filter(l => l.id !== selectedId));
+      else if (selType === "revcloud") setRevClouds(p => p.filter(r => r.id !== selectedId));
+      else { setZones(p => p.filter(z => z.id !== selectedId)); setMarkers(p => phaseDeleteMarkers(p, m => m.id === selectedId)); }
+      setSelectedId(null); setSelType(null); setSelectedIds([]);
     }
-  }, [selectedId, selectedIds, selType, walls, nodes, wallsAt]);
+  }, [selectedId, selectedIds, selType, walls, nodes, wallsAt, phases, activePhase]);
 
   const _ids = () => new Set(selectedIds.length > 1 ? selectedIds : [selectedId].filter(Boolean));
   const updZone = (u) => { const ids = _ids(); setZones(p => p.map(z => ids.has(z.id) ? { ...z, ...u } : z)); };
@@ -2117,6 +2493,20 @@ export default function TestfitTool() {
   const updDoor = (u) => { const ids = _ids(); setDoors(p => p.map(d => ids.has(d.id) ? { ...d, ...u } : d)); };
   const updWindow = (u) => { const ids = _ids(); setWindows(p => p.map(w => ids.has(w.id) ? { ...w, ...u } : w)); };
   const updColumn = (u) => { const ids = _ids(); setColumns(p => p.map(c => ids.has(c.id) ? { ...c, ...u } : c)); };
+  const updLabel = (u) => {
+    const ids = _ids();
+    setLabels(p => p.map(l => ids.has(l.id) ? { ...l, ...u } : l));
+    if (u.color != null) {
+      const lbl = labels.find(l => l.id === selectedId);
+      if (lbl?.anchorType === "revcloud" && lbl?.anchorId)
+        setRevClouds(p => p.map(r => r.id === lbl.anchorId ? { ...r, color: u.color } : r));
+    }
+  };
+  const updRevCloud = (u) => {
+    setRevClouds(p => p.map(r => r.id === selectedId ? { ...r, ...u } : r));
+    if (u.color != null)
+      setLabels(p => p.map(l => l.anchorType === "revcloud" && l.anchorId === selectedId ? { ...l, color: u.color } : l));
+  };
 
   const alignDistribute = useCallback((action) => {
     if (selectedIds.length < 2) return;
@@ -2338,6 +2728,8 @@ export default function TestfitTool() {
       else if (mode === "build" && k === "E") { setT("outlet"); }
       else if (mode === "build" && k === "L") { setT("lighting"); }
       else if (k === "M") { setT("dim"); setDrawDim(null); }
+      else if (k === "T") { setT("label"); }
+      else if (k === "N") { setT("revcloud"); }
       else if (mode === "zone" && k === "Z") { setT("zone"); }
       else if (mode === "itmep" && k === "P") { setT("marker"); }
       if (k === "D" && !e.ctrlKey) setShowDims(d => !d);
@@ -2346,9 +2738,11 @@ export default function TestfitTool() {
       if (k === "F" && selDoor) updDoor({ flipped: !selDoor.flipped });
       if (k === "R" && selDoor) updDoor({ hingeRight: !selDoor.hingeRight });
       if (k === "R" && selWindow) updWindow({ angle: (selWindow.angle + 90) % 360 });
-      if ((k === "DELETE" || k === "BACKSPACE") && (selectedId || selectedIds.length > 0)) { e.preventDefault(); delSel(); }
+      if ((k === "DELETE" || k === "BACKSPACE") && !editingLabelId && (selectedId || selectedIds.length > 0)) { e.preventDefault(); delSel(); }
       if (k === "ESCAPE") {
-        if (drawChain || drawPolyZone || drawDim) {
+        if (addingLeaderToId) { setAddingLeaderToId(null); }
+        else if (drawRevCloud) { setDrawRevCloud(null); }
+        else if (drawChain || drawPolyZone || drawDim) {
           setDrawChain(null); setDrawPolyZone(null); setCursorPos(null); setDimInput(""); setDrawDim(null);
         } else {
           setSelectedId(null); setSelType(null); setSelectedIds([]);
@@ -2362,7 +2756,7 @@ export default function TestfitTool() {
     window.addEventListener("keydown", down);
     window.addEventListener("keyup", up);
     return () => { window.removeEventListener("keydown", down); window.removeEventListener("keyup", up); };
-  }, [selectedId, selectedIds, selType, delSel, selDoor, selWindow, undo, redo, fitAll, dimInput, cursorPos, drawChain, pxPerFoot, commitWallSegment, tool, findNear, walls, nodes, doors, windows, columns, markers, zones, clipboard, pasteOffset, outletType, htrackAngle, lightingType, lastCopyInfo, repeatInput, resolvePos, resolvePoints]);
+  }, [selectedId, selectedIds, selType, delSel, selDoor, selWindow, undo, redo, fitAll, dimInput, cursorPos, drawChain, pxPerFoot, commitWallSegment, tool, findNear, walls, nodes, doors, windows, columns, markers, zones, clipboard, pasteOffset, outletType, htrackAngle, lightingType, lastCopyInfo, repeatInput, resolvePos, resolvePoints, editingLabelId, addingLeaderToId]);
 
   const $ = (n) => "$" + n.toLocaleString();
   const font = "'SF Mono','Consolas','Monaco',monospace";
@@ -2684,7 +3078,7 @@ export default function TestfitTool() {
   };
 
   // ── Mode system ─────────────────────────────────────────────────────
-  const setT = (t) => { setTool(t); setGhostPos(null); setDrawChain(null); setDrawPolyZone(null); setCursorPos(null); setDimInput(""); setDrawDim(null); if (t !== "select" && t !== "pan") { setSelectedId(null); setSelType(null); setSelectedIds([]); } };
+  const setT = (t) => { setTool(t); setGhostPos(null); setDrawChain(null); setDrawPolyZone(null); setCursorPos(null); setDimInput(""); setDrawDim(null); setDrawRevCloud(null); if (t !== "select" && t !== "pan") { setSelectedId(null); setSelType(null); setSelectedIds([]); } };
 
   const MODES = {
     build: { label: "1 · Build", color: "#9A9488" },
@@ -2820,7 +3214,7 @@ export default function TestfitTool() {
     }),
   };
 
-  const isDrawing = drawChain || drawPolyZone;
+  const isDrawing = drawChain || drawPolyZone || drawRevCloud;
 
   return (
     <TooltipProvider>
@@ -3304,9 +3698,31 @@ export default function TestfitTool() {
               selectedId={selectedId} selType={selType}
               show3dLabels={show3dLabels} setShow3dLabels={setShow3dLabels}
               show3dDims={show3dDims}     setShow3dDims={setShow3dDims}
+              style3d={style3d}
               zoneLibrary={zoneLibrary}
+              visibleLayers={visibleLayers}
+              visibleBuildElectrical={visibleBuildElectrical}
+              visibleBuildLighting={visibleBuildLighting}
               onSelect={(id, type) => { setSelectedId(id); setSelType(type); }}
             />
+          )}
+
+          {/* 3D style switcher */}
+          {view3d && (
+            <div style={{ position: "absolute", bottom: 112, left: "50%", transform: "translateX(-50%)",
+              display: "flex", gap: 4, background: T.panelBg, border: "1px solid " + T.border,
+              borderRadius: 8, padding: 4, backdropFilter: "blur(12px)", zIndex: 10 }}>
+              {[["clay","Clay"],["xray","X-Ray"],["detailed","Detailed"]].map(([k, label]) => (
+                <button key={k} onClick={() => setStyle3d(k)}
+                  style={{ padding: "5px 14px", borderRadius: 5, border: "none", cursor: "pointer",
+                    background: style3d === k ? T.accent + "40" : "transparent",
+                    color: style3d === k ? T.textBright : T.textMuted,
+                    fontSize: 11, fontFamily: "inherit", fontWeight: style3d === k ? 600 : 400,
+                    outline: style3d === k ? "1px solid " + T.accent : "none" }}>
+                  {label}
+                </button>
+              ))}
+            </div>
           )}
 
           {/* Phase preview banner */}
@@ -3345,6 +3761,86 @@ export default function TestfitTool() {
           {tool === "calibrate" && (!calibrationLine || !calibrationLine.p2) && <div style={{ position: "absolute", top: "16px", left: "50%", transform: "translateX(-50%)", background: T.panelBg, border: "1px solid " + T.border, borderRadius: "6px", padding: "6px 14px", fontSize: "10px", color: T.uiConduit, zIndex: 10, backdropFilter: "blur(12px)", boxShadow: T.panelShadow, fontWeight: 500 }}>
             {!calibrationLine ? "Click to set first point" : "Click to set second point"}
           </div>}
+
+          {tool === "label" && !editingLabelId && (
+            <div style={{ position: "absolute", top: "16px", left: "50%", transform: "translateX(-50%)", background: T.panelBg, border: "1px solid " + T.border, borderRadius: "6px", padding: "6px 14px", fontSize: "10px", color: T.textBright, zIndex: 10, backdropFilter: "blur(12px)", boxShadow: T.panelShadow, fontWeight: 500, pointerEvents: "none" }}>
+              Click to place · Click + drag for callout with leader line
+            </div>
+          )}
+          {tool === "revcloud" && (
+            <div style={{ position: "absolute", top: "16px", left: "50%", transform: "translateX(-50%)", background: T.panelBg, border: "1px solid " + T.border, borderRadius: 6, padding: "6px 14px", fontSize: 10, color: "#E05252", zIndex: 10, backdropFilter: "blur(12px)", boxShadow: T.panelShadow, fontWeight: 500, pointerEvents: "none" }}>
+              {!drawRevCloud ? "Click to start revision cloud"
+                : drawRevCloud.points.length < 3
+                  ? `${drawRevCloud.points.length} point${drawRevCloud.points.length > 1 ? "s" : ""} — need at least 3 to close`
+                  : "Click to add points · Click first point to close"}
+            </div>
+          )}
+          {addingLeaderToId && (
+            <div style={{ position: "absolute", top: "16px", left: "50%", transform: "translateX(-50%)", background: T.panelBg, border: "1px solid " + T.accent + "88", borderRadius: "6px", padding: "6px 14px", fontSize: "10px", color: T.accent, zIndex: 10, backdropFilter: "blur(12px)", boxShadow: T.panelShadow, fontWeight: 500, pointerEvents: "none" }}>
+              Click any object or point to attach leader · Esc to cancel
+            </div>
+          )}
+
+          {/* Inline label text editor */}
+          {editingLabelId && (() => {
+            const lbl = labels.find(l => l.id === editingLabelId);
+            if (!lbl) return null;
+            const screenX = lbl.x * zoom + viewOff.x;
+            const screenY = lbl.y * zoom + viewOff.y;
+            const lineCount = wrapLabelLines(editingLabelText, lbl.fontSize).length;
+            return <textarea
+              autoFocus
+              style={{
+                position: "absolute",
+                left: screenX,
+                top: screenY,
+                transform: "translate(-50%, -50%)",
+                background: T.bg2 + "EE",
+                border: "1.5px solid " + T.accent,
+                borderRadius: 4,
+                color: lbl.color,
+                fontSize: Math.max(10, lbl.fontSize * zoom),
+                fontWeight: lbl.bold ? 700 : 400,
+                fontStyle: lbl.italic ? "italic" : "normal",
+                fontFamily: "inherit",
+                padding: "4px 8px",
+                minWidth: 80,
+                maxWidth: LABEL_MAX_W * zoom,
+                width: LABEL_MAX_W * zoom,
+                resize: "none",
+                outline: "none",
+                textAlign: "center",
+                zIndex: 30,
+                lineHeight: 1.4,
+                overflow: "hidden",
+                whiteSpace: "pre-wrap",
+                wordBreak: "break-word",
+              }}
+              rows={lineCount}
+              value={editingLabelText}
+              onChange={e => setEditingLabelText(e.target.value)}
+              onBlur={() => {
+                const t = editingLabelText.trim();
+                setLabels(p => t
+                  ? p.map(l => l.id === editingLabelId ? { ...l, text: t } : l)
+                  : p.filter(l => l.id !== editingLabelId || l.text));
+                setEditingLabelId(null);
+              }}
+              onKeyDown={ev => {
+                if (ev.key === "Escape") {
+                  setLabels(p => p.filter(l => l.id !== editingLabelId || l.text));
+                  setEditingLabelId(null);
+                } else if (ev.key === "Enter" && !ev.shiftKey) {
+                  ev.preventDefault();
+                  const t = editingLabelText.trim();
+                  setLabels(p => t
+                    ? p.map(l => l.id === editingLabelId ? { ...l, text: t } : l)
+                    : p.filter(l => l.id !== editingLabelId || l.text));
+                  setEditingLabelId(null);
+                }
+              }}
+            />;
+          })()}
 
           <svg ref={cvs} width="100%" height="100%"
             style={{ cursor: (panning || spaceHeld) ? "grabbing" : resize ? ({ n:"ns-resize",s:"ns-resize",e:"ew-resize",w:"ew-resize",ne:"nesw-resize",sw:"nesw-resize",nw:"nwse-resize",se:"nwse-resize" }[resize.edge] || "nwse-resize") : (drag?.type === "zone-edge" && drag.cursor) ? drag.cursor : zoneEdge ? zoneEdge.cursor : cadCrosshair(T.crosshairColor), userSelect: "none", display: view3d ? "none" : undefined }}
@@ -3732,6 +4228,124 @@ export default function TestfitTool() {
                 return <g key={d.id} onClick={() => { setSelectedId(d.id); setSelType("dim"); }}><DimString d={d} sel={sel} /></g>;
               })}
 
+              {/* Labels & Callouts */}
+              {labels.map(lbl => {
+                if (!phaseVisible(lbl.phase)) return null;
+                const isEditing = editingLabelId === lbl.id;
+                const isTipDrag = drag?.type === "label-tip" && drag.id === lbl.id;
+                const sel = selectedId === lbl.id && selType === "label";
+                const tip = resolveLeaderTip(lbl);
+                const lblR = { ...lbl, lx: tip.lx, ly: tip.ly };
+                return <g key={lbl.id}
+                  onClick={(e) => {
+                    if (e.detail >= 2) {
+                      setEditingLabelId(lbl.id); setEditingLabelText(lbl.text);
+                    } else if (tool === "select") {
+                      setSelectedId(lbl.id); setSelType("label"); setSelectedIds([lbl.id]);
+                    }
+                  }}>
+                  {isEditing
+                    ? (lblR.lx != null && <g style={{ pointerEvents: "none" }}>
+                        <line x1={lblR.lx} y1={lblR.ly} x2={lblR.x} y2={lblR.y} stroke={lbl.color} strokeWidth={1} opacity={0.85} />
+                        <circle cx={lblR.lx} cy={lblR.ly} r={3} fill={lbl.color} opacity={0.85} />
+                      </g>)
+                    : <LabelAnnotation lbl={isTipDrag ? { ...lblR, lx: ghostPos?.x ?? lblR.lx, ly: ghostPos?.y ?? lblR.ly } : lblR} sel={sel} tool={tool} bg={T.bg2} />}
+                </g>;
+              })}
+
+              {/* Label tool ghost preview */}
+              {tool === "label" && ghostPos && !drag && (
+                <g style={{ pointerEvents: "none" }} opacity={0.75}>
+                  {ghostPos.snapped && <>
+                    <circle cx={ghostPos.x} cy={ghostPos.y} r={SNAP_R * 1.5}
+                      fill={T.accent} fillOpacity={0.12} stroke={T.accent} strokeWidth={1.5} strokeDasharray="3 2" />
+                    <circle cx={ghostPos.x} cy={ghostPos.y} r={3} fill={T.accent} />
+                  </>}
+                  <text x={ghostPos.x} y={ghostPos.y} textAnchor="middle" dominantBaseline="middle"
+                    fontSize={12} fill={T.textBright} fontFamily="'Inter', system-ui, sans-serif">Label…</text>
+                </g>
+              )}
+              {/* Label callout drag preview */}
+              {drag?.type === "label-place" && ghostPos && (
+                <g style={{ pointerEvents: "none" }} opacity={0.6}>
+                  <line x1={drag.startX} y1={drag.startY} x2={ghostPos.x} y2={ghostPos.y}
+                    stroke={T.textBright} strokeWidth={1} strokeDasharray="4 3" />
+                  {/* leader-tip snap indicator */}
+                  {drag.snapped
+                    ? <><circle cx={drag.startX} cy={drag.startY} r={6} fill={T.accent} fillOpacity={0.25} stroke={T.accent} strokeWidth={1.5} /><circle cx={drag.startX} cy={drag.startY} r={3} fill={T.accent} /></>
+                    : <circle cx={drag.startX} cy={drag.startY} r={3} fill={T.textBright} />}
+                  {/* text-endpoint snap indicator */}
+                  {ghostPos.snapped && <>
+                    <circle cx={ghostPos.x} cy={ghostPos.y} r={SNAP_R * 1.5}
+                      fill={T.accent} fillOpacity={0.12} stroke={T.accent} strokeWidth={1.5} strokeDasharray="3 2" />
+                    <circle cx={ghostPos.x} cy={ghostPos.y} r={3} fill={T.accent} />
+                  </>}
+                  <text x={ghostPos.x} y={ghostPos.y} textAnchor="middle" dominantBaseline="middle"
+                    fontSize={12} fill={T.textBright} fontFamily="'Inter', system-ui, sans-serif">Label…</text>
+                </g>
+              )}
+              {/* Leader tip drag snap indicator */}
+              {drag?.type === "label-tip" && ghostPos && (
+                <g style={{ pointerEvents: "none" }} opacity={0.8}>
+                  {drag.snapped
+                    ? <><circle cx={ghostPos.x} cy={ghostPos.y} r={7} fill={T.accent} fillOpacity={0.2} stroke={T.accent} strokeWidth={1.5} /><circle cx={ghostPos.x} cy={ghostPos.y} r={3} fill={T.accent} /></>
+                    : <circle cx={ghostPos.x} cy={ghostPos.y} r={4} fill={T.textBright} opacity={0.6} />}
+                </g>
+              )}
+
+              {/* Revision Clouds */}
+              {revClouds.map(rc => {
+                if (!phaseVisible(rc.phase)) return null;
+                const sel = selectedId === rc.id && selType === "revcloud";
+                const d = revCloudPath(rc.points, rc.arcR ?? 8);
+                const c = polyCentroid(rc.points);
+                return <g key={rc.id} style={{ cursor: tool === "select" ? "pointer" : "inherit" }}
+                  onClick={() => { if (tool === "select") { setSelectedId(rc.id); setSelType("revcloud"); setSelectedIds([rc.id]); } }}>
+                  <path d={d} fill="transparent" stroke="none" />
+                  <path d={d} fill={rc.color + "18"} stroke={rc.color} strokeWidth={sel ? 2 : 1.5}
+                    strokeLinejoin="round" strokeLinecap="round" style={{ pointerEvents: "none" }} />
+                  {sel && <path d={d} fill="none" stroke={rc.color} strokeWidth={5} opacity={0.15} style={{ pointerEvents: "none" }} />}
+                  {rc.label && <text x={c.x} y={c.y} textAnchor="middle" dominantBaseline="middle"
+                    fontSize={10} fill={rc.color} fontFamily="inherit" style={{ pointerEvents: "none" }}>{rc.label}</text>}
+                  {sel && rc.points.map((p, i) => <circle key={i} cx={p.x} cy={p.y} r={5}
+                    fill={rc.color} stroke={T.nodeFill} strokeWidth={1.5} style={{ cursor: "move" }} />)}
+                </g>;
+              })}
+
+              {/* Revision Cloud ghost preview while drawing */}
+              {tool === "revcloud" && drawRevCloud && drawRevCloud.points.length >= 1 && ghostPos && (() => {
+                const preview = [...drawRevCloud.points, ghostPos];
+                const closeable = preview.length > 3 &&
+                  dst(ghostPos.x, ghostPos.y, drawRevCloud.points[0].x, drawRevCloud.points[0].y) < SNAP_R * 1.5;
+                const d = preview.length >= 3 ? revCloudPath(preview, 8)
+                  : `M ${preview.map(p => `${p.x},${p.y}`).join(' L ')}`;
+                return <g style={{ pointerEvents: "none" }}>
+                  <path d={d} fill={closeable ? "#E05252" + "25" : "none"}
+                    stroke={closeable ? "#E05252" : T.accent} strokeWidth={1.5}
+                    strokeDasharray={preview.length >= 3 ? "none" : "5 3"} opacity={0.7} />
+                  {drawRevCloud.points.map((pt, i) =>
+                    <circle key={i} cx={pt.x} cy={pt.y} r={i === 0 ? 5 : 3}
+                      fill={i === 0 ? T.accent : "#E05252"} opacity={0.8} />)}
+                  {/* snap ring at cursor when snapped to a node */}
+                  {ghostPos.snapped && !closeable && <>
+                    <circle cx={ghostPos.x} cy={ghostPos.y} r={SNAP_R * 1.5}
+                      fill={T.accent} fillOpacity={0.12} stroke={T.accent} strokeWidth={1.5} strokeDasharray="3 2" />
+                    <circle cx={ghostPos.x} cy={ghostPos.y} r={3} fill={T.accent} />
+                  </>}
+                  {/* close-ring at first point when closeable */}
+                  {closeable && <circle cx={drawRevCloud.points[0].x} cy={drawRevCloud.points[0].y}
+                    r={SNAP_R * 1.5} fill="none" stroke="#E05252" strokeWidth={1} opacity={0.4} strokeDasharray="3 2" />}
+                </g>;
+              })()}
+              {/* Snap ring ghost before first revcloud point */}
+              {tool === "revcloud" && !drawRevCloud && ghostPos && ghostPos.snapped && (
+                <g style={{ pointerEvents: "none" }}>
+                  <circle cx={ghostPos.x} cy={ghostPos.y} r={SNAP_R * 1.5}
+                    fill={T.accent} fillOpacity={0.12} stroke={T.accent} strokeWidth={1.5} strokeDasharray="3 2" />
+                  <circle cx={ghostPos.x} cy={ghostPos.y} r={3} fill={T.accent} />
+                </g>
+              )}
+
               {/* Dim tool ghost preview */}
               {tool === "dim" && ghostPos && (() => {
                 const color = T.dimText;
@@ -3978,7 +4592,7 @@ export default function TestfitTool() {
           </svg>
 
           {/* Detail panel */}
-          {(selZone || selMarker || selWall || selNode || selDoor || selWindow || selColumn || (selectedIds.length > 1 && multiSelType)) && <div style={S.det}>
+          {(selZone || selMarker || selWall || selNode || selDoor || selWindow || selColumn || selLabel || selRevCloud || (selectedIds.length > 1 && multiSelType)) && <div style={S.det}>
             {selectedIds.length <= 1 && selNode && <><div style={{ fontSize: 11, color: T.textBright, marginBottom: 6, fontWeight: 600 }}>Node · {wallsAt(selNode.id).length} walls</div><button style={S.del} onClick={delSel}>Delete Node + Walls</button></>}
             {selectedIds.length <= 1 && selWall && (() => { const wk = WALL_KINDS[selWall.kind || "existing"]; return <>
               <div style={{ fontSize: 12, color: wk.color, marginBottom: 10, fontWeight: 600 }}>{wk.label} Wall · {ft(wl(selWall))}</div>
@@ -4054,6 +4668,108 @@ export default function TestfitTool() {
               <div style={{ marginBottom: 8 }}><div style={S.lbl}>Sill Height (inches)</div><SliderInput value={selWindow.sill ?? 30} min={0} max={60} onChange={v => updWindow({ sill: v })} accent={accent} textColor={T.textBright} bgColor={T.bg2} borderColor={T.border} /></div>
               <button style={S.del} onClick={delSel}>Delete</button>
             </>; })()}
+            {selectedIds.length <= 1 && selLabel && (() => {
+              const LABEL_COLORS = [
+                { hex: "#F0EDE6", name: "White" },
+                { hex: "#E05252", name: "Red" },
+                { hex: "#4EBA78", name: "Green" },
+                { hex: "#4A8FE8", name: "Blue" },
+              ];
+              const stepFont = (d) => updLabel({ fontSize: Math.min(72, Math.max(8, selLabel.fontSize + d)) });
+              const btnActive = (on) => ({ flex: 1, padding: "5px 0", background: on ? T.accent + "25" : "transparent", border: "1px solid " + (on ? T.accent : T.border), borderRadius: 4, color: on ? T.textBright : T.textMuted, cursor: "pointer", fontFamily: "inherit" });
+              return <>
+                <div style={{ fontSize: 12, color: T.textBright, marginBottom: 10, fontWeight: 600 }}>
+                  {selLabel.lx != null ? "Callout" : "Label"}
+                </div>
+                {/* Edit text */}
+                <button style={{ ...S.inp, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, color: T.textMuted, fontSize: 11, marginBottom: 10 }}
+                  onClick={() => { setEditingLabelId(selLabel.id); setEditingLabelText(selLabel.text); }}>
+                  <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
+                    <path d="M8.5 1.5L11.5 4.5L4.5 11.5H1.5V8.5L8.5 1.5Z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" strokeLinecap="round"/>
+                    <path d="M7 3L10 6" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
+                  </svg>
+                  Edit Text
+                </button>
+                {/* Font size + Bold + Italic on one row */}
+                <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 10 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 0, border: "1px solid " + T.border, borderRadius: 4, overflow: "hidden", flex: 1 }}>
+                    <button style={{ padding: "5px 10px", background: "transparent", border: "none", color: T.textMuted, cursor: "pointer", fontSize: 14, lineHeight: 1, fontFamily: "inherit" }}
+                      onClick={() => stepFont(-1)}>−</button>
+                    <span style={{ flex: 1, textAlign: "center", fontSize: 11, color: T.textBright, userSelect: "none", borderLeft: "1px solid " + T.border, borderRight: "1px solid " + T.border, padding: "5px 0" }}>{selLabel.fontSize}</span>
+                    <button style={{ padding: "5px 10px", background: "transparent", border: "none", color: T.textMuted, cursor: "pointer", fontSize: 14, lineHeight: 1, fontFamily: "inherit" }}
+                      onClick={() => stepFont(1)}>+</button>
+                  </div>
+                  <button style={{ ...btnActive(selLabel.bold), flex: "0 0 32px", fontWeight: 700, fontSize: 13 }} onClick={() => updLabel({ bold: !selLabel.bold })}>B</button>
+                  <button style={{ ...btnActive(selLabel.italic), flex: "0 0 32px", fontStyle: "italic", fontSize: 13 }} onClick={() => updLabel({ italic: !selLabel.italic })}>I</button>
+                </div>
+                {/* Color swatches */}
+                <div style={{ marginBottom: 10 }}>
+                  <div style={S.lbl}>Color</div>
+                  <div style={{ display: "flex", gap: 6 }}>
+                    {LABEL_COLORS.map(({ hex, name }) => (
+                      <button key={hex} title={name}
+                        style={{ width: 22, height: 22, borderRadius: 4, background: hex, cursor: "pointer", flexShrink: 0,
+                          boxShadow: selLabel.color === hex ? "0 0 0 2px " + T.accent : "0 0 0 1.5px rgba(255,255,255,0.12)",
+                          border: "none", outline: "none" }}
+                        onClick={() => updLabel({ color: hex })} />
+                    ))}
+                  </div>
+                </div>
+                {/* Leader line */}
+                <div style={{ marginBottom: 10 }}>
+                  <div style={S.lbl}>Leader Line</div>
+                  {selLabel.lx != null
+                    ? <button style={{ ...S.inp, cursor: "pointer", textAlign: "center", fontSize: 10, color: T.textMuted }}
+                        onClick={() => updLabel({ lx: null, ly: null, anchorId: null, anchorType: null })}>Remove Leader</button>
+                    : <button style={{ ...S.inp, cursor: "pointer", textAlign: "center", fontSize: 10, color: T.accent }}
+                        onClick={() => setAddingLeaderToId(selLabel.id)}>Add Leader…</button>}
+                </div>
+                {/* Version dropdown */}
+                <div style={{ marginBottom: 10 }}>
+                  <div style={S.lbl}>Version</div>
+                  <select value={selLabel.phase} onChange={e => updLabel({ phase: e.target.value })}
+                    style={{ ...S.inp, cursor: "pointer", color: T.textBright, background: T.bg2, fontFamily: "inherit", fontSize: 11 }}>
+                    {phases.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                  </select>
+                </div>
+                <button style={S.del} onClick={delSel}>Delete Label</button>
+              </>;
+            })()}
+            {selectedIds.length <= 1 && selRevCloud && (() => {
+              const RC_COLORS = [{ hex: "#E05252", name: "Red" }, { hex: "#E0A030", name: "Amber" },
+                { hex: "#4A8FE8", name: "Blue" }, { hex: "#50A070", name: "Green" }];
+              return <>
+                <div style={{ fontSize: 12, color: selRevCloud.color, marginBottom: 10, fontWeight: 600 }}>Revision Cloud</div>
+                <div style={{ marginBottom: 8 }}>
+                  <div style={S.lbl}>Label</div>
+                  <input style={S.inp} value={selRevCloud.label} onChange={e => updRevCloud({ label: e.target.value })} placeholder="Rev A…" />
+                </div>
+                <div style={{ marginBottom: 8 }}>
+                  <div style={S.lbl}>Arc Size</div>
+                  <SliderInput value={selRevCloud.arcR ?? 8} min={4} max={20} onChange={v => updRevCloud({ arcR: v })}
+                    accent={selRevCloud.color} textColor={T.textBright} bgColor={T.bg2} borderColor={T.border} />
+                </div>
+                <div style={{ marginBottom: 10 }}>
+                  <div style={S.lbl}>Color</div>
+                  <div style={{ display: "flex", gap: 6 }}>
+                    {RC_COLORS.map(({ hex, name }) =>
+                      <button key={hex} title={name}
+                        style={{ width: 22, height: 22, borderRadius: 4, background: hex, cursor: "pointer",
+                          border: "none", outline: "none",
+                          boxShadow: selRevCloud.color === hex ? "0 0 0 2px " + T.accent : "0 0 0 1.5px rgba(255,255,255,0.12)" }}
+                        onClick={() => updRevCloud({ color: hex })} />)}
+                  </div>
+                </div>
+                <div style={{ marginBottom: 10 }}>
+                  <div style={S.lbl}>Version</div>
+                  <select value={selRevCloud.phase} onChange={e => updRevCloud({ phase: e.target.value })}
+                    style={{ ...S.inp, cursor: "pointer", color: T.textBright, background: T.bg2, fontFamily: "inherit", fontSize: 11 }}>
+                    {phases.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                  </select>
+                </div>
+                <button style={S.del} onClick={delSel}>Delete Cloud</button>
+              </>;
+            })()}
             {selectedIds.length <= 1 && selColumn && <>
               <div style={{ fontSize: 12, color: "#9A9488", marginBottom: 10, fontWeight: 600 }}>Column · {selColumn.size}"</div>
               <div style={{ marginBottom: 8 }}>
@@ -4757,6 +5473,31 @@ export default function TestfitTool() {
                   </button>
                 </TooltipTrigger>
                 <TooltipContent side="top" sideOffset={8}>Dimension (M)</TooltipContent>
+              </Tooltip>
+
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button style={S.toolBtn(tool === "label", T.textBright)} onClick={() => setT("label")}>
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                      <text x="10" y="15" textAnchor="middle" fontSize="15" fontWeight="700"
+                        fill={tool === "label" ? T.textBright : T.textMuted} fontFamily="sans-serif">T</text>
+                    </svg>
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="top" sideOffset={8}>Label / Callout (T)</TooltipContent>
+              </Tooltip>
+
+              <div style={S.toolSep} />
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button style={S.toolBtn(tool === "revcloud", "#E05252")} onClick={() => setT("revcloud")}>
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                      <path d="M10 16 A3 3 0 0 1 4 16 A3 3 0 0 1 2 11 A3 3 0 0 1 5 6 A3 3 0 0 1 10 5 A3 3 0 0 1 15 6 A3 3 0 0 1 18 11 A3 3 0 0 1 16 16 Z"
+                        stroke={tool === "revcloud" ? "#E05252" : T.textMuted} strokeWidth="1.5" strokeLinejoin="round" />
+                    </svg>
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="top" sideOffset={8}>Revision Cloud (N)</TooltipContent>
               </Tooltip>
 
               {bgImage && (<>
