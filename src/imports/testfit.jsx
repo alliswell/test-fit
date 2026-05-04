@@ -2837,14 +2837,14 @@ export default function TestfitTool() {
         return;
       }
       // Number keys for modes
-      if (e.key === "1") { setMode("build"); setT("select"); setSelectedId(null); setSelType(null); setSelectedIds([]); return; }
-      if (e.key === "2") { setMode("zone"); setT("select"); setSelectedId(null); setSelType(null); setSelectedIds([]); return; }
-      if (e.key === "3") { setMode("itmep"); setT("select"); setSelectedId(null); setSelType(null); setSelectedIds([]); return; }
+      if (e.key === "1") { setMode("build");  setT("select"); setSelectedId(null); setSelType(null); setSelectedIds([]); return; }
+      if (e.key === "2") { setMode("itmep");  setT("select"); setSelectedId(null); setSelType(null); setSelectedIds([]); return; }
+      if (e.key === "3") { setMode("zone");   setT("select"); setSelectedId(null); setSelType(null); setSelectedIds([]); return; }
       if (e.key === "4") { setMode("budget"); setT("select"); setSelectedId(null); setSelType(null); setSelectedIds([]); return; }
       if (k === "V" || k === "H") { setT(k === "V" ? "select" : "pan"); }
       else if (mode === "build" && { W: "wall", C: "column" }[k]) { setT({ W: "wall", C: "column" }[k]); }
-      else if (mode === "build" && k === "E") { setT("outlet"); }
-      else if (mode === "build" && k === "L") { setT("lighting"); }
+      else if (mode === "itmep" && k === "E") { setT("outlet"); }
+      else if (mode === "itmep" && k === "L") { setT("lighting"); }
       else if (k === "M") { setT("dim"); setDrawDim(null); }
       else if (k === "T") { setT("label"); }
       else if (k === "N") { setT("revcloud"); }
@@ -3199,10 +3199,10 @@ export default function TestfitTool() {
   const setT = (t) => { setTool(t); setGhostPos(null); setDrawChain(null); setDrawPolyZone(null); setCursorPos(null); setDimInput(""); setDrawDim(null); setDrawRevCloud(null); if (t !== "select" && t !== "pan") { setSelectedId(null); setSelType(null); setSelectedIds([]); } };
 
   const MODES = {
-    build: { label: "1 · Build", color: "#9A9488" },
-    zone: { label: "2 · Zone", color: "#50A070" },
-    itmep: { label: "3 · IT / MEP", color: "#4080E0" },
-    budget: { label: "4 · Budget", color: T.uiBudget },
+    build:  { label: "(1) Build",   color: "#9A9488" },
+    itmep:  { label: "(2) IT/MEP",  color: "#4080E0" },
+    zone:   { label: "(3) Zones",   color: "#50A070" },
+    budget: { label: "(4) Budget",  color: T.uiBudget },
   };
 
   const S = {
@@ -3392,8 +3392,6 @@ export default function TestfitTool() {
           <TooltipContent>Redo (⌘⇧Z / ⌘Y)</TooltipContent>
         </Tooltip>
         <div style={{ width: 1, height: 20, background: T.border, margin: "0 3px" }} />
-        <button style={S.smBtn} onClick={() => setShowDims(d => !d)}>{showDims ? "Dims ✓" : "Dims"}</button>
-        <button style={S.smBtn} onClick={() => setShowGrid(g => !g)}>{showGrid ? "Grid ✓" : "Grid"}</button>
         <button style={S.smBtn} onClick={() => setThemeMode(m => m === "dark" ? "light" : "dark")}>{themeMode === "dark" ? "Light" : "Dark"}</button>
         <div style={{ width: 1, height: 20, background: T.border, margin: "0 3px" }} />
         <button style={S.smBtn} onClick={exportPng}>PNG</button>
@@ -3573,7 +3571,7 @@ export default function TestfitTool() {
                   margin: "2px 0",
                   transition: "all 0.15s ease"
                 }} onClick={() => { setActiveSpecLayer(k); const firstComp = Object.keys(SPEC_COMPONENTS[k])[0]; setActiveComponentType(firstComp); setT("marker"); }}>
-                  <div style={S.chk(visibleLayers[k], uiColor(l.color))} onClick={e => { e.stopPropagation(); setVisibleLayers(v => ({ ...v, [k]: !v[k] })); }}>{visibleLayers[k] && "✓"}</div>
+                  <div style={{ width: 10, height: 10, borderRadius: "50%", background: uiColor(l.color), opacity: visibleLayers[k] ? 1 : 0.3, flexShrink: 0 }} />
                   <span style={{ color: activeSpecLayer === k ? T.textBright : T.accent, flex: 1, fontWeight: activeSpecLayer === k ? 600 : 400 }}>{l.name}</span>
                   <span style={{ color: activeSpecLayer === k ? uiColor(l.color) : T.accentDim, fontSize: 10, fontWeight: 500 }}>{markers.filter(p => p.layer === k).length}</span>
                 </div>)}
@@ -3745,12 +3743,13 @@ export default function TestfitTool() {
             const isLightComp = ct => ct?.startsWith("light_") || ct?.startsWith("htrack_") || ct === "sconce_prewire" || ct === "pendent_prewire";
             const rows = [
               // Universal items
+              { key: "grid",       label: "Grid",           color: T.textMuted,            visible: showGrid,              toggle: () => setShowGrid(v => !v),              count: null },
               { key: "zones",      label: "Zones",          color: T.uiZone ?? "#6A9BCC", visible: visibleZones,          toggle: () => setVisibleZones(v => !v),          count: zones.length },
               { key: "dims",       label: "Dimensions",     color: T.dimText,              visible: visibleDims,           toggle: () => setVisibleDims(v => !v),           count: dims.length },
               { key: "labels",     label: "Labels",         color: T.textBright,           visible: visibleLabels,         toggle: () => setVisibleLabels(v => !v),         count: labels.length },
               { key: "revClouds",  label: "Rev Clouds",     color: "#E05252",              visible: visibleRevClouds,      toggle: () => setVisibleRevClouds(v => !v),      count: revClouds.length },
-              // Build-specific
-              ...(mode === "build" ? [
+              // ITMEP-specific
+              ...(mode === "itmep" ? [
                 { key: "elec",   label: "Electrical", color: T.uiElec,     visible: visibleBuildElectrical, toggle: () => setVisibleBuildElectrical(v => !v), count: markers.filter(m => m.layer === "power" && !isLightComp(m.componentType)).length },
                 { key: "light",  label: "Lighting",   color: T.uiLighting, visible: visibleBuildLighting,   toggle: () => setVisibleBuildLighting(v => !v),   count: markers.filter(m => m.layer === "power" && isLightComp(m.componentType)).length },
               ] : []),
@@ -3768,7 +3767,7 @@ export default function TestfitTool() {
                   <div key={key} style={{ ...S.lr, padding: "4px 4px", borderRadius: 6, marginBottom: 1 }}>
                     <div style={S.chk(visible, color)} onClick={toggle}>{visible && "✓"}</div>
                     <span style={{ color: visible ? T.accent : T.textMuted, flex: 1, fontSize: 11 }}>{label}</span>
-                    <span style={{ color: visible ? color : T.accentDim, fontSize: 10, fontWeight: 500 }}>{count}</span>
+                    {count != null && <span style={{ color: visible ? color : T.accentDim, fontSize: 10, fontWeight: 500 }}>{count}</span>}
                   </div>
                 ))}
               </div>
@@ -4244,14 +4243,14 @@ export default function TestfitTool() {
                   {wallData.filter(Boolean).map(({ w, c, sel, halfT, glowEffect }) =>
                     <g key={"s"+w.id} filter={glowEffect ? "url(#glow-budget)" : undefined}>
                       <line x1={c.x1} y1={c.y1} x2={c.x2} y2={c.y2} stroke="transparent" strokeWidth={halfT * 2 + 6} style={{ cursor: tool === "select" ? wallResizeCursor(c.x1, c.y1, c.x2, c.y2) : "inherit" }} />
-                      {showDims && <WallDim w={w} hi={sel} />}
+                      {showDims && visibleDims && <WallDim w={w} hi={sel} />}
                     </g>
                   )}
                 </>;
               })()}
 
               {/* Zones */}
-              {zones.map(z => { if (!phaseVisible(z.phase)) return null; const lib = zoneLibrary[z.type], sel = (selectedId === z.id && selType === "zone") || selectedIds.includes(z.id);
+              {visibleZones && zones.map(z => { if (!phaseVisible(z.phase)) return null; const lib = zoneLibrary[z.type], sel = (selectedId === z.id && selType === "zone") || selectedIds.includes(z.id);
                 const glowEffect = mode === "budget" && sel;
                 if (z.points) { const rpts = resolvePoints(z); const pts = rpts.map(p => `${p.x},${p.y}`).join(" "); const c = polyCentroid(rpts); const sf = Math.round(polyArea(rpts) / (pxPerFoot * pxPerFoot));
                   return <g key={z.id} filter={glowEffect ? "url(#glow-budget)" : undefined}><polygon points={pts} fill={lib.color + "25"} stroke={sel ? T.nodeFill : lib.color + "88"} strokeWidth={sel ? 2 : 1} strokeDasharray={sel ? "none" : "4 2"} strokeLinejoin="round" />
@@ -4263,7 +4262,7 @@ export default function TestfitTool() {
                 return <g key={z.id} filter={glowEffect ? "url(#glow-budget)" : undefined}><rect x={z.x} y={z.y} width={z.w} height={z.h} fill={lib.color + "25"} stroke={sel ? T.nodeFill : lib.color + "88"} strokeWidth={sel ? 2 : 1} strokeDasharray={sel ? "none" : "4 2"} rx={3} />
                   <text x={z.x + 8} y={z.y + 16} fill={lib.color + "CC"} fontSize={10} fontFamily="inherit" fontWeight={500} style={{ pointerEvents: "none" }}>{z.label}</text>
                   <text x={z.x + z.w / 2} y={z.y + z.h / 2 + 7} textAnchor="middle" fill={lib.color + "BB"} fontSize={13} fontFamily="inherit" fontWeight={700} style={{ pointerEvents: "none" }}>{Math.round(ftN(z.w) * ftN(z.h))} sf</text>
-                  {showDims && <><text x={z.x + z.w / 2} y={z.y + z.h + 14} textAnchor="middle" fill={T.dimText} fontSize={9} fontFamily="inherit" style={{ pointerEvents: "none" }}>{ft(z.w)}</text>
+                  {showDims && visibleDims && <><text x={z.x + z.w / 2} y={z.y + z.h + 14} textAnchor="middle" fill={T.dimText} fontSize={9} fontFamily="inherit" style={{ pointerEvents: "none" }}>{ft(z.w)}</text>
                     <text x={z.x + z.w + 14} y={z.y + z.h / 2} textAnchor="middle" dominantBaseline="middle" fill={T.dimText} fontSize={9} fontFamily="inherit" transform={`rotate(90,${z.x + z.w + 14},${z.y + z.h / 2})`} style={{ pointerEvents: "none" }}>{ft(z.h)}</text></>}
                 </g>;
               })}
@@ -4384,14 +4383,14 @@ export default function TestfitTool() {
               })}
 
               {/* Dimension strings */}
-              {showDims && dims.map(d => {
+              {showDims && visibleDims && dims.map(d => {
                 const sel = selectedId === d.id && selType === "dim";
                 const dr = { ...d, ...resolveDimEndpoints(d) };
                 return <g key={d.id} onClick={() => { setSelectedId(d.id); setSelType("dim"); }}><DimString d={dr} sel={sel} /></g>;
               })}
 
               {/* Labels & Callouts */}
-              {labels.map(lbl => {
+              {visibleLabels && labels.map(lbl => {
                 if (!phaseVisible(lbl.phase)) return null;
                 const isEditing = editingLabelId === lbl.id;
                 const isTipDrag = drag?.type === "label-tip" && drag.id === lbl.id;
@@ -4456,7 +4455,7 @@ export default function TestfitTool() {
               )}
 
               {/* Revision Clouds */}
-              {revClouds.map(rc => {
+              {visibleRevClouds && revClouds.map(rc => {
                 if (!phaseVisible(rc.phase)) return null;
                 const sel = selectedId === rc.id && selType === "revcloud";
                 const d = revCloudPath(rc.points, rc.arcR ?? 8);
@@ -4675,13 +4674,13 @@ export default function TestfitTool() {
                 const ct = p_r.componentType;
                 const isBuildLighting = ct?.startsWith("light_") || ct?.startsWith("htrack_") || ct === "sconce_prewire" || ct === "pendent_prewire";
                 const isBuildElec = !isBuildLighting && (ct?.startsWith("outlet_") || ct?.startsWith("switch_") || ct === "panel_board" || ct === "tstat");
-                const isOutletInBuild = mode === "build" && p.layer === "power" && (isBuildElec || isBuildLighting);
-                // In build mode, power items are hidden by their own visibility flags
-                if (mode === "build" && p.layer === "power") {
+                const isPowerMode = (mode === "build" || mode === "itmep") && p.layer === "power" && (isBuildElec || isBuildLighting);
+                // In build/itmep mode, power items are hidden by their own visibility flags
+                if ((mode === "build" || mode === "itmep") && p.layer === "power") {
                   if (isBuildElec && !visibleBuildElectrical) return null;
                   if (isBuildLighting && !visibleBuildLighting) return null;
                 }
-                if (!l || (!visibleLayers[p.layer] && mode !== "budget" && !isOutletInBuild)) return null;
+                if (!l || (!visibleLayers[p.layer] && mode !== "budget" && !isPowerMode)) return null;
                 const compData = SPEC_COMPONENTS[p.layer]?.[p.componentType];
                 const sel = (selectedId === p.id && selType === "marker") || selectedIds.includes(p.id);
                 const glowEffect = sel && (mode === "budget" || mode === "itmep" || (mode === "build" && selectedIds.length > 1));
@@ -5182,7 +5181,7 @@ export default function TestfitTool() {
           </div>}
 
           {/* Tool options panel — shown when a placement tool is active */}
-          {!selectedId && ((mode === "build" && (isWallTool(tool) || tool === "door" || tool === "window" || tool === "column" || tool === "outlet" || tool === "lighting")) || (mode === "zone" && tool === "zone") || (mode === "itmep" && tool === "marker")) && <div style={S.det}>
+          {!selectedId && ((mode === "build" && (isWallTool(tool) || tool === "door" || tool === "window" || tool === "column")) || (mode === "itmep" && (tool === "marker" || tool === "outlet" || tool === "lighting")) || (mode === "zone" && tool === "zone")) && <div style={S.det}>
 
             {mode === "build" && isWallTool(tool) && (() => { const wk = WALL_KINDS[wallKind]; return <>
               {/* Header */}
@@ -5271,7 +5270,7 @@ export default function TestfitTool() {
               <div style={{ marginBottom: 8 }}><div style={S.lbl}>Notes</div><textarea style={{ ...S.inp, height: 40, resize: "vertical" }} value={columnNotes} onChange={e => setColumnNotes(e.target.value)} /></div>
               <div style={{ fontSize: 10, color: "#5A5448", fontStyle: "italic" }}>Click to place · Shift+click to keep placing</div>
             </>}
-            {mode === "build" && tool === "outlet" && (() => {
+            {mode === "itmep" && tool === "outlet" && (() => {
               const active = SPEC_COMPONENTS.power[outletType];
               const isSwitch = outletType.startsWith("switch_");
               const isPanel = outletType === "panel_board";
@@ -5382,7 +5381,7 @@ export default function TestfitTool() {
                 {outletType === "outlet_ceiling" && <div style={{ fontSize: 9, color: "#5A5448", marginTop: 3, fontStyle: "italic" }}>Ceiling mount · free placement</div>}
               </>;
             })()}
-            {mode === "build" && tool === "lighting" && (() => {
+            {mode === "itmep" && tool === "lighting" && (() => {
               const active = SPEC_COMPONENTS.power[lightingType];
               const lightColor = T.uiLighting;
               const LIGHT_OPTS = [
@@ -5627,37 +5626,6 @@ export default function TestfitTool() {
                 <TooltipContent side="top" sideOffset={8}>Column (C)</TooltipContent>
               </Tooltip>
 
-              <div style={S.toolSep} />
-
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button style={S.toolBtn(tool === "outlet", T.uiElec)} onClick={() => setT("outlet")}>
-                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-                      <circle cx="10" cy="10" r="7" stroke="#50C878" strokeWidth="1.5" />
-                      <line x1="3" y1="10" x2="17" y2="10" stroke="#50C878" strokeWidth="2" />
-                      <text x="10" y="9" textAnchor="middle" fontSize="5.5" fill="#50C878" fontWeight="bold">D</text>
-                    </svg>
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent side="top" sideOffset={8}>Outlet (E)</TooltipContent>
-              </Tooltip>
-
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button style={S.toolBtn(tool === "lighting", T.uiLighting)} onClick={() => setT("lighting")}>
-                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-                      <circle cx="10" cy="10" r="5" stroke={T.uiLighting} strokeWidth="1.5" />
-                      <circle cx="10" cy="10" r="2" fill={T.uiLighting} />
-                      <line x1="10" y1="1" x2="10" y2="4" stroke={T.uiLighting} strokeWidth="1.5" />
-                      <line x1="10" y1="16" x2="10" y2="19" stroke={T.uiLighting} strokeWidth="1.5" />
-                      <line x1="1" y1="10" x2="4" y2="10" stroke={T.uiLighting} strokeWidth="1.5" />
-                      <line x1="16" y1="10" x2="19" y2="10" stroke={T.uiLighting} strokeWidth="1.5" />
-                    </svg>
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent side="top" sideOffset={8}>Lighting (L)</TooltipContent>
-              </Tooltip>
-
               {bgImage && <>
                 <div style={S.toolSep} />
                 <Tooltip>
@@ -5671,9 +5639,41 @@ export default function TestfitTool() {
               </>}
             </>}
 
-            {/* ── ITMEP-mode tools (power layer handled in Build mode) ── */}
-            {mode === "itmep" && activeSpecLayer !== "power" && <>
+            {/* ── ITMEP-mode tools ── */}
+            {mode === "itmep" && <>
               <div style={S.toolSep} />
+
+              {/* Power layer: Outlet + Lighting */}
+              {activeSpecLayer === "power" && <>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button style={S.toolBtn(tool === "outlet", T.uiElec)} onClick={() => setT("outlet")}>
+                      <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                        <circle cx="10" cy="10" r="7" stroke="#50C878" strokeWidth="1.5" />
+                        <line x1="3" y1="10" x2="17" y2="10" stroke="#50C878" strokeWidth="2" />
+                        <text x="10" y="9" textAnchor="middle" fontSize="5.5" fill="#50C878" fontWeight="bold">D</text>
+                      </svg>
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="top" sideOffset={8}>Outlet (E)</TooltipContent>
+                </Tooltip>
+
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button style={S.toolBtn(tool === "lighting", T.uiLighting)} onClick={() => setT("lighting")}>
+                      <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                        <circle cx="10" cy="10" r="5" stroke={T.uiLighting} strokeWidth="1.5" />
+                        <circle cx="10" cy="10" r="2" fill={T.uiLighting} />
+                        <line x1="10" y1="1" x2="10" y2="4" stroke={T.uiLighting} strokeWidth="1.5" />
+                        <line x1="10" y1="16" x2="10" y2="19" stroke={T.uiLighting} strokeWidth="1.5" />
+                        <line x1="1" y1="10" x2="4" y2="10" stroke={T.uiLighting} strokeWidth="1.5" />
+                        <line x1="16" y1="10" x2="19" y2="10" stroke={T.uiLighting} strokeWidth="1.5" />
+                      </svg>
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="top" sideOffset={8}>Lighting (L)</TooltipContent>
+                </Tooltip>
+              </>}
 
               {activeSpecLayer === "av" && <>
                 <Tooltip>
