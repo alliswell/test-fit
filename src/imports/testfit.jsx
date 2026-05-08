@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from "react";
-import { MousePointer2, X, Plus, DoorOpen, Ruler, Box, LayoutDashboard, RotateCcw, RotateCw, Undo2, Redo2, Tag, Settings, ChevronDown, ChevronRight, Trash2, History, GitBranch } from "lucide-react";
+import { MousePointer2, X, Plus, DoorOpen, Ruler, Box, LayoutDashboard, RotateCcw, RotateCw, Undo2, Redo2, Tag, Settings, ChevronDown, ChevronRight, Trash2, History, GitBranch, Columns2 } from "lucide-react";
 import ZONE_LIBRARY_DEFAULTS from "../data/zone-library.json";
 import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "../app/components/ui/tooltip";
 import TestFit3D from "./testfit3d";
@@ -566,6 +566,10 @@ export default function TestfitTool() {
   const [showDims, setShowDims] = useState(true);
   const [zoneEdge, setZoneEdge] = useState(null); // { id, edge, cursor } for rect-zone edge hover
   const [view3d, setView3d] = useState(false);
+  const [splitView, setSplitView] = useState(false);
+  const [splitPos, setSplitPos] = useState(0.5); // 0–1, fraction of width for 2D pane
+  const splitDragRef = useRef(null); // { startX, startPos, containerWidth }
+  const splitContainerRef = useRef(null); // ref for the flex container holding both panes
   const [ceilingHeight, setCeilingHeight] = useState(108); // 9'-0" in inches
   const controls3dRef = useRef(null);
   const [show3dLabels, setShow3dLabels] = useState(false);
@@ -951,6 +955,21 @@ export default function TestfitTool() {
     return () => clearTimeout(t);
   }, [canvasRotation]);
   
+  // Split-view drag divider handlers
+  useEffect(() => {
+    const onMove = (e) => {
+      if (!splitDragRef.current) return;
+      const { startX, startPos, containerWidth } = splitDragRef.current;
+      const delta = e.clientX - startX;
+      const newPos = Math.min(0.85, Math.max(0.15, startPos + delta / containerWidth));
+      setSplitPos(newPos);
+    };
+    const onUp = () => { splitDragRef.current = null; };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => { window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); };
+  }, []);
+
   // Sync activeComponentType with activeSpecLayer when layer changes
   useEffect(() => {
     if (mode === "itmep" && SPEC_COMPONENTS[activeSpecLayer]) {
@@ -1541,7 +1560,10 @@ export default function TestfitTool() {
           if (!e.shiftKey) {
             setSelectedIds([hit.id]);
           }
-          setSelectedId(hit.id); setSelType(hit.type === "label-tip" ? "label" : hit.type);
+          const resolvedSelType = hit.type === "label-tip" ? "label"
+            : (hit.type === "zone-vertex" || hit.type === "zone-edge") ? "zone"
+            : hit.type;
+          setSelectedId(hit.id); setSelType(resolvedSelType);
           if (hit.type === "node") {
             if (e.detail === 2) {
               // Double-click node: merge two walls by removing this node
@@ -1647,7 +1669,8 @@ export default function TestfitTool() {
               // Double-click vertex: remove it (keep at least 3 points)
               setZones(p => p.map(zz => zz.id === hit.id ? { ...zz, points: zz.points.filter((_, i) => i !== hit.vertexIndex) } : zz));
             } else if (e.detail < 2) {
-              const vt = z.points[hit.vertexIndex];
+              const rpts = resolvePoints(z);
+              const vt = rpts[hit.vertexIndex];
               setDrag({ type: "zone-vertex", id: hit.id, vertexIndex: hit.vertexIndex, ox: pos.x - vt.x, oy: pos.y - vt.y });
             }
           }
@@ -1663,8 +1686,9 @@ export default function TestfitTool() {
               newPoints.splice(ej, 0, newPt);
               setZones(p => p.map(zz => zz.id === hit.id ? { ...zz, points: newPoints } : zz));
             } else {
-              const ei = hit.edgeIndex, ej = (ei + 1) % z.points.length;
-              const p1 = z.points[ei], p2 = z.points[ej];
+              const rpts = resolvePoints(z);
+              const ei = hit.edgeIndex, ej = (ei + 1) % rpts.length;
+              const p1 = rpts[ei], p2 = rpts[ej];
               const edx = p2.x - p1.x, edy = p2.y - p1.y;
               const elen = Math.hypot(edx, edy) || 1;
               setDrag({ type: "zone-edge", id: hit.id, edgeIndex: ei, ox: pos.x, oy: pos.y, p1x: p1.x, p1y: p1.y, p2x: p2.x, p2y: p2.y, nx: -edy / elen, ny: edx / elen, cursor: wallResizeCursor(p1.x, p1.y, p2.x, p2.y) });
@@ -2866,24 +2890,59 @@ export default function TestfitTool() {
           setSelectedId(null); setSelType(null); setSelectedIds([]);
         }
       }
+      // ── Arrow-key nudge ────────────────────────────────────────────
+      if (["ArrowUp","ArrowDown","ArrowLeft","ArrowRight"].includes(e.key) && (selectedId || selectedIds.length > 0)) {
+        e.preventDefault();
+        const inch = pxPerFoot / 12;
+        const step = e.shiftKey ? pxPerFoot : inch; // Shift = 1 ft, plain = 1 in
+        const dx = e.key === "ArrowLeft" ? -step : e.key === "ArrowRight" ? step : 0;
+        const dy = e.key === "ArrowUp"   ? -step : e.key === "ArrowDown"  ? step : 0;
+        const phased = activePhase && activePhase !== "existing";
+        const nudgeXY = (obj) => {
+          if (phased) { const b = obj.px?.[activePhase] ?? { x: obj.x, y: obj.y }; return { ...obj, px: { ...obj.px, [activePhase]: { x: b.x + dx, y: b.y + dy } } }; }
+          return { ...obj, x: obj.x + dx, y: obj.y + dy };
+        };
+        // Collect all ids — single or multi
+        const ids = new Set(selectedIds.length > 0 ? selectedIds : [selectedId]);
+        // For wall selection, promote to both endpoint nodes
+        const nodeIds = new Set(nodes.filter(n => ids.has(n.id)).map(n => n.id));
+        walls.filter(w => ids.has(w.id)).forEach(w => { nodeIds.add(w.n1); nodeIds.add(w.n2); });
+        if (nodeIds.size > 0) setNodes(prev => prev.map(n => nodeIds.has(n.id) ? nudgeXY(n) : n));
+        setZones(prev => prev.map(z => {
+          if (!ids.has(z.id)) return z;
+          if (z.points) {
+            if (phased) { const b = z.px?.[activePhase] ?? z.points; return { ...z, px: { ...z.px, [activePhase]: b.map(pt => ({ x: pt.x + dx, y: pt.y + dy })) } }; }
+            return { ...z, points: z.points.map(pt => ({ x: pt.x + dx, y: pt.y + dy })) };
+          }
+          return nudgeXY(z);
+        }));
+        setMarkers(prev => prev.map(m => ids.has(m.id) ? nudgeXY(m) : m));
+        setDoors(prev => prev.map(d => ids.has(d.id) ? nudgeXY(d) : d));
+        setWindows(prev => prev.map(w => ids.has(w.id) ? nudgeXY(w) : w));
+        setColumns(prev => prev.map(c => ids.has(c.id) ? nudgeXY(c) : c));
+        setLabels(prev => prev.map(l => !ids.has(l.id) ? l : { ...l, x: l.x + dx, y: l.y + dy, lx: l.lx != null ? l.lx + dx : null, ly: l.ly != null ? l.ly + dy : null }));
+        setRevClouds(prev => prev.map(r => !ids.has(r.id) ? r : { ...r, points: r.points.map(pt => ({ x: pt.x + dx, y: pt.y + dy })) }));
+        return;
+      }
+
       if (e.key === "0" || e.key === "Home") { e.preventDefault(); fitAll(); }
-      if (e.key === "`") { e.preventDefault(); setView3d(v => !v); }
+      if (e.key === "`") { e.preventDefault(); setSplitView(false); setView3d(v => !v); }
       if (e.key === "/" && lastCopyInfo && (lastCopyInfo.dx !== 0 || lastCopyInfo.dy !== 0)) { e.preventDefault(); setRepeatInput(""); return; }
     };
     const up = (e) => { if (e.key === " ") setSpaceHeld(false); };
     window.addEventListener("keydown", down);
     window.addEventListener("keyup", up);
     return () => { window.removeEventListener("keydown", down); window.removeEventListener("keyup", up); };
-  }, [selectedId, selectedIds, selType, delSel, selDoor, selWindow, undo, redo, fitAll, dimInput, cursorPos, drawChain, pxPerFoot, commitWallSegment, tool, findNear, walls, nodes, doors, windows, columns, markers, zones, clipboard, pasteOffset, outletType, htrackAngle, lightingType, lastCopyInfo, repeatInput, resolvePos, resolvePoints, editingLabelId, addingLeaderToId]);
+  }, [selectedId, selectedIds, selType, delSel, selDoor, selWindow, undo, redo, fitAll, dimInput, cursorPos, drawChain, pxPerFoot, commitWallSegment, tool, findNear, walls, nodes, doors, windows, columns, markers, zones, clipboard, pasteOffset, outletType, htrackAngle, lightingType, lastCopyInfo, repeatInput, resolvePos, resolvePoints, editingLabelId, addingLeaderToId, activePhase, labels, revClouds]);
 
   const $ = (n) => "$" + n.toLocaleString();
   const font = "'SF Mono','Consolas','Monaco',monospace";
   const nodeConns = useMemo(() => { const c = {}; walls.forEach(w => { c[w.n1] = (c[w.n1] || 0) + 1; c[w.n2] = (c[w.n2] || 0) + 1; }); return c; }, [walls]);
   const nodeWallsMap = useMemo(() => { const m = {}; walls.forEach(w => { if (!m[w.n1]) m[w.n1] = []; if (!m[w.n2]) m[w.n2] = []; m[w.n1].push(w); m[w.n2].push(w); }); return m; }, [walls]);
 
-  // 3D data — only resolved when the 3D view is open; avoids filtering/mapping every render
+  // 3D data — only resolved when 3D or split view is active
   const data3d = useMemo(() => {
-    if (!view3d) return null;
+    if (!view3d && !splitView) return null;
     return {
       walls: walls.filter(w => phaseVisible(w.phase)),
       nodes: nodes.map(n => { const r = gn(n.id); return r ? { ...n, x: r.x, y: r.y } : n; }),
@@ -2893,7 +2952,7 @@ export default function TestfitTool() {
       zones: zones.filter(z => phaseVisible(z.phase)).map(z => z.points ? { ...z, points: resolvePoints(z) } : z),
       markers: markers.filter(m => markerVisible(m)).map(m => ({ ...m, ...resolvePos(m) })),
     };
-  }, [view3d, walls, nodes, doors, windows, columns, zones, markers, phaseVisible, markerVisible, gn, resolvePos, resolvePoints]);
+  }, [view3d, splitView, walls, nodes, doors, windows, columns, zones, markers, phaseVisible, markerVisible, gn, resolvePos, resolvePoints]);
 
   const DimLbl = ({ cx, cy, text, angle, off = -14, color = T.dimText }) => {
     let a = angle; if (a > 90) a -= 180; if (a < -90) a += 180;
@@ -3775,8 +3834,11 @@ export default function TestfitTool() {
           })()}
         </div>
 
-        {/* ── Canvas ──────────────────────────────────────────────── */}
-        <div ref={cvsContainer} style={S.cv}>
+        {/* ── Canvas area — flex row, splits into 2D + 3D panes ── */}
+        <div ref={splitContainerRef} style={{ flex: 1, display: "flex", overflow: "hidden" }}>
+        <div ref={cvsContainer} style={splitView
+          ? { ...S.cv, flex: "none", width: `${splitPos * 100}%` }
+          : S.cv}>
           {/* 3D controls row — all buttons inline at bottom-right */}
           <div style={{ position: "absolute", bottom: 40, right: 12, zIndex: 20, display: "flex", alignItems: "center", gap: 4 }}>
             {view3d && (<>
@@ -3834,16 +3896,25 @@ export default function TestfitTool() {
             </>}
             <Tooltip>
               <TooltipTrigger asChild>
-                <button onClick={() => setView3d(v => !v)} title={view3d ? "Switch to 2D (` key)" : "Switch to 3D (` key)"} style={{ display: "flex", alignItems: "center", gap: 5, padding: "5px 10px", fontSize: 11, fontWeight: 600, borderRadius: 6, border: "1px solid " + T.border, background: view3d ? T.accent : T.panelBg, color: view3d ? "#fff" : T.textMuted, cursor: "pointer", backdropFilter: "blur(8px)", boxShadow: T.panelShadow, userSelect: "none" }}>
-                  {view3d ? <LayoutDashboard size={13} /> : <Box size={13} />}
-                  {view3d ? "2D" : "3D"}
+                <button onClick={() => { setSplitView(false); setView3d(v => !v); }} title={view3d ? "Switch to 2D (` key)" : "Switch to 3D (` key)"} style={{ display: "flex", alignItems: "center", gap: 5, padding: "5px 10px", fontSize: 11, fontWeight: 600, borderRadius: 6, border: "1px solid " + T.border, background: (view3d && !splitView) ? T.accent : T.panelBg, color: (view3d && !splitView) ? "#fff" : T.textMuted, cursor: "pointer", backdropFilter: "blur(8px)", boxShadow: T.panelShadow, userSelect: "none" }}>
+                  {(view3d && !splitView) ? <LayoutDashboard size={13} /> : <Box size={13} />}
+                  {(view3d && !splitView) ? "2D" : "3D"}
                 </button>
               </TooltipTrigger>
-              <TooltipContent side="top" sideOffset={8}>{view3d ? "Back to 2D (` key)" : "3D view (` key)"}</TooltipContent>
+              <TooltipContent side="top" sideOffset={8}>{(view3d && !splitView) ? "Back to 2D (` key)" : "3D view (` key)"}</TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button onClick={() => { setSplitView(v => !v); setView3d(false); }} style={{ display: "flex", alignItems: "center", gap: 5, padding: "5px 10px", fontSize: 11, fontWeight: 600, borderRadius: 6, border: "1px solid " + T.border, background: splitView ? T.accent : T.panelBg, color: splitView ? "#fff" : T.textMuted, cursor: "pointer", backdropFilter: "blur(8px)", boxShadow: T.panelShadow, userSelect: "none" }}>
+                  <Columns2 size={13} />
+                  Split
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="top" sideOffset={8}>Split 2D / 3D view</TooltipContent>
             </Tooltip>
           </div>
 
-          {view3d && data3d && (
+          {view3d && !splitView && data3d && (
             <TestFit3D
               walls={data3d.walls}
               nodes={data3d.nodes}
@@ -3867,8 +3938,8 @@ export default function TestfitTool() {
             />
           )}
 
-          {/* 3D style switcher */}
-          {view3d && (
+          {/* 3D style switcher — only in full 3D mode (not split; split shows it in the 3D pane) */}
+          {view3d && !splitView && (
             <div style={{ position: "absolute", bottom: 112, left: "50%", transform: "translateX(-50%)",
               display: "flex", gap: 4, background: T.panelBg, border: "1px solid " + T.border,
               borderRadius: 8, padding: 4, backdropFilter: "blur(12px)", zIndex: 10 }}>
@@ -4003,7 +4074,7 @@ export default function TestfitTool() {
           })()}
 
           <svg ref={cvs} width="100%" height="100%"
-            style={{ cursor: (panning || spaceHeld) ? "grabbing" : resize ? ({ n:"ns-resize",s:"ns-resize",e:"ew-resize",w:"ew-resize",ne:"nesw-resize",sw:"nesw-resize",nw:"nwse-resize",se:"nwse-resize" }[resize.edge] || "nwse-resize") : (drag?.type === "zone-edge" && drag.cursor) ? drag.cursor : (drag?.type === "revcloud-edge" && drag.cursor) ? drag.cursor : zoneEdge ? zoneEdge.cursor : cadCrosshair(T.crosshairColor), userSelect: "none", display: view3d ? "none" : undefined, transform: canvasRotation ? `rotate(${canvasRotation}deg)` : undefined, transformOrigin: "center", transition: canvasRotNoTransition ? "none" : "transform 0.25s cubic-bezier(0.4,0,0.2,1)" }}
+            style={{ cursor: (panning || spaceHeld) ? "grabbing" : resize ? ({ n:"ns-resize",s:"ns-resize",e:"ew-resize",w:"ew-resize",ne:"nesw-resize",sw:"nesw-resize",nw:"nwse-resize",se:"nwse-resize" }[resize.edge] || "nwse-resize") : (drag?.type === "zone-edge" && drag.cursor) ? drag.cursor : (drag?.type === "revcloud-edge" && drag.cursor) ? drag.cursor : zoneEdge ? zoneEdge.cursor : cadCrosshair(T.crosshairColor), userSelect: "none", display: (view3d && !splitView) ? "none" : undefined, transform: canvasRotation ? `rotate(${canvasRotation}deg)` : undefined, transformOrigin: "center", transition: canvasRotNoTransition ? "none" : "transform 0.25s cubic-bezier(0.4,0,0.2,1)" }}
             onMouseDown={onDown} onMouseMove={onMove} onMouseUp={onUp} onMouseLeave={onUp} onWheel={onWheel}>
             <defs>
               <filter id="glow-budget" x="-50%" y="-50%" width="200%" height="200%">
@@ -5798,6 +5869,89 @@ export default function TestfitTool() {
             <span style={{ color: T.uiBudget, fontWeight: 600, fontSize: 11 }}>{$(cost.total)}</span>
           </div>
         </div>
+
+        {/* ── Split-view: drag handle + 3D pane ── */}
+        {splitView && <>
+          {/* Drag handle */}
+          <div
+            style={{ width: 5, flexShrink: 0, background: T.border, cursor: "col-resize", zIndex: 15, position: "relative", transition: "background 0.15s" }}
+            onMouseEnter={e => e.currentTarget.style.background = T.accent}
+            onMouseLeave={e => e.currentTarget.style.background = T.border}
+            onMouseDown={e => {
+              e.preventDefault();
+              const w = splitContainerRef.current?.getBoundingClientRect().width ?? 800;
+              splitDragRef.current = { startX: e.clientX, startPos: splitPos, containerWidth: w };
+            }}
+          >
+            {/* Visual grip dots */}
+            <div style={{ position: "absolute", top: "50%", left: "50%", transform: "translate(-50%,-50%)", display: "flex", flexDirection: "column", gap: 3, pointerEvents: "none" }}>
+              {[0,1,2].map(i => <div key={i} style={{ width: 3, height: 3, borderRadius: "50%", background: T.textMuted, opacity: 0.5 }} />)}
+            </div>
+          </div>
+
+          {/* 3D pane */}
+          <div style={{ flex: 1, position: "relative", overflow: "hidden", background: T.canvas }}>
+            {data3d && <TestFit3D
+              walls={data3d.walls}
+              nodes={data3d.nodes}
+              doors={data3d.doors}
+              windows={data3d.windows}
+              columns={data3d.columns}
+              zones={data3d.zones}
+              markers={data3d.markers}
+              dims={dims}
+              pxPerFoot={pxPerFoot} ceilingHeight={ceilingHeight} T={T} themeMode={themeMode}
+              controlsRef={controls3dRef} mode={mode}
+              selectedId={selectedId} selType={selType}
+              show3dLabels={show3dLabels} setShow3dLabels={setShow3dLabels}
+              show3dDims={show3dDims}     setShow3dDims={setShow3dDims}
+              style3d={style3d}
+              zoneLibrary={zoneLibrary}
+              visibleLayers={visibleLayers}
+              visibleBuildElectrical={visibleBuildElectrical}
+              visibleBuildLighting={visibleBuildLighting}
+              onSelect={(id, type) => { setSelectedId(id); setSelType(type); }}
+            />}
+
+            {/* Labels / dims toggles — top-right of 3D pane */}
+            <div style={{ position: "absolute", top: 12, right: 12, zIndex: 20, display: "flex", alignItems: "center", gap: 4 }}>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button onClick={() => setShow3dLabels(v => !v)} style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: "6px 8px", borderRadius: 6, border: "1px solid " + T.border, background: show3dLabels ? T.accent : T.panelBg, color: show3dLabels ? "#fff" : T.textMuted, cursor: "pointer", backdropFilter: "blur(8px)", boxShadow: T.panelShadow, userSelect: "none" }}>
+                    <Tag size={14} />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="bottom" sideOffset={8}>Labels</TooltipContent>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button onClick={() => setShow3dDims(v => !v)} style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: "6px 8px", borderRadius: 6, border: "1px solid " + T.border, background: show3dDims ? T.accent : T.panelBg, color: show3dDims ? "#fff" : T.textMuted, cursor: "pointer", backdropFilter: "blur(8px)", boxShadow: T.panelShadow, userSelect: "none" }}>
+                    <Ruler size={14} />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="bottom" sideOffset={8}>Dimensions</TooltipContent>
+              </Tooltip>
+            </div>
+
+            {/* 3D style switcher — bottom center of 3D pane */}
+            <div style={{ position: "absolute", bottom: 16, left: "50%", transform: "translateX(-50%)",
+              display: "flex", gap: 4, background: T.panelBg, border: "1px solid " + T.border,
+              borderRadius: 8, padding: 4, backdropFilter: "blur(12px)", zIndex: 10 }}>
+              {[["clay","Clay"],["xray","X-Ray"],["detailed","Detailed"]].map(([k, label]) => (
+                <button key={k} onClick={() => setStyle3d(k)}
+                  style={{ padding: "5px 14px", borderRadius: 5, border: "none", cursor: "pointer",
+                    background: style3d === k ? T.accent + "40" : "transparent",
+                    color: style3d === k ? T.textBright : T.textMuted,
+                    fontSize: 11, fontFamily: "inherit", fontWeight: style3d === k ? 600 : 400,
+                    outline: style3d === k ? "1px solid " + T.accent : "none" }}>
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+        </>}
+
+        </div>{/* end splitContainerRef */}
       </div>
     </div>
 
