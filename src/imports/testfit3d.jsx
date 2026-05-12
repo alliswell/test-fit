@@ -1,10 +1,10 @@
 import { useState, useMemo, useRef, useEffect } from "react";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
-import { OrbitControls, Grid, Text, Billboard } from "@react-three/drei";
+import { OrbitControls, Grid, Text, Billboard, Environment, ContactShadows } from "@react-three/drei";
 import * as THREE from "three";
 import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
 import { RenderPass }     from "three/examples/jsm/postprocessing/RenderPass.js";
-import { FilmPass }       from "three/examples/jsm/postprocessing/FilmPass.js";
+import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
 import { OutputPass }     from "three/examples/jsm/postprocessing/OutputPass.js";
 
 // ─── Constants ─────────────────────────────────────────────────────────────────
@@ -14,6 +14,134 @@ const WALL_KINDS = {
   new:      { label: "New",      color: "#50A0E0", thickness: 4.5 },
   pony:     { label: "Pony",     color: "#C8A060", thickness: 3.5 },
 };
+
+// Per-material PBR specs used in detailed-mode rendering. Drafting kind colors
+// (existing/demo/new/pony) drive the look in clay/xray; in detailed mode the
+// material's realistic color/roughness wins so walls read as their built finish.
+const WALL_MATERIAL_PBR = {
+  "Drywall":     { color: "#ECE6D9", roughness: 0.92, metalness: 0.00 }, // off-white painted
+  "Brick":       { color: "#9B4A3A", roughness: 0.95, metalness: 0.00 }, // rust red
+  "CMU / Block": { color: "#8A8D8C", roughness: 0.92, metalness: 0.05 }, // cool gray
+  "Concrete":    { color: "#A09D96", roughness: 0.85, metalness: 0.05 }, // medium gray
+  "Plaster":     { color: "#E3D9C3", roughness: 0.88, metalness: 0.00 }, // warm cream
+  "Other":       null, // sentinel — fall through to kind color
+};
+
+// Real-world tile size for materials that have a procedural texture. The wall's
+// box geometry has its UVs scaled per-face so the pattern shows at correct scale
+// regardless of wall length/height.
+const WALL_MATERIAL_TILE_FT = {
+  "Brick":       { x: 16/12, y: 8/12 },   // 16" × 8" tile = 2 rows of running bond
+  "CMU / Block": { x: 16/12, y: 8/12 },   // 16" × 8" CMU block + mortar
+};
+
+// ─── Procedural wall textures (lazy, cached) ─────────────────────────────────
+function _makeBrickColorTex() {
+  const c = document.createElement("canvas");
+  c.width = 256; c.height = 128;
+  const ctx = c.getContext("2d");
+  ctx.fillStyle = "#5a4a40"; ctx.fillRect(0, 0, 256, 128); // mortar
+  const bw = 128, bh = 64, m = 6;
+  const colors = ["#9c4f3e", "#a55a47", "#8c4334", "#9b4f3f", "#a25241", "#854230", "#923f30"];
+  for (let row = 0; row < 2; row++) {
+    const xs = row === 1 ? -bw / 2 : 0;
+    for (let col = -1; col <= 2; col++) {
+      const x = col * bw + xs + m / 2;
+      const y = row * bh + m / 2;
+      ctx.fillStyle = colors[(row * 5 + col * 3 + 12) % colors.length];
+      ctx.fillRect(x, y, bw - m, bh - m);
+      ctx.fillStyle = "rgba(255,230,200,0.07)"; ctx.fillRect(x, y, bw - m, 3);            // highlight top
+      ctx.fillStyle = "rgba(0,0,0,0.10)";       ctx.fillRect(x, y + bh - m - 3, bw - m, 3); // shadow bottom
+    }
+  }
+  // Speckle for surface variation
+  const img = ctx.getImageData(0, 0, 256, 128);
+  for (let i = 0; i < img.data.length; i += 4) {
+    const n = (Math.random() - 0.5) * 22;
+    img.data[i]     = Math.max(0, Math.min(255, img.data[i]     + n));
+    img.data[i + 1] = Math.max(0, Math.min(255, img.data[i + 1] + n));
+    img.data[i + 2] = Math.max(0, Math.min(255, img.data[i + 2] + n));
+  }
+  ctx.putImageData(img, 0, 0);
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = 4;
+  return t;
+}
+function _makeBrickBumpTex() {
+  const c = document.createElement("canvas");
+  c.width = 256; c.height = 128;
+  const ctx = c.getContext("2d");
+  ctx.fillStyle = "#1a1a1a"; ctx.fillRect(0, 0, 256, 128); // mortar = recessed
+  const bw = 128, bh = 64, m = 6;
+  for (let row = 0; row < 2; row++) {
+    const xs = row === 1 ? -bw / 2 : 0;
+    for (let col = -1; col <= 2; col++) {
+      const x = col * bw + xs + m / 2;
+      const y = row * bh + m / 2;
+      const cx = x + (bw - m) / 2, cy = y + (bh - m) / 2;
+      const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, bw / 2);
+      grad.addColorStop(0,    "#ffffff");
+      grad.addColorStop(0.78, "#d8d8d8");
+      grad.addColorStop(1,    "#5a5a5a");
+      ctx.fillStyle = grad;
+      ctx.fillRect(x, y, bw - m, bh - m);
+    }
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.anisotropy = 4;
+  return t;
+}
+function _makeCMUColorTex() {
+  const c = document.createElement("canvas");
+  c.width = 256; c.height = 128;
+  const ctx = c.getContext("2d");
+  ctx.fillStyle = "#5e6260"; ctx.fillRect(0, 0, 256, 128); // mortar
+  const bw = 256, bh = 128, m = 8;
+  // Single CMU block per tile (16" × 8")
+  ctx.fillStyle = "#8b8e8c";
+  ctx.fillRect(m / 2, m / 2, bw - m, bh - m);
+  // Pock-marked aggregate noise
+  const img = ctx.getImageData(0, 0, 256, 128);
+  for (let i = 0; i < img.data.length; i += 4) {
+    const n = (Math.random() - 0.5) * 30;
+    img.data[i]     = Math.max(0, Math.min(255, img.data[i]     + n));
+    img.data[i + 1] = Math.max(0, Math.min(255, img.data[i + 1] + n));
+    img.data[i + 2] = Math.max(0, Math.min(255, img.data[i + 2] + n));
+  }
+  ctx.putImageData(img, 0, 0);
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = 4;
+  return t;
+}
+function _makeCMUBumpTex() {
+  const c = document.createElement("canvas");
+  c.width = 256; c.height = 128;
+  const ctx = c.getContext("2d");
+  ctx.fillStyle = "#202020"; ctx.fillRect(0, 0, 256, 128); // mortar recess
+  ctx.fillStyle = "#dddddd";
+  ctx.fillRect(4, 4, 248, 120);
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.anisotropy = 4;
+  return t;
+}
+let _brickColor, _brickBump, _cmuColor, _cmuBump;
+function getWallTextureSet(material) {
+  if (material === "Brick") {
+    if (!_brickColor) { _brickColor = _makeBrickColorTex(); _brickBump = _makeBrickBumpTex(); }
+    return { map: _brickColor, bumpMap: _brickBump, bumpScale: 0.05 };
+  }
+  if (material === "CMU / Block") {
+    if (!_cmuColor) { _cmuColor = _makeCMUColorTex(); _cmuBump = _makeCMUBumpTex(); }
+    return { map: _cmuColor, bumpMap: _cmuBump, bumpScale: 0.04 };
+  }
+  return null;
+}
 
 // Zone colors come from the editable zoneLibrary prop passed by TestFit3D.
 const zoneColor = (zone, zoneLibrary) =>
@@ -145,7 +273,7 @@ function CylGlow({ r, h }) {
 function WarmGlow({ r = 0.28, intensity = 1.0, distance = 9, position = [0, 0, 0] }) {
   const ref = useRef();
   useFrame(({ clock }) => {
-    if (ref.current) ref.current.material.opacity = 0.16 + 0.06 * Math.sin(clock.getElapsedTime() * 0.5);
+    if (ref.current) ref.current.material.opacity = 0.10 + 0.05 * Math.sin(clock.getElapsedTime() * 0.5);
   });
   return (
     <group position={position}>
@@ -164,22 +292,64 @@ function WallEdges({ w, h, d, color }) {
 }
 
 // ─── Wall box ──────────────────────────────────────────────────────────────────
-function WallBox({ lenFt, heightFt, thickFt, yCenter, offsetFt = 0, color, wallId, onSelect, isDemo, isSelected, style3d = "clay" }) {
+function WallBox({ lenFt, heightFt, thickFt, yCenter, offsetFt = 0, color, material, wallId, onSelect, isDemo, isSelected, style3d = "clay", interactive = true }) {
   const [hov, setHov] = useState(false);
-  const c = hov ? "#ffffff" : color;
+  const c = (interactive && hov) ? "#ffffff" : color;
+  // Detailed mode: pull PBR settings from the chosen wall material. Demo walls
+  // keep the red kind color (washed transparent) so they stay identifiable.
+  const matSpec = WALL_MATERIAL_PBR[material || "Drywall"];
+  const detailedColor = isDemo ? color : (matSpec?.color ?? color);
+  const detailedRough = matSpec?.roughness ?? 0.92;
+  const detailedMetal = matSpec?.metalness ?? 0.0;
+  // Texture set + tile size for materials that have a procedural pattern.
+  // When present, we build a custom BoxGeometry with per-face UV scaling so the
+  // pattern repeats at correct real-world size on every face of the wall.
+  const tex     = (style3d === "detailed" && !isDemo) ? getWallTextureSet(material) : null;
+  const tileFt  = (style3d === "detailed" && !isDemo) ? WALL_MATERIAL_TILE_FT[material] : null;
+  const geo = useMemo(() => {
+    const g = new THREE.BoxGeometry(lenFt, heightFt, thickFt);
+    if (tileFt) {
+      const u = g.attributes.uv;
+      const sxLen = lenFt    / tileFt.x, syHt  = heightFt / tileFt.y;
+      const sxThk = thickFt  / tileFt.x, syThk = thickFt  / tileFt.y;
+      // BoxGeometry face order: right(0), left(1), top(2), bottom(3), front(4), back(5)
+      const scale = (face, sx, sy) => {
+        for (let i = face * 4; i < face * 4 + 4; i++) u.setXY(i, u.getX(i) * sx, u.getY(i) * sy);
+      };
+      scale(0, sxThk, syHt);   // right end-cap
+      scale(1, sxThk, syHt);   // left end-cap
+      scale(2, sxLen, syThk);  // top
+      scale(3, sxLen, syThk);  // bottom
+      scale(4, sxLen, syHt);   // front face
+      scale(5, sxLen, syHt);   // back face
+      u.needsUpdate = true;
+    }
+    return g;
+  }, [lenFt, heightFt, thickFt, tileFt]);
+  useEffect(() => () => geo.dispose(), [geo]);
   return (
     <group position={[offsetFt, yCenter, 0]}>
       <mesh
         key={style3d}
-        onClick={e => { e.stopPropagation(); onSelect(wallId, "wall"); }}
-        onPointerOver={e => { e.stopPropagation(); setHov(true); }}
-        onPointerOut={() => setHov(false)}
+        geometry={geo}
+        onClick={interactive ? (e => { e.stopPropagation(); onSelect(wallId, "wall"); }) : undefined}
+        onPointerOver={interactive ? (e => { e.stopPropagation(); setHov(true); }) : undefined}
+        onPointerOut={interactive ? (() => setHov(false)) : undefined}
         castShadow={style3d === "detailed"}
         receiveShadow={style3d === "detailed"}
       >
-        <boxGeometry args={[lenFt, heightFt, thickFt]} />
         {style3d === "xray"    && <meshBasicMaterial    color={c} transparent opacity={hov ? 0.25 : 0.08} depthWrite={false} />}
-        {style3d === "detailed"&& <meshStandardMaterial color={c} roughness={0.75} metalness={0.0} transparent={isDemo} opacity={isDemo ? 0.5 : 1} />}
+        {style3d === "detailed"&& <meshStandardMaterial
+          color={interactive && hov ? "#ffffff" : (tex ? "#ffffff" : detailedColor)}
+          roughness={detailedRough}
+          metalness={detailedMetal}
+          envMapIntensity={0.6}
+          map={tex?.map}
+          bumpMap={tex?.bumpMap}
+          bumpScale={tex?.bumpScale}
+          transparent={isDemo}
+          opacity={isDemo ? 0.5 : 1}
+        />}
         {style3d === "clay"    && <meshLambertMaterial  color={c} transparent={isDemo || hov} opacity={isDemo ? 0.5 : hov ? 0.85 : 1} />}
       </mesh>
       {style3d === "xray" && <WallEdges w={lenFt} h={heightFt} d={thickFt} color={color} />}
@@ -189,7 +359,75 @@ function WallBox({ lenFt, heightFt, thickFt, yCenter, offsetFt = 0, color, wallI
 }
 
 // ─── Door with swing arc ───────────────────────────────────────────────────────
-function DoorSwing3D({ door, segLenFt, heightFt, offsetFt, thickFt, onSelect, isSelected }) {
+// ─── Door casing — interior + exterior trim around the opening ─────────────
+// Detailed-mode only. Three boards (left jamb, right jamb, head) sit slightly
+// proud of each wall face. Wood-stained material reads as painted/stained pine.
+function DoorCasing({ segLenFt, heightFt, thickFt, offsetFt, style3d = "clay" }) {
+  if (style3d !== "detailed") return null;
+  const cw = 0.21;   // 2.5" casing width
+  const cd = 0.06;   // 0.75" projection from wall face
+  const sideH = heightFt + cw;        // jamb tops align with head bottom
+  const headW = segLenFt + cw * 2;
+  const proud = thickFt / 2 + cd / 2 + 0.001;
+  const matProps = { color: "#A87545", roughness: 0.55, metalness: 0.05, envMapIntensity: 0.7 };
+  return (
+    <group position={[offsetFt, 0, 0]}>
+      {[1, -1].map(face => (
+        <group key={face} position={[0, 0, face * proud]}>
+          <mesh position={[-segLenFt / 2 - cw / 2, sideH / 2, 0]} castShadow receiveShadow>
+            <boxGeometry args={[cw, sideH, cd]} /><meshStandardMaterial {...matProps} />
+          </mesh>
+          <mesh position={[segLenFt / 2 + cw / 2, sideH / 2, 0]} castShadow receiveShadow>
+            <boxGeometry args={[cw, sideH, cd]} /><meshStandardMaterial {...matProps} />
+          </mesh>
+          <mesh position={[0, heightFt + cw / 2, 0]} castShadow receiveShadow>
+            <boxGeometry args={[headW, cw, cd]} /><meshStandardMaterial {...matProps} />
+          </mesh>
+        </group>
+      ))}
+    </group>
+  );
+}
+
+// ─── Window frame — sill + side jambs + head ───────────────────────────────
+// Detailed-mode only. Painted-white finish with a slightly proud sill that
+// projects further than the jambs (typical interior stool detail).
+function WindowFrame({ segLenFt, winHFt, sillFt, thickFt, style3d = "clay" }) {
+  if (style3d !== "detailed") return null;
+  const fw = 0.17;    // 2" frame width
+  const fd = 0.05;    // jamb / head projection
+  const sillH = 0.10;
+  const sillD = 0.10; // sill projects further than jambs
+  const proud = thickFt / 2 + fd / 2 + 0.001;
+  const sillProud = thickFt / 2 + sillD / 2 + 0.001;
+  const wTop = sillFt + winHFt;
+  const matProps = { color: "#F0EDE6", roughness: 0.4, metalness: 0.0, envMapIntensity: 0.7 };
+  return (
+    <>
+      {[1, -1].map(face => (
+        <group key={face}>
+          {/* Side jambs */}
+          <mesh position={[-segLenFt / 2 - fw / 2, sillFt + winHFt / 2, face * proud]} castShadow receiveShadow>
+            <boxGeometry args={[fw, winHFt, fd]} /><meshStandardMaterial {...matProps} />
+          </mesh>
+          <mesh position={[segLenFt / 2 + fw / 2, sillFt + winHFt / 2, face * proud]} castShadow receiveShadow>
+            <boxGeometry args={[fw, winHFt, fd]} /><meshStandardMaterial {...matProps} />
+          </mesh>
+          {/* Head */}
+          <mesh position={[0, wTop + fw / 2, face * proud]} castShadow receiveShadow>
+            <boxGeometry args={[segLenFt + fw * 2, fw, fd]} /><meshStandardMaterial {...matProps} />
+          </mesh>
+          {/* Stool / sill — projects further on each face */}
+          <mesh position={[0, sillFt - sillH / 2, face * sillProud]} castShadow receiveShadow>
+            <boxGeometry args={[segLenFt + fw * 2, sillH, sillD]} /><meshStandardMaterial {...matProps} />
+          </mesh>
+        </group>
+      ))}
+    </>
+  );
+}
+
+function DoorSwing3D({ door, segLenFt, heightFt, offsetFt, thickFt, onSelect, isSelected, style3d = "clay", interactive = true }) {
   const isCaseOpening = door.doorType === "Case Opening";
   const hingeRight    = door.hingeRight ?? false;
   const swingZ        = door.flipped ? -1 : 1;
@@ -197,6 +435,7 @@ function DoorSwing3D({ door, segLenFt, heightFt, offsetFt, thickFt, onSelect, is
   const hingeX        = offsetFt + (hingeRight ? segLenFt / 2 : -segLenFt / 2);
   const closedAngle   = hingeRight ? Math.PI : 0;
   const sweepSign     = (hingeRight ? -1 : 1) * swingZ;
+  const isDetailed    = style3d === "detailed";
 
   const tubeGeo = useMemo(() => {
     const N = 24, pts = [];
@@ -207,7 +446,8 @@ function DoorSwing3D({ door, segLenFt, heightFt, offsetFt, thickFt, onSelect, is
     return new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), N, 0.025, 6, false);
   }, [hingeX, segLenFt, closedAngle, sweepSign]);
 
-  const click = e => { e.stopPropagation(); onSelect(door.id, "door"); };
+  const click = interactive ? (e => { e.stopPropagation(); onSelect(door.id, "door"); }) : undefined;
+  const showSel = isSelected && interactive;
   return (
     <group onClick={click}>
       <mesh position={[offsetFt, doorH / 2, 0]}>
@@ -215,13 +455,29 @@ function DoorSwing3D({ door, segLenFt, heightFt, offsetFt, thickFt, onSelect, is
       </mesh>
       {!isCaseOpening && (<>
         <group position={[hingeX, doorH / 2, swingZ * segLenFt / 2]}>
-          <mesh><boxGeometry args={[0.08, doorH, segLenFt]} /><meshLambertMaterial color="#C8A878" transparent opacity={0.88} /></mesh>
-          {isSelected && <BoxGlow w={0.08} h={doorH} d={segLenFt} />}
+          <mesh>
+            <boxGeometry args={[0.08, doorH, segLenFt]} />
+            {isDetailed
+              ? <meshStandardMaterial color="#A87545" roughness={0.55} metalness={0.05} envMapIntensity={0.7} />
+              : <meshLambertMaterial color="#C8A878" transparent opacity={0.88} />}
+          </mesh>
+          {showSel && <BoxGlow w={0.08} h={doorH} d={segLenFt} />}
         </group>
-        <mesh position={[hingeX, 0.06, 0]}><cylinderGeometry args={[0.05, 0.05, 0.14, 8]} /><meshLambertMaterial color={isSelected ? GLOW_COLOR : "#C8A060"} /></mesh>
-        <mesh geometry={tubeGeo}><meshLambertMaterial color={isSelected ? GLOW_COLOR : "#C8A060"} transparent opacity={isSelected ? 0.85 : 0.55} /></mesh>
+        {/* Door knob — brass in detailed mode */}
+        <mesh position={[hingeX, 0.06, 0]}>
+          <cylinderGeometry args={[0.05, 0.05, 0.14, 8]} />
+          {isDetailed
+            ? <meshStandardMaterial color="#C8A060" roughness={0.35} metalness={0.85} envMapIntensity={1.2} />
+            : <meshLambertMaterial color={showSel ? GLOW_COLOR : "#C8A060"} />}
+        </mesh>
+        {/* Swing arc — drafting annotation, hidden in detailed mode */}
+        {!isDetailed && (
+          <mesh geometry={tubeGeo}>
+            <meshLambertMaterial color={showSel ? GLOW_COLOR : "#C8A060"} transparent opacity={showSel ? 0.85 : 0.55} />
+          </mesh>
+        )}
       </>)}
-      {isCaseOpening && isSelected && (
+      {isCaseOpening && showSel && (
         <mesh position={[offsetFt, doorH / 2, 0]}>
           <boxGeometry args={[segLenFt + GLOW_OFFSET * 2, doorH + GLOW_OFFSET * 2, thickFt + GLOW_OFFSET * 2]} /><meshLambertMaterial color={GLOW_COLOR} transparent opacity={0.3} side={THREE.BackSide} depthWrite={false} />
         </mesh>
@@ -231,8 +487,17 @@ function DoorSwing3D({ door, segLenFt, heightFt, offsetFt, thickFt, onSelect, is
 }
 
 // ─── Window glass / glow ───────────────────────────────────────────────────────
-function WindowGlass({ lenFt, winHFt, sillFt, thickFt }) {
-  return <mesh position={[0, sillFt + winHFt / 2, 0]}><boxGeometry args={[lenFt, winHFt, thickFt * 0.1]} /><meshLambertMaterial color="#90CAF9" transparent opacity={0.28} side={THREE.DoubleSide} /></mesh>;
+function WindowGlass({ lenFt, winHFt, sillFt, thickFt, style3d = "clay" }) {
+  return (
+    <mesh position={[0, sillFt + winHFt / 2, 0]}>
+      <boxGeometry args={[lenFt, winHFt, thickFt * 0.1]} />
+      {style3d === "detailed"
+        ? <meshPhysicalMaterial color="#a8c8e0" roughness={0.05} metalness={0}
+            transmission={0.85} thickness={0.4} ior={1.5}
+            transparent opacity={0.55} envMapIntensity={1.2} side={THREE.DoubleSide} />
+        : <meshLambertMaterial color="#90CAF9" transparent opacity={0.28} side={THREE.DoubleSide} />}
+    </mesh>
+  );
 }
 function WindowGlow({ lenFt, winHFt, sillFt, thickFt }) {
   const ref = useRef();
@@ -242,11 +507,27 @@ function WindowGlow({ lenFt, winHFt, sillFt, thickFt }) {
 }
 
 // ─── Wall with openings ────────────────────────────────────────────────────────
-function Wall3D({ w, nodes, doors, windows, cx, cz, pxPerFoot, ceilingHeight, onSelect, selectedId, selType, showDims, style3d = "clay" }) {
+function Wall3D({ w, nodes, walls = [], doors, windows, cx, cz, pxPerFoot, ceilingHeight, onSelect, selectedId, selType, showDims, style3d = "clay", interactive = true }) {
   const n1 = nodes.find(n => n.id === w.n1), n2 = nodes.find(n => n.id === w.n2);
   if (!n1 || !n2) return null;
   const wk       = WALL_KINDS[w.kind || "existing"];
   const thickFt  = (w.kind === "pony" ? (w.ponyDepth || 6) : (wk.thickness || 5)) / 12;
+  // Mitered corner overlap — extend each end of an outer-shell wall by half the
+  // adjacent wall's thickness so they overlap cleanly at junctions instead of
+  // showing a thickness-step seam.
+  const adjThickAt = (nodeId) => {
+    let max = 0;
+    for (const ww of walls) {
+      if (ww.id === w.id) continue;
+      if (ww.n1 !== nodeId && ww.n2 !== nodeId) continue;
+      const wwk = WALL_KINDS[ww.kind || "existing"];
+      const t = (ww.kind === "pony" ? (ww.ponyDepth || 6) : (wwk.thickness || 5)) / 12;
+      if (t > max) max = t;
+    }
+    return max;
+  };
+  const extStartTotal = adjThickAt(w.n1) / 2; // ft to extend at n1 end
+  const extEndTotal   = adjThickAt(w.n2) / 2; // ft to extend at n2 end
   const ceilFt   = ceilingHeight / 12;
   const heightFt = w.kind === "pony" ? (w.ponyHeight || 42) / 12 : ceilFt;
   const x1 = n1.x, y1 = n1.y, x2 = n2.x, y2 = n2.y;
@@ -288,28 +569,35 @@ function Wall3D({ w, nodes, doors, windows, cx, cz, pxPerFoot, ceilingHeight, on
   return (
     <group position={[midX, 0, midZ]} rotation={[0, -angle, 0]}>
       {segs.map((seg, i) => {
-        const segLenFt = (seg.t1 - seg.t0) * wallLenFt;
-        if (segLenFt < 0.001) return null;
-        const offsetFt = ((seg.t0 + seg.t1) / 2 - 0.5) * wallLenFt;
-        if (seg.solid) return <WallBox key={i} lenFt={segLenFt} heightFt={heightFt} thickFt={thickFt} yCenter={heightFt / 2} offsetFt={offsetFt} color={wk.color} wallId={w.id} onSelect={onSelect} isDemo={w.kind === "demo"} isSelected={wallSel} style3d={style3d} />;
+        const baseLen   = (seg.t1 - seg.t0) * wallLenFt;
+        if (baseLen < 0.001) return null;
+        const baseOff   = ((seg.t0 + seg.t1) / 2 - 0.5) * wallLenFt;
+        // Only extend solid end-cap segments — never around openings.
+        const extStart  = (seg.solid && seg.t0 === 0)  ? extStartTotal : 0;
+        const extEnd    = (seg.solid && seg.t1 === 1)  ? extEndTotal   : 0;
+        const segLenFt  = baseLen + extStart + extEnd;
+        const offsetFt  = baseOff - extStart / 2 + extEnd / 2;
+        if (seg.solid) return <WallBox key={i} lenFt={segLenFt} heightFt={heightFt} thickFt={thickFt} yCenter={heightFt / 2} offsetFt={offsetFt} color={wk.color} material={w.material} wallId={w.id} onSelect={onSelect} isDemo={w.kind === "demo"} isSelected={wallSel && interactive} style3d={style3d} interactive={interactive} />;
         if (seg.isDoor) {
           const mhH = heightFt - doorHFt;
           return (
             <group key={i}>
-              <DoorSwing3D door={seg.item} segLenFt={segLenFt} heightFt={doorHFt} offsetFt={offsetFt} thickFt={thickFt} onSelect={onSelect} isSelected={selectedId === seg.item.id && selType === "door"} />
-              {mhH > 0.01 && <WallBox lenFt={segLenFt} heightFt={mhH} thickFt={thickFt} yCenter={doorHFt + mhH / 2} offsetFt={offsetFt} color={wk.color} wallId={w.id} onSelect={onSelect} isDemo={w.kind === "demo"} isSelected={wallSel} style3d={style3d} />}
+              <DoorSwing3D door={seg.item} segLenFt={segLenFt} heightFt={doorHFt} offsetFt={offsetFt} thickFt={thickFt} onSelect={onSelect} isSelected={selectedId === seg.item.id && selType === "door" && interactive} style3d={style3d} interactive={interactive} />
+              <DoorCasing segLenFt={segLenFt} heightFt={doorHFt} thickFt={thickFt} offsetFt={offsetFt} style3d={style3d} />
+              {mhH > 0.01 && <WallBox lenFt={segLenFt} heightFt={mhH} thickFt={thickFt} yCenter={doorHFt + mhH / 2} offsetFt={offsetFt} color={wk.color} material={w.material} wallId={w.id} onSelect={onSelect} isDemo={w.kind === "demo"} isSelected={wallSel && interactive} style3d={style3d} interactive={interactive} />}
             </group>
           );
         }
-        const winSel = selectedId === seg.item.id && selType === "window";
+        const winSel = selectedId === seg.item.id && selType === "window" && interactive;
         const isCut = seg.item?.type === "Cut Opening";
         const sillFt = (seg.item?.sill ?? 30) / 12, winHFt = (seg.item?.height ?? 48) / 12, headerFt = heightFt - sillFt - winHFt;
         return (
-          <group key={i} position={[offsetFt, 0, 0]} onClick={e => { e.stopPropagation(); onSelect(seg.item.id, "window"); }}>
+          <group key={i} position={[offsetFt, 0, 0]} onClick={interactive ? (e => { e.stopPropagation(); onSelect(seg.item.id, "window"); }) : undefined}>
             <mesh position={[0, sillFt + winHFt / 2, 0]}><boxGeometry args={[segLenFt, winHFt, thickFt * 2.5]} /><meshLambertMaterial transparent opacity={0} depthWrite={false} /></mesh>
-            {sillFt > 0.01 && <WallBox lenFt={segLenFt} heightFt={sillFt} thickFt={thickFt} yCenter={sillFt / 2} offsetFt={0} color={wk.color} wallId={w.id} onSelect={onSelect} isDemo={w.kind === "demo"} isSelected={false} style3d={style3d} />}
-            {!isCut && <WindowGlass lenFt={segLenFt} winHFt={winHFt} sillFt={sillFt} thickFt={thickFt} />}
-            {headerFt > 0.01 && <WallBox lenFt={segLenFt} heightFt={headerFt} thickFt={thickFt} yCenter={sillFt + winHFt + headerFt / 2} offsetFt={0} color={wk.color} wallId={w.id} onSelect={onSelect} isDemo={w.kind === "demo"} isSelected={false} style3d={style3d} />}
+            {sillFt > 0.01 && <WallBox lenFt={segLenFt} heightFt={sillFt} thickFt={thickFt} yCenter={sillFt / 2} offsetFt={0} color={wk.color} material={w.material} wallId={w.id} onSelect={onSelect} isDemo={w.kind === "demo"} isSelected={false} style3d={style3d} interactive={interactive} />}
+            {!isCut && <WindowGlass lenFt={segLenFt} winHFt={winHFt} sillFt={sillFt} thickFt={thickFt} style3d={style3d} />}
+            <WindowFrame segLenFt={segLenFt} winHFt={winHFt} sillFt={sillFt} thickFt={thickFt} style3d={style3d} />
+            {headerFt > 0.01 && <WallBox lenFt={segLenFt} heightFt={headerFt} thickFt={thickFt} yCenter={sillFt + winHFt + headerFt / 2} offsetFt={0} color={wk.color} material={w.material} wallId={w.id} onSelect={onSelect} isDemo={w.kind === "demo"} isSelected={false} style3d={style3d} interactive={interactive} />}
             {winSel && <WindowGlow lenFt={segLenFt} winHFt={winHFt} sillFt={sillFt} thickFt={thickFt} />}
           </group>
         );
@@ -324,24 +612,24 @@ function Wall3D({ w, nodes, doors, windows, cx, cz, pxPerFoot, ceilingHeight, on
 }
 
 // ─── Column ────────────────────────────────────────────────────────────────────
-function Column3D({ col, cx, cz, pxPerFoot, ceilingHeight, onSelect, isSelected, style3d = "clay" }) {
+function Column3D({ col, cx, cz, pxPerFoot, ceilingHeight, onSelect, isSelected, style3d = "clay", interactive = true }) {
   const [hov, setHov] = useState(false);
   const r = col.size / 12 / 2, h = ceilingHeight / 12;
   const x = (col.x - cx) / pxPerFoot, z = (col.y - cz) / pxPerFoot;
-  const colColor = hov ? "#ffffff" : "#888888";
+  const colColor = (interactive && hov) ? "#ffffff" : "#888888";
   return (
     <group position={[x, h / 2, z]}>
       <mesh
         key={style3d}
-        onClick={e => { e.stopPropagation(); onSelect(col.id, "column"); }}
-        onPointerOver={e => { e.stopPropagation(); setHov(true); }}
-        onPointerOut={() => setHov(false)}
+        onClick={interactive ? (e => { e.stopPropagation(); onSelect(col.id, "column"); }) : undefined}
+        onPointerOver={interactive ? (e => { e.stopPropagation(); setHov(true); }) : undefined}
+        onPointerOut={interactive ? (() => setHov(false)) : undefined}
         castShadow={style3d === "detailed"}
         receiveShadow={style3d === "detailed"}
       >
         {col.shape === "circle" ? <cylinderGeometry args={[r, r, h, 24]} /> : <boxGeometry args={[r * 2, h, r * 2]} />}
         {style3d === "xray"     && <meshBasicMaterial    color={colColor} transparent opacity={0.1} />}
-        {style3d === "detailed" && <meshStandardMaterial color={colColor} roughness={0.4} metalness={0.15} />}
+        {style3d === "detailed" && <meshStandardMaterial color={colColor} roughness={0.85} metalness={0.05} envMapIntensity={0.5} />}
         {style3d === "clay"     && <meshLambertMaterial  color={colColor} />}
       </mesh>
       {isSelected && (col.shape === "circle" ? <CylGlow r={r} h={h} /> : <BoxGlow w={r * 2} h={h} d={r * 2} />)}
@@ -350,7 +638,7 @@ function Column3D({ col, cx, cz, pxPerFoot, ceilingHeight, onSelect, isSelected,
 }
 
 // ─── IT / MEP / Electrical Marker 3D ─────────────────────────────────────────
-function Marker3D({ marker, cx, cz, pxPerFoot, ceilingHeight, onSelect, isSelected, style3d = "clay" }) {
+function Marker3D({ marker, cx, cz, pxPerFoot, ceilingHeight, onSelect, isSelected, style3d = "clay", interactive = true }) {
   const [hov, setHov] = useState(false);
   const wx = (marker.x - cx) / pxPerFoot;
   const wz = (marker.y - cz) / pxPerFoot;
@@ -361,7 +649,7 @@ function Marker3D({ marker, cx, cz, pxPerFoot, ceilingHeight, onSelect, isSelect
   const c = hov ? "#ffffff" : isSelected ? GLOW_COLOR : baseColor;
   const wy = resolveY(cfg.y, cH);
 
-  const click = e => { e.stopPropagation(); onSelect(marker.id, "marker"); };
+  const click = interactive ? (e => { e.stopPropagation(); onSelect(marker.id, "marker"); }) : undefined;
   const hp    = { onPointerOver: e => { e.stopPropagation(); setHov(true); }, onPointerOut: () => setHov(false) };
 
   const angle = marker.angle ?? 0;
@@ -497,7 +785,11 @@ function Marker3D({ marker, cx, cz, pxPerFoot, ceilingHeight, onSelect, isSelect
   // ── Recessed can (ceiling-flush cylinder with trim ring) ──────────────────
   if (shape === "can") return (
     <group position={[wx, wy, wz]} rotation={floorRot} onClick={click} {...hp}>
-      <mesh><cylinderGeometry args={[cfg.r, cfg.r, 0.06, 16]} /><meshLambertMaterial color={c} /></mesh>
+      <mesh><cylinderGeometry args={[cfg.r, cfg.r, 0.06, 16]} />
+        {isLight
+          ? <meshStandardMaterial color={WARM_HALO} emissive={WARM_HALO} emissiveIntensity={2.5} roughness={0.3} metalness={0} toneMapped={false} />
+          : <meshLambertMaterial color={c} />}
+      </mesh>
       <mesh><cylinderGeometry args={[cfg.r + 0.025, cfg.r + 0.025, 0.025, 16]} /><meshLambertMaterial color="#999999" /></mesh>
       {isSelected && <CylGlow r={cfg.r + 0.025} h={0.06} />}
       {isLight && <WarmGlow r={0.22} intensity={1.0} distance={9} />}
@@ -532,7 +824,11 @@ function Marker3D({ marker, cx, cz, pxPerFoot, ceilingHeight, onSelect, isSelect
     <group position={[wx, wy, wz]} rotation={floorRot} onClick={click} {...hp}>
       <mesh><boxGeometry args={[cfg.len, 0.067, 0.267]} /><meshLambertMaterial color={c} /></mesh>
       {/* Diffuser face */}
-      <mesh position={[0, -0.033, 0]}><boxGeometry args={[cfg.len - 0.04, 0.005, 0.24]} /><meshLambertMaterial color="#FFFFFF" transparent opacity={0.6} /></mesh>
+      <mesh position={[0, -0.033, 0]}><boxGeometry args={[cfg.len - 0.04, 0.005, 0.24]} />
+        {isLight
+          ? <meshStandardMaterial color={WARM_HALO} emissive={WARM_HALO} emissiveIntensity={2.5} transparent opacity={0.9} toneMapped={false} />
+          : <meshLambertMaterial color="#FFFFFF" transparent opacity={0.6} />}
+      </mesh>
       {isSelected && <BoxGlow w={cfg.len} h={0.067} d={0.267} />}
       {isLight && <>
         <WarmGlow position={[0, -0.05, 0]} r={0.3} intensity={1.4} distance={10} />
@@ -713,7 +1009,9 @@ function ZoneFloor({ zone, cx, cz, pxPerFoot, zoneLibrary, style3d = "clay" }) {
   if (!geo) return null;
   return (
     <mesh geometry={geo} rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.05, 0]}>
-      <meshLambertMaterial color={zoneColor(zone, zoneLibrary)} transparent opacity={style3d === "xray" ? 0.05 : style3d === "detailed" ? 0.55 : 0.4} depthWrite={false} side={THREE.DoubleSide} />
+      {style3d === "detailed"
+        ? <meshStandardMaterial color={zoneColor(zone, zoneLibrary)} transparent opacity={0.55} roughness={0.8} metalness={0} depthWrite={false} side={THREE.DoubleSide} />
+        : <meshLambertMaterial color={zoneColor(zone, zoneLibrary)} transparent opacity={style3d === "xray" ? 0.05 : 0.4} depthWrite={false} side={THREE.DoubleSide} />}
     </mesh>
   );
 }
@@ -725,7 +1023,7 @@ function FloorPlane({ zones, cx, cz, pxPerFoot, T, zoneLibrary, style3d = "clay"
         <mesh rotation={[-Math.PI / 2, 0, 0]} receiveShadow={style3d === "detailed"}>
           <planeGeometry args={[500, 500]} />
           {style3d === "detailed"
-            ? <meshStandardMaterial color={T.canvas} roughness={0.9} metalness={0.0} />
+            ? <meshStandardMaterial color={T.canvas} roughness={0.55} metalness={0.05} envMapIntensity={0.8} />
             : <meshLambertMaterial color={T.canvas} />}
         </mesh>
       )}
@@ -734,31 +1032,58 @@ function FloorPlane({ zones, cx, cz, pxPerFoot, T, zoneLibrary, style3d = "clay"
   );
 }
 
-// Film grain (Detailed mode only). renderPriority=1 tells R3F to skip its
-// default auto-render; the composer's RenderPass owns the frame instead.
-function FilmEffect({ intensity = 0.28 }) {
+// Detailed-mode post-FX: just bloom for warm-light bleed. SSAO and FilmPass
+// were dropped — they were the dominant GPU cost and ContactShadows already
+// provides the corner-darkening AO read at a fraction of the price.
+// renderPriority=1 tells R3F to skip its default auto-render; the composer's
+// RenderPass owns the frame instead.
+function PostFX() {
   const { gl, scene, camera, size } = useThree();
   const composerRef = useRef();
+  const bloomRef = useRef();
 
-  // Build composer once — no size dep so resize never triggers a full rebuild.
   useEffect(() => {
     const composer = new EffectComposer(gl);
     composer.addPass(new RenderPass(scene, camera));
-    composer.addPass(new FilmPass(intensity, false));
+    // Bloom limited to the explicitly emissive lens meshes (toneMapped={false}
+    // pushes them above the 1.05 threshold). Sun-lit walls/floor stay below
+    // threshold so they don't bleed.
+    // (resolution, strength, radius, threshold)
+    const bloom = new UnrealBloomPass(new THREE.Vector2(size.width, size.height), 0.6, 0.6, 1.05);
+    composer.addPass(bloom);
     composer.addPass(new OutputPass());
     composerRef.current = composer;
+    bloomRef.current = bloom;
     return () => { composer.dispose(); };
-  }, [gl, scene, camera, intensity]);
+  }, [gl, scene, camera]);
 
-  // Resize separately — cheap setSize call, no GPU resource reallocation.
   useEffect(() => {
     composerRef.current?.setSize(size.width, size.height);
+    bloomRef.current?.setSize(size.width, size.height);
   }, [size.width, size.height]);
 
   useFrame((_, delta) => {
     composerRef.current?.render(delta);
   }, 1);
 
+  return null;
+}
+
+// Walks the scene each time `enabled` flips and turns on castShadow /
+// receiveShadow for every regular Mesh — *except* the back-side glow halos
+// (BoxGlow / CylGlow / WindowGlow / WarmGlow), which would double-cast.
+function ShadowEnabler({ enabled }) {
+  const { scene } = useThree();
+  useEffect(() => {
+    scene.traverse(o => {
+      if (!o.isMesh) return;
+      const m = o.material;
+      const isHalo = m && m.transparent && (m.side === THREE.BackSide) && m.depthWrite === false;
+      if (isHalo) { o.castShadow = false; o.receiveShadow = false; return; }
+      o.castShadow = enabled;
+      o.receiveShadow = enabled;
+    });
+  });
   return null;
 }
 
@@ -800,7 +1125,14 @@ export default function TestFit3D({
   visibleBuildElectrical = true,
   visibleBuildLighting = true,
 }) {
-  const safeSelect = (id, type) => { if ((MODE_SELECT[mode] ?? new Set()).has(type)) onSelect(id, type); };
+  // Detailed mode is presentation-only — no selection, no hover affordances, no selection glows.
+  const interactive = style3d !== "detailed";
+  const safeSelect = (id, type) => {
+    if (!interactive) return;
+    if ((MODE_SELECT[mode] ?? new Set()).has(type)) onSelect(id, type);
+  };
+  const effSelectedId = interactive ? selectedId : null;
+  const effSelType    = interactive ? selType    : null;
 
   // Filter markers by layer visibility (mirrors 2D rendering logic)
   const visibleMarkers = markers.filter(m => {
@@ -826,7 +1158,9 @@ export default function TestFit3D({
   }, [nodes, cx, cz, pxPerFoot]);
 
   const isDark = themeMode === "dark";
-  const bgColor   = style3d === "xray" ? (isDark ? "#0d1117" : "#f0f4f8") : T.canvas;
+  const bgColor   = style3d === "xray"     ? (isDark ? "#0d1117" : "#f0f4f8")
+                  : style3d === "detailed" ? (isDark ? "#1a1d22" : "#e8ecf1")
+                  : T.canvas;
   const gridCell  = style3d === "xray" ? (isDark ? "#1a2233" : "#a0c0ff") : T.accentDim;
   const gridSec   = style3d === "xray" ? (isDark ? "#2a3a55" : "#4060cc") : T.gridSub;
 
@@ -844,17 +1178,44 @@ export default function TestFit3D({
         Orbit: drag · Pan: right-drag · Zoom: scroll · Click to inspect
       </div>
 
-      <Canvas shadows={style3d === "detailed"} camera={{ fov: 50, near: 0.1, far: 2000 }} gl={{ antialias: true }} style={{ width: "100%", height: "100%" }}>
+      <Canvas
+        shadows={style3d === "detailed" ? "soft" : false}
+        dpr={[1, 1.5]}
+        camera={{ fov: 50, near: 0.1, far: 2000 }}
+        gl={{
+          antialias: true,
+          toneMapping: style3d === "detailed" ? THREE.ACESFilmicToneMapping : THREE.NoToneMapping,
+          toneMappingExposure: 0.95,
+          outputColorSpace: THREE.SRGBColorSpace,
+        }}
+        style={{ width: "100%", height: "100%" }}>
         <color attach="background" args={[bgColor]} />
 
         {style3d === "detailed" ? <>
-          <ambientLight intensity={0.3} />
-          <hemisphereLight skyColor="#b1e1ff" groundColor="#7a6552" intensity={0.5} />
-          <directionalLight position={[10, 20, 10]} intensity={1.2} castShadow
-            shadow-mapSize-width={2048} shadow-mapSize-height={2048}
-            shadow-camera-near={0.5} shadow-camera-far={200}
-            shadow-camera-left={-50} shadow-camera-right={50}
-            shadow-camera-top={50} shadow-camera-bottom={-50} />
+          {/* HDRI image-based lighting — provides ambient + reflections for PBR materials */}
+          <Environment preset="apartment" environmentIntensity={0.7} />
+          {/* small ambient ensures Lambert-only meshes (markers) aren't pitch black */}
+          <ambientLight intensity={0.25} />
+          {/* warm late-morning sun — primary shadow caster */}
+          <directionalLight
+            position={[18, 28, 14]}
+            intensity={1.6}
+            color="#fff4e0"
+            castShadow
+            shadow-mapSize-width={2048}
+            shadow-mapSize-height={2048}
+            shadow-camera-near={0.5}
+            shadow-camera-far={250}
+            shadow-camera-left={-80}
+            shadow-camera-right={80}
+            shadow-camera-top={80}
+            shadow-camera-bottom={-80}
+            shadow-bias={-0.0005}
+            shadow-normalBias={0.02}
+            shadow-radius={4}
+          />
+          {/* cool fill from opposite side — fakes sky bounce */}
+          <directionalLight position={[-12, 10, -8]} intensity={0.35} color="#bcd4ff" />
         </> : style3d === "xray" ? <>
           <ambientLight intensity={1.0} />
         </> : <>
@@ -864,23 +1225,37 @@ export default function TestFit3D({
 
         <OrbitControls ref={controlsRef} enableDamping dampingFactor={0.08} zoomSpeed={0.5} minPolarAngle={0} maxPolarAngle={Math.PI / 2 - 0.04} target={[0, 0, 0]} />
         <CameraRig camDist={camDist} controlsRef={controlsRef} />
-        {style3d === "detailed" && <FilmEffect intensity={0.85} />}
+        {style3d === "detailed" && <PostFX />}
+        <ShadowEnabler enabled={style3d === "detailed"} />
 
         <FloorPlane zones={zones} cx={cx} cz={cz} pxPerFoot={pxPerFoot} T={T} zoneLibrary={zoneLibrary} style3d={style3d} />
-        <Grid args={[500, 500]} cellSize={1} sectionSize={10} cellColor={gridCell} sectionColor={gridSec} position={[gridOffX, 0.002, gridOffZ]} fadeDistance={camDist * 2.5} fadeStrength={1.2} />
+        {style3d === "detailed" && (
+          <ContactShadows
+            position={[0, 0.02, 0]}
+            opacity={0.55}
+            blur={2.4}
+            far={6}
+            resolution={512}
+            color="#000000"
+            frames={1}
+          />
+        )}
+        {style3d !== "detailed" && (
+          <Grid args={[500, 500]} cellSize={1} sectionSize={10} cellColor={gridCell} sectionColor={gridSec} position={[gridOffX, 0.002, gridOffZ]} fadeDistance={camDist * 2.5} fadeStrength={1.2} />
+        )}
 
         {walls.map(w => (
-          <Wall3D key={w.id} w={w} nodes={nodes} doors={doors} windows={windows}
+          <Wall3D key={w.id} w={w} nodes={nodes} walls={walls} doors={doors} windows={windows}
             cx={cx} cz={cz} pxPerFoot={pxPerFoot} ceilingHeight={w.ceilingHeight ?? ceilingHeight}
-            onSelect={safeSelect} selectedId={selectedId} selType={selType} showDims={show3dDims} style3d={style3d} />
+            onSelect={safeSelect} selectedId={effSelectedId} selType={effSelType} showDims={show3dDims} style3d={style3d} interactive={interactive} />
         ))}
         {columns.map(col => (
           <Column3D key={col.id} col={col} cx={cx} cz={cz} pxPerFoot={pxPerFoot} ceilingHeight={ceilingHeight}
-            onSelect={safeSelect} isSelected={selectedId === col.id && selType === "column"} style3d={style3d} />
+            onSelect={safeSelect} isSelected={effSelectedId === col.id && effSelType === "column"} style3d={style3d} interactive={interactive} />
         ))}
         {visibleMarkers.map(m => (
           <Marker3D key={m.id} marker={m} cx={cx} cz={cz} pxPerFoot={pxPerFoot} ceilingHeight={ceilingHeight}
-            onSelect={safeSelect} isSelected={selectedId === m.id && selType === "marker"} style3d={style3d} />
+            onSelect={safeSelect} isSelected={effSelectedId === m.id && effSelType === "marker"} style3d={style3d} interactive={interactive} />
         ))}
         {show3dLabels && zones.map(z => <ZoneLabel3D key={z.id} zone={z} cx={cx} cz={cz} pxPerFoot={pxPerFoot} zoneLibrary={zoneLibrary} />)}
         {show3dDims   && dims.map(d =>  <DimLine3D  key={d.id} dim={d}  cx={cx} cz={cz} pxPerFoot={pxPerFoot} />)}
