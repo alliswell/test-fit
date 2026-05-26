@@ -143,6 +143,110 @@ function getWallTextureSet(material) {
   return null;
 }
 
+// ─── Floor materials (procedural textures, lazy + cached) ────────────────────
+const FLOOR_MATERIAL_PBR = {
+  "Wood":     { color: "#C8A878", roughness: 0.50, metalness: 0.05 },
+  "Concrete": { color: "#AEABA4", roughness: 0.70, metalness: 0.05 },
+  "Vinyl":    { color: "#BFA889", roughness: 0.40, metalness: 0.05 },
+  "Carpet":   { color: "#786758", roughness: 0.95, metalness: 0.00 },
+};
+const FLOOR_MATERIAL_TILE_FT = {
+  "Wood":     { x: 4.0, y: 0.5 },   // 4-ft plank × 6-in board
+  "Concrete": { x: 4.0, y: 4.0 },
+  "Vinyl":    { x: 1.0, y: 1.0 },   // 12-in tile
+  "Carpet":   { x: 2.0, y: 2.0 },
+};
+function _makeWoodTex() {
+  const c = document.createElement("canvas"); c.width = 512; c.height = 64;
+  const ctx = c.getContext("2d");
+  ctx.fillStyle = "#C8A878"; ctx.fillRect(0, 0, 512, 64);
+  ctx.fillStyle = "rgba(40,25,10,0.7)"; ctx.fillRect(0, 0, 512, 2); ctx.fillRect(0, 62, 512, 2);
+  for (let i = 0; i < 14; i++) {
+    ctx.strokeStyle = `rgba(80,50,25,${0.18 + Math.random() * 0.32})`; ctx.lineWidth = 0.6 + Math.random() * 1.4;
+    ctx.beginPath(); const y = Math.random() * 64; ctx.moveTo(0, y);
+    for (let x = 0; x <= 512; x += 16) ctx.lineTo(x, y + (Math.random() - 0.5) * 2); ctx.stroke();
+  }
+  for (let i = 0; i < 3; i++) { const x = Math.random() * 512, y = 12 + Math.random() * 40;
+    const g = ctx.createRadialGradient(x, y, 0, x, y, 9); g.addColorStop(0, "#5a3a20"); g.addColorStop(0.5, "#8a6a40"); g.addColorStop(1, "rgba(200,168,120,0)");
+    ctx.fillStyle = g; ctx.fillRect(x - 12, y - 12, 24, 24); }
+  const img = ctx.getImageData(0, 0, 512, 64);
+  for (let i = 0; i < img.data.length; i += 4) { const n = (Math.random() - 0.5) * 16; img.data[i] += n; img.data[i+1] += n; img.data[i+2] += n; }
+  ctx.putImageData(img, 0, 0);
+  const t = new THREE.CanvasTexture(c); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8; return t;
+}
+function _makeNoiseTex(base, speckle, splotch) {
+  const c = document.createElement("canvas"); c.width = 256; c.height = 256;
+  const ctx = c.getContext("2d"); ctx.fillStyle = base; ctx.fillRect(0, 0, 256, 256);
+  if (splotch) for (let i = 0; i < 60; i++) { const x = Math.random()*256, y = Math.random()*256, r = 4 + Math.random()*22;
+    const g = ctx.createRadialGradient(x, y, 0, x, y, r); const lum = (0.45 + Math.random()*0.35)*255;
+    g.addColorStop(0, `rgba(${lum},${lum},${lum},0.3)`); g.addColorStop(1, `rgba(${lum},${lum},${lum},0)`); ctx.fillStyle = g; ctx.fillRect(x-r, y-r, r*2, r*2); }
+  const img = ctx.getImageData(0, 0, 256, 256);
+  for (let i = 0; i < img.data.length; i += 4) { const n = (Math.random() - 0.5) * speckle; img.data[i] += n; img.data[i+1] += n; img.data[i+2] += n; }
+  ctx.putImageData(img, 0, 0);
+  const t = new THREE.CanvasTexture(c); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4; return t;
+}
+function _makeVinylTex() {
+  const c = document.createElement("canvas"); c.width = 256; c.height = 256;
+  const ctx = c.getContext("2d"); ctx.fillStyle = "#BFA889"; ctx.fillRect(0, 0, 256, 256);
+  ctx.fillStyle = "rgba(60,40,25,0.4)"; ctx.fillRect(0, 0, 256, 2); ctx.fillRect(0, 254, 256, 2); ctx.fillRect(0, 0, 2, 256); ctx.fillRect(254, 0, 2, 256);
+  for (let i = 0; i < 35; i++) { const x = 6 + Math.random()*244, y = 6 + Math.random()*244, r = 3 + Math.random()*10;
+    ctx.fillStyle = `rgba(${100+Math.random()*60},${80+Math.random()*50},${50+Math.random()*30},0.32)`;
+    ctx.beginPath(); ctx.ellipse(x, y, r*1.6, r, Math.random()*Math.PI, 0, Math.PI*2); ctx.fill(); }
+  const t = new THREE.CanvasTexture(c); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4; return t;
+}
+const _floorTexCache = {};
+function getFloorTexture(material) {
+  if (_floorTexCache[material] !== undefined) return _floorTexCache[material];
+  let t = null;
+  if (material === "Wood") t = _makeWoodTex();
+  else if (material === "Concrete") t = _makeNoiseTex("#aeaba4", 24, true);
+  else if (material === "Vinyl") t = _makeVinylTex();
+  else if (material === "Carpet") t = _makeNoiseTex("#786758", 42, false);
+  _floorTexCache[material] = t;
+  return t;
+}
+
+// Trace the outer perimeter of the wall graph ("always turn most CCW" face
+// trace from the leftmost node) → ordered polygon, or null if no closed loop.
+function traceOuterBoundary(nodes, walls) {
+  if (!walls?.length || !nodes?.length) return null;
+  const nodeMap = new Map(nodes.map(n => [n.id, n]));
+  const adj = new Map();
+  for (const w of walls) {
+    if (!nodeMap.has(w.n1) || !nodeMap.has(w.n2) || w.n1 === w.n2) continue;
+    if (!adj.has(w.n1)) adj.set(w.n1, []);
+    if (!adj.has(w.n2)) adj.set(w.n2, []);
+    adj.get(w.n1).push(w.n2); adj.get(w.n2).push(w.n1);
+  }
+  if (!adj.size) return null;
+  let startId = null, startNode = null;
+  for (const id of adj.keys()) { const n = nodeMap.get(id);
+    if (!startNode || n.x < startNode.x || (n.x === startNode.x && n.y < startNode.y)) { startId = id; startNode = n; } }
+  if (!startId) return null;
+  const path = [startId]; let prevId = null, currId = startId, inAngle = Math.PI;
+  const maxSteps = walls.length * 2 + 8;
+  for (let step = 0; step < maxSteps; step++) {
+    const curr = nodeMap.get(currId);
+    const candidates = (adj.get(currId) || []).filter(id => id !== prevId);
+    if (!candidates.length) return null;
+    let bestId = null, bestTurn = -Infinity;
+    for (const cid of candidates) {
+      const c = nodeMap.get(cid);
+      const outAngle = Math.atan2(c.y - curr.y, c.x - curr.x);
+      let turn = outAngle - inAngle; while (turn <= 0) turn += 2 * Math.PI; while (turn > 2 * Math.PI) turn -= 2 * Math.PI;
+      if (turn > bestTurn) { bestTurn = turn; bestId = cid; }
+    }
+    if (!bestId) return null;
+    if (bestId === startId) return path.length >= 3 ? path.map(id => nodeMap.get(id)) : null;
+    if (path.includes(bestId)) return null;
+    path.push(bestId);
+    const best = nodeMap.get(bestId);
+    inAngle = Math.atan2(curr.y - best.y, curr.x - best.x);
+    prevId = currId; currId = bestId;
+  }
+  return null;
+}
+
 // Zone colors come from the editable zoneLibrary prop passed by TestFit3D.
 const zoneColor = (zone, zoneLibrary) =>
   zoneLibrary?.[zone.type]?.color ?? zone.paintColor ?? "#8B7355";
@@ -1016,17 +1120,71 @@ function ZoneFloor({ zone, cx, cz, pxPerFoot, zoneLibrary, style3d = "clay" }) {
   );
 }
 
-function FloorPlane({ zones, cx, cz, pxPerFoot, T, zoneLibrary, style3d = "clay" }) {
+// Build a flat ShapeGeometry from canvas-space points, with world-foot UVs so
+// a single texture tiles correctly across any room size.
+function buildFloorGeo(points, cx, cz, pxPerFoot, tile) {
+  if (!points || points.length < 3) return null;
+  const toSX = sx =>  (sx - cx) / pxPerFoot;
+  const toSY = sy => -((sy - cz) / pxPerFoot);
+  const shape = new THREE.Shape();
+  shape.moveTo(toSX(points[0].x), toSY(points[0].y));
+  for (let i = 1; i < points.length; i++) shape.lineTo(toSX(points[i].x), toSY(points[i].y));
+  shape.closePath();
+  const geo = new THREE.ShapeGeometry(shape);
+  if (tile) {
+    const pos = geo.attributes.position;
+    const uv = new Float32Array(pos.count * 2);
+    for (let i = 0; i < pos.count; i++) { uv[i*2] = pos.getX(i) / tile.x; uv[i*2+1] = pos.getY(i) / tile.y; }
+    geo.setAttribute("uv", new THREE.BufferAttribute(uv, 2));
+  }
+  return geo;
+}
+
+function FloorPlane({ walls = [], nodes = [], zones, cx, cz, pxPerFoot, T, zoneLibrary, style3d = "clay",
+  floorMaterial = "Wood", floorRegions = [], onSelectFloor, isSelected }) {
+  const isDetailed = style3d === "detailed";
+  const baseTex = isDetailed ? getFloorTexture(floorMaterial) : null;
+  const baseSpec = FLOOR_MATERIAL_PBR[floorMaterial];
+  const baseTile = FLOOR_MATERIAL_TILE_FT[floorMaterial];
+
+  const roomGeo = useMemo(() => {
+    const boundary = traceOuterBoundary(nodes, walls);
+    return buildFloorGeo(boundary, cx, cz, pxPerFoot, baseTile);
+  }, [walls, nodes, cx, cz, pxPerFoot, baseTile]);
+  useEffect(() => () => roomGeo?.dispose(), [roomGeo]);
+
+  const regionGeos = useMemo(() => floorRegions.map(fr =>
+    buildFloorGeo(fr.points, cx, cz, pxPerFoot, FLOOR_MATERIAL_TILE_FT[fr.material])
+  ), [floorRegions, cx, cz, pxPerFoot]);
+  useEffect(() => () => regionGeos.forEach(g => g?.dispose()), [regionGeos]);
+
+  const clickHandler = onSelectFloor ? (e => { e.stopPropagation(); onSelectFloor(); }) : undefined;
+  const baseMat = isDetailed
+    ? <meshStandardMaterial color={baseTex ? "#ffffff" : (baseSpec?.color ?? T.canvas)} roughness={baseSpec?.roughness ?? 0.55} metalness={baseSpec?.metalness ?? 0.05} envMapIntensity={0.8} map={baseTex} side={THREE.DoubleSide} />
+    : <meshLambertMaterial color={T.canvas} side={THREE.DoubleSide} />;
+
   return (
     <group>
       {style3d !== "xray" && (
-        <mesh rotation={[-Math.PI / 2, 0, 0]} receiveShadow={style3d === "detailed"}>
-          <planeGeometry args={[500, 500]} />
-          {style3d === "detailed"
-            ? <meshStandardMaterial color={T.canvas} roughness={0.55} metalness={0.05} envMapIntensity={0.8} />
-            : <meshLambertMaterial color={T.canvas} />}
+        roomGeo
+          ? <mesh geometry={roomGeo} rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.001, 0]} receiveShadow={isDetailed} onClick={clickHandler}>{baseMat}</mesh>
+          : <mesh rotation={[-Math.PI / 2, 0, 0]} receiveShadow={isDetailed} onClick={clickHandler}><planeGeometry args={[500, 500]} />{baseMat}</mesh>
+      )}
+      {isSelected && roomGeo && (
+        <mesh geometry={roomGeo} rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.012, 0]}>
+          <meshBasicMaterial color={GLOW_COLOR} transparent opacity={0.25} side={THREE.DoubleSide} depthWrite={false} />
         </mesh>
       )}
+      {style3d !== "xray" && floorRegions.map((fr, i) => {
+        const geo = regionGeos[i]; if (!geo) return null;
+        const rTex = isDetailed ? getFloorTexture(fr.material) : null;
+        const rSpec = FLOOR_MATERIAL_PBR[fr.material];
+        return <mesh key={fr.id} geometry={geo} rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.004, 0]} receiveShadow={isDetailed}>
+          {isDetailed
+            ? <meshStandardMaterial color={rTex ? "#ffffff" : (rSpec?.color ?? "#C8A878")} roughness={rSpec?.roughness ?? 0.55} metalness={rSpec?.metalness ?? 0.05} envMapIntensity={0.8} map={rTex} side={THREE.DoubleSide} />
+            : <meshLambertMaterial color={rSpec?.color ?? "#C8A878"} side={THREE.DoubleSide} />}
+        </mesh>;
+      })}
       {zones.map(z => <ZoneFloor key={z.id} zone={z} cx={cx} cz={cz} pxPerFoot={pxPerFoot} zoneLibrary={zoneLibrary} style3d={style3d} />)}
     </group>
   );
@@ -1121,6 +1279,8 @@ export default function TestFit3D({
   show3dDims,   setShow3dDims,
   zoneLibrary = {},
   style3d = "clay",
+  floorMaterial = "Wood",
+  floorRegions = [],
   visibleLayers = {},
   visibleBuildElectrical = true,
   visibleBuildLighting = true,
@@ -1228,7 +1388,9 @@ export default function TestFit3D({
         {style3d === "detailed" && <PostFX />}
         <ShadowEnabler enabled={style3d === "detailed"} />
 
-        <FloorPlane zones={zones} cx={cx} cz={cz} pxPerFoot={pxPerFoot} T={T} zoneLibrary={zoneLibrary} style3d={style3d} />
+        <FloorPlane walls={walls} nodes={nodes} zones={zones} cx={cx} cz={cz} pxPerFoot={pxPerFoot} T={T} zoneLibrary={zoneLibrary} style3d={style3d}
+          floorMaterial={floorMaterial} floorRegions={floorRegions}
+          isSelected={selType === "floor"} onSelectFloor={() => onSelect(null, "floor")} />
         {style3d === "detailed" && (
           <ContactShadows
             position={[0, 0.02, 0]}

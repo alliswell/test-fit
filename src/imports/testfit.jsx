@@ -140,6 +140,13 @@ const WALL_KINDS = {
   new:      { label: "New",      color: "#50A0E0", dash: null,  thickness: 4.5 },
   pony:     { label: "Pony",     color: "#C8A060", dash: null,  thickness: 3.5, thin: true },
 };
+// Darker wall colors for light-mode rendering — high contrast on the pale canvas.
+const WALL_KINDS_LIGHT = {
+  existing: { label: "Existing", color: "#3A352A", dash: null,  thickness: 7   },
+  demo:     { label: "Demo",     color: "#B83838", dash: "8 4", thickness: 7   },
+  new:      { label: "New",      color: "#1F5FA8", dash: null,  thickness: 4.5 },
+  pony:     { label: "Pony",     color: "#86601E", dash: null,  thickness: 3.5, thin: true },
+};
 
 // Slider + inline number input — replaces both button grids and static range+span combos
 function SliderInput({ value, min, max, step = 1, onChange, accent = "#9A9488", textColor = "#E8E0D0", bgColor = "#2A2826", borderColor = "#3A3830", unit = '"', disabled = false }) {
@@ -178,6 +185,8 @@ const DOOR_WIDTHS = [36, 48, 60];
 const DOOR_TYPES = ["Wood", "Glass", "Metal", "Case Opening"];
 const WINDOW_WIDTHS = [24, 36, 48, 60];
 const WINDOW_TYPES = ["Window", "Cut Opening"];
+
+const FLOW_PATH_COLORS = ["#4A90D9", "#2BB3A3", "#E0A030", "#9B6BD6"]; // blue, teal, amber, violet
 
 const WALL_MATERIALS = ["Drywall", "Brick", "CMU / Block", "Concrete", "Plaster", "Other"];
 const WALL_MATERIAL_HATCHES = {
@@ -427,8 +436,9 @@ function revCloudPath(points, arcR) {
 }
 
 export default function TestfitTool() {
-  const [themeMode, setThemeMode] = useState("dark");
+  const [themeMode, setThemeMode] = useState("light");
   const T = THEMES[themeMode];
+  const wallKinds = themeMode === "light" ? WALL_KINDS_LIGHT : WALL_KINDS;
   const [projectName, setProjectName] = useState("New Club");
   const [nodes, setNodes] = useState([]);
   const [walls, setWalls] = useState([]); // {id, n1, n2, kind:"existing"|"demo"|"new"}
@@ -441,6 +451,14 @@ export default function TestfitTool() {
   const [labels, setLabels] = useState([]); // [{id, x, y, text, fontSize, bold, italic, color, phase, lx, ly, anchorId, anchorType}]
   const [revClouds, setRevClouds] = useState([]); // [{id, points:[{x,y}], arcR:8, label:"", color:"#E05252", phase}]
   const [drawRevCloud, setDrawRevCloud] = useState(null); // null | {points:[{x,y}]}
+  const [flowPaths, setFlowPaths] = useState([]); // [{id, points:[{x,y,anchorId?}], width, color, phase, label?}]
+  const [drawFlowPath, setDrawFlowPath] = useState(null); // null | { points:[{x,y}] }
+  const [floorMaterial, setFloorMaterial] = useState("Wood"); // project default floor: Wood | Concrete | Vinyl | Carpet
+  const [floorRegions, setFloorRegions] = useState([]); // [{id, points:[{x,y}], material, phase, label?}]
+  const [drawFloorRegion, setDrawFloorRegion] = useState(null); // null | { points:[{x,y}] }
+  const FLOOR_MATERIALS = ["Wood", "Concrete", "Vinyl", "Carpet"];
+  const FLOOR_MATERIAL_HEX = { "Wood": "#C8A878", "Concrete": "#AEABA4", "Vinyl": "#BFA889", "Carpet": "#786758" };
+  const FLOOR_MATERIAL_HATCHES = { "Wood": "floor-hatch-wood", "Concrete": "floor-hatch-concrete", "Vinyl": "floor-hatch-vinyl", "Carpet": "floor-hatch-carpet" };
   const [editingLabelId, setEditingLabelId] = useState(null);
   const [addingLeaderToId, setAddingLeaderToId] = useState(null);
   const [editingLabelText, setEditingLabelText] = useState("");
@@ -480,6 +498,7 @@ export default function TestfitTool() {
   const [versions, setVersions] = useState([]);
   const [showVersions, setShowVersions] = useState(false);
   const [showPhaseMenu, setShowPhaseMenu] = useState(false);
+  const [showSaveMenu, setShowSaveMenu] = useState(false);
   const [previewPhase, setPreviewPhase] = useState(null);
 
   // ── Undo / Redo ────────────────────────────────────────────────────
@@ -492,7 +511,7 @@ export default function TestfitTool() {
 
   const snapshot = useCallback(() => {
     if (skipSnapshotRef.current) { skipSnapshotRef.current = false; return; }
-    const state = JSON.stringify({ nodes, walls, zones, markers, doors, windows, columns, dims, labels, revClouds });
+    const state = JSON.stringify({ nodes, walls, zones, markers, doors, windows, columns, dims, labels, revClouds, flowPaths, floorRegions, floorMaterial });
     const idx = historyIdxRef.current;
     // Trim any redo states ahead of current
     const hist = historyRef.current.slice(0, idx + 1);
@@ -504,7 +523,7 @@ export default function TestfitTool() {
     historyIdxRef.current = hist.length - 1;
     setCanUndo(hist.length > 1);
     setCanRedo(false);
-  }, [nodes, walls, zones, markers, doors, windows, columns, dims, labels, revClouds]);
+  }, [nodes, walls, zones, markers, doors, windows, columns, dims, labels, revClouds, flowPaths, floorRegions, floorMaterial]);
 
   // Take snapshot after every meaningful state change (debounced)
   const snapshotTimer = useRef(null);
@@ -522,7 +541,7 @@ export default function TestfitTool() {
     skipSnapshotRef.current = true;
     setNodes(state.nodes); setWalls(state.walls); setZones(state.zones);
     setMarkers(state.markers); setDoors(state.doors); setWindows(state.windows);
-    setColumns(state.columns || []); setDims(state.dims || []); setLabels(state.labels || []); setRevClouds(state.revClouds || []);
+    setColumns(state.columns || []); setDims(state.dims || []); setLabels(state.labels || []); setRevClouds(state.revClouds || []); setFlowPaths(state.flowPaths || []); setFloorRegions(state.floorRegions || []); if (state.floorMaterial) setFloorMaterial(state.floorMaterial);
     setSelectedId(null); setSelType(null);
     setCanUndo(newIdx > 0);
     setCanRedo(true);
@@ -537,7 +556,7 @@ export default function TestfitTool() {
     skipSnapshotRef.current = true;
     setNodes(state.nodes); setWalls(state.walls); setZones(state.zones);
     setMarkers(state.markers); setDoors(state.doors); setWindows(state.windows);
-    setColumns(state.columns || []); setDims(state.dims || []); setLabels(state.labels || []); setRevClouds(state.revClouds || []);
+    setColumns(state.columns || []); setDims(state.dims || []); setLabels(state.labels || []); setRevClouds(state.revClouds || []); setFlowPaths(state.flowPaths || []); setFloorRegions(state.floorRegions || []); if (state.floorMaterial) setFloorMaterial(state.floorMaterial);
     setSelectedId(null); setSelType(null);
     setCanUndo(true);
     setCanRedo(newIdx < historyRef.current.length - 1);
@@ -555,6 +574,9 @@ export default function TestfitTool() {
   const [visibleDims, setVisibleDims] = useState(true);
   const [visibleLabels, setVisibleLabels] = useState(true);
   const [visibleRevClouds, setVisibleRevClouds] = useState(true);
+  const [visibleFlowPaths, setVisibleFlowPaths] = useState(true);
+  const [visibleFloorRegions, setVisibleFloorRegions] = useState(true);
+  const [visibleITMEP, setVisibleITMEP] = useState(true); // master IT/MEP marker visibility (all modes)
   const [selectedIds, setSelectedIds] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const [selType, setSelType] = useState(null);
@@ -659,6 +681,7 @@ export default function TestfitTool() {
     const idxMap = new Map(phases.map((p, i) => [p.id, i]));
     const activeIdx = idxMap.get(effectivePhase) ?? -1;
     return (m) => {
+      if (!visibleITMEP) return false; // master IT/MEP toggle — hides all markers in every mode
       if (m.phase) {
         const pi = idxMap.get(m.phase);
         if (pi !== undefined && pi > activeIdx) return false;
@@ -669,15 +692,15 @@ export default function TestfitTool() {
       }
       return true;
     };
-  }, [phases, effectivePhase]);
+  }, [phases, effectivePhase, visibleITMEP]);
 
   // ── Project management ─────────────────────────────────────────────
   const getProjectData = useCallback(() => ({
-    projectName, nodes, walls, zones, markers, doors, windows, columns, dims, labels, revClouds,
+    projectName, nodes, walls, zones, markers, doors, windows, columns, dims, labels, revClouds, flowPaths, floorRegions, floorMaterial,
     bgOpacity, bgScale, bgOffset, pxPerFoot, showDims, zoneLibrary,
     phases, activePhase, versions,
     version: "testfit-v7",
-  }), [projectName, nodes, walls, zones, markers, doors, windows, columns, dims, labels, revClouds, bgOpacity, bgScale, bgOffset, pxPerFoot, showDims, zoneLibrary, phases, activePhase, versions]);
+  }), [projectName, nodes, walls, zones, markers, doors, windows, columns, dims, labels, revClouds, flowPaths, floorRegions, floorMaterial, bgOpacity, bgScale, bgOffset, pxPerFoot, showDims, zoneLibrary, phases, activePhase, versions]);
 
   const exportProject = useCallback(() => {
     const data = getProjectData();
@@ -702,7 +725,7 @@ export default function TestfitTool() {
     setProjectName(d.projectName || "Restored");
     setNodes(arr(d.nodes)); setWalls(arr(d.walls)); setZones(arr(d.zones));
     setMarkers(arr(d.markers)); setDoors(arr(d.doors)); setWindows(arr(d.windows));
-    setColumns(arr(d.columns)); setDims(arr(d.dims)); setLabels(arr(d.labels)); setRevClouds(arr(d.revClouds));
+    setColumns(arr(d.columns)); setDims(arr(d.dims)); setLabels(arr(d.labels)); setRevClouds(arr(d.revClouds)); setFlowPaths(arr(d.flowPaths)); setFloorRegions(arr(d.floorRegions)); if (d.floorMaterial) setFloorMaterial(d.floorMaterial);
     setBgOpacity(d.bgOpacity ?? 0.35); setBgScale(d.bgScale ?? 1);
     setBgOffset(d.bgOffset ?? { x: 0, y: 0 });
     if (d.pxPerFoot) setPxPerFoot(d.pxPerFoot);
@@ -786,7 +809,7 @@ export default function TestfitTool() {
         setMarkers(arr(d.markers)); setDoors(arr(d.doors));
         const migratedCutouts = arr(d.cutouts).map(c => ({ ...c, type: "Cut Opening" }));
         setWindows([...arr(d.windows), ...migratedCutouts]);
-        setColumns(arr(d.columns)); setDims(arr(d.dims)); setLabels(arr(d.labels)); setRevClouds(arr(d.revClouds));
+        setColumns(arr(d.columns)); setDims(arr(d.dims)); setLabels(arr(d.labels)); setRevClouds(arr(d.revClouds)); setFlowPaths(arr(d.flowPaths)); setFloorRegions(arr(d.floorRegions)); if (d.floorMaterial) setFloorMaterial(d.floorMaterial);
         setBgOpacity(d.bgOpacity ?? 0.35); setBgScale(d.bgScale ?? 1);
         setBgOffset(d.bgOffset ?? { x: 0, y: 0 });
         if (d.pxPerFoot) setPxPerFoot(d.pxPerFoot);
@@ -806,7 +829,7 @@ export default function TestfitTool() {
 
   const newProject = useCallback(() => {
     setProjectName("New Club"); setNodes([]); setWalls([]); setZones([]);
-    setMarkers([]); setDoors([]); setWindows([]); setDims([]); setLabels([]); setRevClouds([]);
+    setMarkers([]); setDoors([]); setWindows([]); setDims([]); setLabels([]); setRevClouds([]); setFlowPaths([]); setFloorRegions([]); setFloorMaterial("Wood");
     setBgImage(null); setBgOpacity(0.35); setBgScale(1); setBgOffset({ x: 0, y: 0 });
     setPxPerFoot(20); setShowDims(true); setShowGrid(true);
     setSelectedId(null); setSelType(null); setDrawChain(null); setDrawPolyZone(null); setCursorPos(null);
@@ -920,12 +943,12 @@ export default function TestfitTool() {
 
   // Save/Load
   const save = useCallback(async () => {
-    const payload = JSON.stringify({ projectName, nodes, walls, zones, markers, doors, windows, columns, dims, labels, revClouds, bgOpacity, bgScale, bgOffset, pxPerFoot, showDims });
+    const payload = JSON.stringify({ projectName, nodes, walls, zones, markers, doors, windows, columns, dims, labels, revClouds, flowPaths, floorRegions, floorMaterial, bgOpacity, bgScale, bgOffset, pxPerFoot, showDims });
     try {
       if (window.storage) { await window.storage.set("testfit:v4", payload); }
       else { localStorage.setItem("testfit:v4", payload); }
     } catch (e) { console.warn("Auto-save failed:", e); }
-  }, [projectName, nodes, walls, zones, markers, doors, windows, columns, dims, labels, revClouds, bgOpacity, bgScale, bgOffset, pxPerFoot, showDims]);
+  }, [projectName, nodes, walls, zones, markers, doors, windows, columns, dims, labels, revClouds, flowPaths, floorRegions, floorMaterial, bgOpacity, bgScale, bgOffset, pxPerFoot, showDims]);
   const load = useCallback(async () => {
     try {
       let raw = null;
@@ -935,7 +958,7 @@ export default function TestfitTool() {
         const d = JSON.parse(raw);
         const migratedCutouts = (d.cutouts || []).map(c => ({ ...c, type: "Cut Opening" }));
         const loadedNodes = d.nodes || [];
-        setProjectName(d.projectName || "New Club"); setNodes(loadedNodes); setWalls(d.walls || []); setZones(d.zones || []); setMarkers(d.markers || []); setDoors(d.doors || []); setWindows([...(d.windows || []), ...migratedCutouts]); setColumns(d.columns || []); setDims(d.dims || []); setLabels(d.labels || []); setRevClouds(d.revClouds || []); setBgOpacity(d.bgOpacity ?? 0.35); setBgScale(d.bgScale ?? 1); setBgOffset(d.bgOffset ?? { x: 0, y: 0 }); if (d.pxPerFoot) setPxPerFoot(d.pxPerFoot); if (d.showDims !== undefined) setShowDims(d.showDims);
+        setProjectName(d.projectName || "New Club"); setNodes(loadedNodes); setWalls(d.walls || []); setZones(d.zones || []); setMarkers(d.markers || []); setDoors(d.doors || []); setWindows([...(d.windows || []), ...migratedCutouts]); setColumns(d.columns || []); setDims(d.dims || []); setLabels(d.labels || []); setRevClouds(d.revClouds || []); setFlowPaths(d.flowPaths || []); setFloorRegions(d.floorRegions || []); if (d.floorMaterial) setFloorMaterial(d.floorMaterial); setBgOpacity(d.bgOpacity ?? 0.35); setBgScale(d.bgScale ?? 1); setBgOffset(d.bgOffset ?? { x: 0, y: 0 }); if (d.pxPerFoot) setPxPerFoot(d.pxPerFoot); if (d.showDims !== undefined) setShowDims(d.showDims);
         if (loadedNodes.length) setTimeout(() => fitAll(loadedNodes), 50);
       }
     } catch (e) { console.warn("Auto-load failed:", e); }
@@ -1206,8 +1229,42 @@ export default function TestfitTool() {
       if (rc.points.length >= 3 && pointInPoly(pos.x, pos.y, rc.points))
         return { type: "revcloud", id: rc.id };
     }
+    // Flow path hit testing — open polyline, band half-width as the hit margin.
+    for (let i = flowPaths.length - 1; i >= 0; i--) {
+      const fp = flowPaths[i];
+      if (!phaseVisible(fp.phase)) continue;
+      const isSel = selectedId === fp.id && selType === "flowPath";
+      if (isSel) {
+        for (let vi = 0; vi < fp.points.length; vi++)
+          if (dst(pos.x, pos.y, fp.points[vi].x, fp.points[vi].y) < SNAP_R)
+            return { type: "flowPath-vertex", id: fp.id, vertexIndex: vi };
+      }
+      const halfBand = (fp.width / 12) * pxPerFoot / 2 + 2;
+      for (let ei = 0; ei < fp.points.length - 1; ei++) {
+        if (ptSeg(pos.x, pos.y, fp.points[ei].x, fp.points[ei].y, fp.points[ei+1].x, fp.points[ei+1].y) < halfBand)
+          return { type: "flowPath", id: fp.id, edgeIndex: ei };
+      }
+    }
+    // Floor region hit testing — checked last so everything above wins.
+    for (let i = floorRegions.length - 1; i >= 0; i--) {
+      const fr = floorRegions[i];
+      if (!phaseVisible(fr.phase)) continue;
+      const isSel = selectedId === fr.id && selType === "floorRegion";
+      if (isSel) {
+        for (let vi = 0; vi < fr.points.length; vi++)
+          if (dst(pos.x, pos.y, fr.points[vi].x, fr.points[vi].y) < SNAP_R)
+            return { type: "floorRegion-vertex", id: fr.id, vertexIndex: vi };
+        for (let ei = 0; ei < fr.points.length; ei++) {
+          const ej = (ei + 1) % fr.points.length;
+          if (ptSeg(pos.x, pos.y, fr.points[ei].x, fr.points[ei].y, fr.points[ej].x, fr.points[ej].y) < 10)
+            return { type: "floorRegion-edge", id: fr.id, edgeIndex: ei };
+        }
+      }
+      if (fr.points.length >= 3 && pointInPoly(pos.x, pos.y, fr.points))
+        return { type: "floorRegion", id: fr.id };
+    }
     return null;
-  }, [mode, nodes, walls, zones, markers, doors, windows, columns, dims, labels, revClouds, wc, inToPx, selectedId, selectedIds, selType, resolvePos, resolvePoints, phaseVisible, resolveLeaderTip]);
+  }, [mode, nodes, walls, zones, markers, doors, windows, columns, dims, labels, revClouds, flowPaths, floorRegions, pxPerFoot, wc, inToPx, selectedId, selectedIds, selType, resolvePos, resolvePoints, phaseVisible, resolveLeaderTip]);
 
   const onDown = useCallback((e) => {
     // Pan with middle click or spacebar held
@@ -1371,6 +1428,60 @@ export default function TestfitTool() {
           if (dst(cx, cy, last.x, last.y) > 4)
             setDrawRevCloud({ points: [...pts, { x: cx, y: cy }] });
         }
+      }
+      return;
+    }
+    if (tool === "flowPath") {
+      // Open polyline. Double-click finishes (>=2 pts) without adding a dup point.
+      if (e.detail === 2 && drawFlowPath) {
+        const pts = drawFlowPath.points;
+        if (pts.length >= 2) {
+          if (drawFlowPath.editingId) {
+            const eid = drawFlowPath.editingId;
+            setFlowPaths(prev => prev.map(f => f.id === eid ? { ...f, points: pts } : f));
+            setSelectedId(eid); setSelType("flowPath"); setSelectedIds([eid]);
+          } else {
+            const nid = uid();
+            setFlowPaths(prev => [...prev, { id: nid, points: pts, width: 36, color: "#4A90D9", label: "", phase: activePhase }]);
+            setSelectedId(nid); setSelType("flowPath"); setSelectedIds([nid]);
+          }
+          setT("select");
+        }
+        setDrawFlowPath(null);
+        return;
+      }
+      const near = findNear(pos.x, pos.y);
+      const cx = near ? near.x : sx, cy = near ? near.y : sy;
+      if (!drawFlowPath) {
+        setDrawFlowPath({ points: [{ x: cx, y: cy }] });
+      } else {
+        const last = drawFlowPath.points[drawFlowPath.points.length - 1];
+        if (dst(cx, cy, last.x, last.y) > 4)
+          setDrawFlowPath({ points: [...drawFlowPath.points, { x: cx, y: cy }] });
+      }
+      return;
+    }
+    if (tool === "floorRegion") {
+      // Closed polygon. Click first point (3+ pts) to close.
+      if (drawFloorRegion) {
+        const pts = drawFloorRegion.points;
+        if (pts.length >= 3 && dst(pos.x, pos.y, pts[0].x, pts[0].y) < SNAP_R * 1.5) {
+          const nid = uid();
+          setFloorRegions(prev => [...prev, { id: nid, points: pts, material: "Wood", label: "", phase: activePhase }]);
+          setDrawFloorRegion(null);
+          setSelectedId(nid); setSelType("floorRegion"); setSelectedIds([nid]);
+          setT("select");
+          return;
+        }
+      }
+      const near = findNear(pos.x, pos.y);
+      const cx = near ? near.x : sx, cy = near ? near.y : sy;
+      if (!drawFloorRegion) {
+        setDrawFloorRegion({ points: [{ x: cx, y: cy }] });
+      } else {
+        const last = drawFloorRegion.points[drawFloorRegion.points.length - 1];
+        if (dst(cx, cy, last.x, last.y) > 4)
+          setDrawFloorRegion({ points: [...drawFloorRegion.points, { x: cx, y: cy }] });
       }
       return;
     }
@@ -1550,6 +1661,16 @@ export default function TestfitTool() {
               const c = polyCentroid(rc.points);
               const startLabelPositions = labels.filter(l => l.anchorType === "revcloud" && l.anchorId === id).map(l => ({ id: l.id, x: l.x, y: l.y, lx: l.lx, ly: l.ly }));
               initialPositions.push({ id, type: "revcloud", centroid: c, points: rc.points.map(p => ({ ...p })), startLabelPositions });
+              return;
+            }
+            const fp = flowPaths.find(r => r.id === id);
+            if (fp) {
+              initialPositions.push({ id, type: "flowPath", points: fp.points.map(p => ({ ...p })) });
+              return;
+            }
+            const fr = floorRegions.find(r => r.id === id);
+            if (fr) {
+              initialPositions.push({ id, type: "floorRegion", points: fr.points.map(p => ({ ...p })) });
             }
           });
 
@@ -1562,6 +1683,8 @@ export default function TestfitTool() {
           }
           const resolvedSelType = hit.type === "label-tip" ? "label"
             : (hit.type === "zone-vertex" || hit.type === "zone-edge") ? "zone"
+            : (hit.type === "flowPath-vertex") ? "flowPath"
+            : (hit.type === "floorRegion-vertex" || hit.type === "floorRegion-edge") ? "floorRegion"
             : hit.type;
           setSelectedId(hit.id); setSelType(resolvedSelType);
           if (hit.type === "node") {
@@ -1780,6 +1903,67 @@ export default function TestfitTool() {
                 startX: c.x, startY: c.y, startPts: rc.points.map(p => ({ ...p })), startLabelPositions });
             }
           }
+          else if (hit.type === "flowPath-vertex") {
+            const fp = flowPaths.find(r => r.id === hit.id);
+            if (fp) {
+              if (e.detail === 2 && fp.points.length > 2)
+                setFlowPaths(p => p.map(r => r.id === hit.id ? { ...r, points: r.points.filter((_, i) => i !== hit.vertexIndex) } : r));
+              else if (e.detail < 2) {
+                const vt = fp.points[hit.vertexIndex];
+                setDrag({ type: "flowPath-vertex", id: hit.id, vertexIndex: hit.vertexIndex, ox: pos.x - vt.x, oy: pos.y - vt.y });
+              }
+            }
+          }
+          else if (hit.type === "flowPath") {
+            const fp = flowPaths.find(r => r.id === hit.id);
+            if (fp) {
+              if (e.detail === 2) {
+                // Double-click on band: insert a vertex at the click point on that segment
+                const newPts = [...fp.points];
+                newPts.splice(hit.edgeIndex + 1, 0, { x: sn(pos.x, snapGrid), y: sn(pos.y, snapGrid) });
+                setFlowPaths(p => p.map(r => r.id === hit.id ? { ...r, points: newPts } : r));
+              } else {
+                const cx = fp.points.reduce((s,p)=>s+p.x,0)/fp.points.length, cy = fp.points.reduce((s,p)=>s+p.y,0)/fp.points.length;
+                setDrag({ type: "flowPath", id: hit.id, ox: pos.x - cx, oy: pos.y - cy, startX: cx, startY: cy, startPts: fp.points.map(p => ({ ...p })) });
+              }
+            }
+          }
+          else if (hit.type === "floorRegion-vertex") {
+            const fr = floorRegions.find(r => r.id === hit.id);
+            if (fr) {
+              if (e.detail === 2 && fr.points.length > 3)
+                setFloorRegions(p => p.map(r => r.id === hit.id ? { ...r, points: r.points.filter((_, i) => i !== hit.vertexIndex) } : r));
+              else if (e.detail < 2) {
+                const vt = fr.points[hit.vertexIndex];
+                setDrag({ type: "floorRegion-vertex", id: hit.id, vertexIndex: hit.vertexIndex, ox: pos.x - vt.x, oy: pos.y - vt.y });
+              }
+            }
+          }
+          else if (hit.type === "floorRegion-edge") {
+            const fr = floorRegions.find(r => r.id === hit.id);
+            if (fr) {
+              if (e.detail === 2) {
+                const ej = (hit.edgeIndex + 1) % fr.points.length;
+                const newPts = [...fr.points];
+                newPts.splice(ej, 0, { x: sn(pos.x, snapGrid), y: sn(pos.y, snapGrid) });
+                setFloorRegions(p => p.map(r => r.id === hit.id ? { ...r, points: newPts } : r));
+              } else {
+                const ei = hit.edgeIndex, ej = (ei + 1) % fr.points.length;
+                const a = fr.points[ei], b = fr.points[ej];
+                const edx = b.x - a.x, edy = b.y - a.y, elen = Math.hypot(edx, edy) || 1;
+                setDrag({ type: "floorRegion-edge", id: hit.id, edgeIndex: ei, ox: pos.x, oy: pos.y,
+                  startA: { ...a }, startB: { ...b }, nx: -edy / elen, ny: edx / elen,
+                  cursor: wallResizeCursor(a.x, a.y, b.x, b.y) });
+              }
+            }
+          }
+          else if (hit.type === "floorRegion") {
+            const fr = floorRegions.find(r => r.id === hit.id);
+            if (fr) {
+              const c = polyCentroid(fr.points);
+              setDrag({ type: "floorRegion", id: hit.id, ox: pos.x - c.x, oy: pos.y - c.y, startX: c.x, startY: c.y, startPts: fr.points.map(p => ({ ...p })) });
+            }
+          }
         }
       } else {
         // No hit — Alt+drag moves underlay image, otherwise start marquee selection
@@ -1794,7 +1978,7 @@ export default function TestfitTool() {
         }
       }
     }
-  }, [tool, activeZoneType, activeSpecLayer, s2c, findNear, findDimSnap, hitTest, walls, wc, zones, markers, doors, windows, columns, labels, revClouds, viewOff, drawChain, commitWallSegment, spaceHeld, doorWidth, windowWidth, columnSize, columnShape, snapToWall, snapGrid, activeComponentType, selectedIds, bgImage, bgOffset, gn, calibrationLine, drawDim, dims, nodes, pxPerFoot, zoneEdge, resolvePos, resolvePoints, activePhase, addingLeaderToId, snapLabelAnchor, drawRevCloud, polyCentroid]);
+  }, [tool, activeZoneType, activeSpecLayer, s2c, findNear, findDimSnap, hitTest, walls, wc, zones, markers, doors, windows, columns, labels, revClouds, flowPaths, viewOff, drawChain, commitWallSegment, spaceHeld, doorWidth, windowWidth, columnSize, columnShape, snapToWall, snapGrid, activeComponentType, selectedIds, bgImage, bgOffset, gn, calibrationLine, drawDim, dims, nodes, pxPerFoot, zoneEdge, resolvePos, resolvePoints, activePhase, addingLeaderToId, snapLabelAnchor, drawRevCloud, drawFlowPath, floorRegions, drawFloorRegion, polyCentroid]);
 
   const onMove = useCallback((e) => {
     if (panning && panSt) {
@@ -1863,6 +2047,22 @@ export default function TestfitTool() {
     if (tool === "revcloud") {
       const near = findNear(pos.x, pos.y);
       setGhostPos(near ? { x: near.x, y: near.y, snapped: true } : { x: sx, y: sy, snapped: false });
+    }
+    if (tool === "flowPath") {
+      const near = findNear(pos.x, pos.y);
+      setGhostPos(near ? { x: near.x, y: near.y, snapped: true } : { x: sx, y: sy, snapped: false });
+    }
+    if (tool === "floorRegion") {
+      // snap-to-first when near the opening vertex (3+ pts) for a clean close
+      let snappedFirst = false;
+      if (drawFloorRegion && drawFloorRegion.points.length >= 3) {
+        const p0 = drawFloorRegion.points[0];
+        if (dst(pos.x, pos.y, p0.x, p0.y) < SNAP_R * 1.5) { setGhostPos({ x: p0.x, y: p0.y, snapped: true, closing: true }); snappedFirst = true; }
+      }
+      if (!snappedFirst) {
+        const near = findNear(pos.x, pos.y);
+        setGhostPos(near ? { x: near.x, y: near.y, snapped: true } : { x: sx, y: sy, snapped: false });
+      }
     }
     if (tool === "label") {
       const snap = snapLabelAnchor(pos.x, pos.y);
@@ -2030,6 +2230,14 @@ export default function TestfitTool() {
                 if (!lp || lp.lx == null) return l; // no leader → text stays put
                 return { ...l, lx: lp.lx + rdx, ly: lp.ly + rdy }; // only leader tip moves
               }));
+            } else if (obj.type === "flowPath") {
+              const rdx = sn(pos.x, snapGrid) - drag.startX, rdy = sn(pos.y, snapGrid) - drag.startY;
+              setFlowPaths(p => p.map(r => r.id !== obj.id ? r
+                : { ...r, points: obj.points.map(pt => ({ x: pt.x + rdx, y: pt.y + rdy })) }));
+            } else if (obj.type === "floorRegion") {
+              const rdx = sn(pos.x, snapGrid) - drag.startX, rdy = sn(pos.y, snapGrid) - drag.startY;
+              setFloorRegions(p => p.map(r => r.id !== obj.id ? r
+                : { ...r, points: obj.points.map(pt => ({ x: pt.x + rdx, y: pt.y + rdy })) }));
             }
           });
           setDrag(d => ({ ...d, lastX: pos.x, lastY: pos.y }));
@@ -2269,6 +2477,43 @@ export default function TestfitTool() {
           }));
         }
       }
+      else if (drag.type === "flowPath-vertex") {
+        setFlowPaths(p => p.map(r => r.id !== drag.id ? r
+          : { ...r, points: r.points.map((pt, i) => i === drag.vertexIndex
+              ? { x: sn(pos.x - drag.ox, snapGrid), y: sn(pos.y - drag.oy, snapGrid) } : pt) }));
+      }
+      else if (drag.type === "flowPath") {
+        const dx = sn(pos.x - drag.ox, snapGrid) - drag.startX;
+        const dy = sn(pos.y - drag.oy, snapGrid) - drag.startY;
+        setFlowPaths(p => p.map(r => r.id !== drag.id ? r
+          : { ...r, points: drag.startPts.map(pt => ({ x: pt.x + dx, y: pt.y + dy })) }));
+      }
+      else if (drag.type === "floorRegion-vertex") {
+        setFloorRegions(p => p.map(r => r.id !== drag.id ? r
+          : { ...r, points: r.points.map((pt, i) => i === drag.vertexIndex
+              ? { x: sn(pos.x - drag.ox, snapGrid), y: sn(pos.y - drag.oy, snapGrid) } : pt) }));
+      }
+      else if (drag.type === "floorRegion-edge") {
+        const dx = pos.x - drag.ox, dy = pos.y - drag.oy;
+        const proj = dx * drag.nx + dy * drag.ny;
+        const mx = sn(drag.nx * proj, snapGrid), my = sn(drag.ny * proj, snapGrid);
+        const ei = drag.edgeIndex;
+        setFloorRegions(p => p.map(r => {
+          if (r.id !== drag.id) return r;
+          const ej = (ei + 1) % r.points.length;
+          return { ...r, points: r.points.map((pt, i) => {
+            if (i === ei) return { x: drag.startA.x + mx, y: drag.startA.y + my };
+            if (i === ej) return { x: drag.startB.x + mx, y: drag.startB.y + my };
+            return pt;
+          }) };
+        }));
+      }
+      else if (drag.type === "floorRegion") {
+        const dx = sn(pos.x - drag.ox, snapGrid) - drag.startX;
+        const dy = sn(pos.y - drag.oy, snapGrid) - drag.startY;
+        setFloorRegions(p => p.map(r => r.id !== drag.id ? r
+          : { ...r, points: drag.startPts.map(pt => ({ x: pt.x + dx, y: pt.y + dy })) }));
+      }
       else if (drag.type === "underlay") {
         setBgOffset({ x: pos.x - drag.ox, y: pos.y - drag.oy });
       }
@@ -2287,7 +2532,7 @@ export default function TestfitTool() {
         return { ...z, x, y, w, h };
       }));
     }
-  }, [panning, panSt, canvasRotation, drawChain, drag, resize, s2c, findNear, findDimSnap, walls, wc, tool, snapToWall, snapGrid, marquee, calibrationLine, dims, drawDim, zones, zoom, rotatingMarker, outletType, lightingType, htrackAngle, nodes, doors, windows, columns, markers, activePhase, snapLabelAnchor, revClouds, drawRevCloud, resolveDimEndpoints]);
+  }, [panning, panSt, canvasRotation, drawChain, drag, resize, s2c, findNear, findDimSnap, walls, wc, tool, snapToWall, snapGrid, marquee, calibrationLine, dims, drawDim, zones, zoom, rotatingMarker, outletType, lightingType, htrackAngle, nodes, doors, windows, columns, markers, activePhase, snapLabelAnchor, revClouds, drawRevCloud, flowPaths, drawFlowPath, floorRegions, drawFloorRegion, resolveDimEndpoints]);
 
   const onUp = useCallback((e) => {
     // Commit label placement
@@ -2393,6 +2638,18 @@ export default function TestfitTool() {
           if (c.x >= minX && c.x <= maxX && c.y >= minY && c.y <= maxY)
             selected.push({ id: rc.id, type: "revcloud" });
         });
+        flowPaths.forEach(fp => {
+          if (!phaseVisible(fp.phase)) return;
+          const cx = fp.points.reduce((s,p)=>s+p.x,0)/fp.points.length, cy = fp.points.reduce((s,p)=>s+p.y,0)/fp.points.length;
+          if (cx >= minX && cx <= maxX && cy >= minY && cy <= maxY)
+            selected.push({ id: fp.id, type: "flowPath" });
+        });
+        floorRegions.forEach(fr => {
+          if (!phaseVisible(fr.phase)) return;
+          const c = polyCentroid(fr.points);
+          if (c.x >= minX && c.x <= maxX && c.y >= minY && c.y <= maxY)
+            selected.push({ id: fr.id, type: "floorRegion" });
+        });
       } else if (mode === "zone") {
         zones.forEach(z => {
           if (!phaseVisible(z.phase)) return;
@@ -2465,7 +2722,7 @@ export default function TestfitTool() {
     }
     // No re-clipping on zone drag/vertex drag end — user controls shape manually
     setDrag(null); setResize(null); setPanning(false); setPanSt(null); setHoverNid(null); setRotatingMarker(null); setSmartGuides([]);
-  }, [drag, resize, hoverNid, marquee, selectedIds, selectedId, mode, nodes, walls, doors, windows, zones, markers, columns, labels, revClouds, phaseVisible, resolvePos, resolvePoints, wc, lastCopyInfo, s2c, themeMode, activePhase, snapLabelAnchor]);
+  }, [drag, resize, hoverNid, marquee, selectedIds, selectedId, mode, nodes, walls, doors, windows, zones, markers, columns, labels, revClouds, flowPaths, floorRegions, phaseVisible, resolvePos, resolvePoints, wc, lastCopyInfo, s2c, themeMode, activePhase, snapLabelAnchor]);
 
   // Smooth zoom centered on cursor
   const onWheel = useCallback((e) => {
@@ -2518,7 +2775,7 @@ export default function TestfitTool() {
     const wallFt = { existing: 0, demo: 0, new: 0, pony: 0 };
     walls.forEach(w => { const len = wl(w); wallFt[w.kind || "existing"] += len; });
     const wallFtFormatted = {};
-    Object.entries(wallFt).forEach(([k, v]) => { if (v > 0) wallFtFormatted[k] = { ft: v, label: WALL_KINDS[k].label, color: WALL_KINDS[k].color }; });
+    Object.entries(wallFt).forEach(([k, v]) => { if (v > 0) wallFtFormatted[k] = { ft: v, label: wallKinds[k].label, color: wallKinds[k].color }; });
     return { zones: zc, markers: pc, total: zt + pt, totalSf, wallFt: wallFtFormatted };
   }, [zones, markers, walls, wl, ftN]);
 
@@ -2531,6 +2788,10 @@ export default function TestfitTool() {
   const selColumn = useMemo(() => selType === "column" ? columns.find(c => c.id === selectedId) : null, [selType, selectedId, columns]);
   const selLabel = useMemo(() => (selType === "label" || selType === "label-tip") ? labels.find(l => l.id === selectedId) : null, [selType, selectedId, labels]);
   const selRevCloud = useMemo(() => selType === "revcloud" ? revClouds.find(r => r.id === selectedId) : null, [selType, selectedId, revClouds]);
+  const selFlowPath = useMemo(() => selType === "flowPath" ? flowPaths.find(r => r.id === selectedId) : null, [selType, selectedId, flowPaths]);
+  const selFloorRegion = useMemo(() => selType === "floorRegion" ? floorRegions.find(r => r.id === selectedId) : null, [selType, selectedId, floorRegions]);
+  const updFloorRegion = (u) => setFloorRegions(p => p.map(r => r.id === selectedId ? { ...r, ...u } : r));
+  const updFlowPath = (u) => setFlowPaths(p => p.map(r => r.id === selectedId ? { ...r, ...u } : r));
 
   // Multi-select support
   const multiSelType = useMemo(() => {
@@ -2608,11 +2869,13 @@ export default function TestfitTool() {
       setDims(p => p.filter(d => !idsToDelete.has(d.id)));
       setLabels(p => p.filter(l => !idsToDelete.has(l.id)));
       setRevClouds(p => p.filter(r => !idsToDelete.has(r.id)));
+      setFlowPaths(p => p.filter(r => !idsToDelete.has(r.id)));
+      setFloorRegions(p => p.filter(r => !idsToDelete.has(r.id)));
 
       setSelectedIds([]);
       setSelectedId(null);
       setSelType(null);
-    } 
+    }
     // Single object deletion (legacy path)
     else if (selectedId) {
       if (selType === "wall") { const w = walls.find(ww => ww.id === selectedId); const rem = walls.filter(ww => ww.id !== selectedId); setWalls(rem); if (w) setNodes(prev => prev.filter(n => rem.some(ww => ww.n1 === n.id || ww.n2 === n.id))); }
@@ -2623,6 +2886,8 @@ export default function TestfitTool() {
       else if (selType === "dim") setDims(p => p.filter(d => d.id !== selectedId));
       else if (selType === "label" || selType === "label-tip") setLabels(p => p.filter(l => l.id !== selectedId));
       else if (selType === "revcloud") setRevClouds(p => p.filter(r => r.id !== selectedId));
+      else if (selType === "flowPath") setFlowPaths(p => p.filter(r => r.id !== selectedId));
+      else if (selType === "floorRegion") setFloorRegions(p => p.filter(r => r.id !== selectedId));
       else { setZones(p => p.filter(z => z.id !== selectedId)); setMarkers(p => phaseDeleteMarkers(p, m => m.id === selectedId)); }
       setSelectedId(null); setSelType(null); setSelectedIds([]);
     }
@@ -2872,6 +3137,8 @@ export default function TestfitTool() {
       else if (k === "M") { setT("dim"); setDrawDim(null); }
       else if (k === "T") { setT("label"); }
       else if (k === "N") { setT("revcloud"); }
+      else if (k === "K") { setT("flowPath"); }
+      else if (k === "A" && !(e.ctrlKey || e.metaKey)) { setT("floorRegion"); }
       else if (mode === "zone" && k === "Z") { setT("zone"); }
       else if (mode === "itmep" && k === "P") { setT("marker"); }
       if (k === "D" && !e.ctrlKey) setShowDims(d => !d);
@@ -2881,9 +3148,28 @@ export default function TestfitTool() {
       if (k === "R" && selDoor) updDoor({ hingeRight: !selDoor.hingeRight });
       if (k === "R" && selWindow) updWindow({ angle: (selWindow.angle + 90) % 360 });
       if ((k === "DELETE" || k === "BACKSPACE") && !editingLabelId && (selectedId || selectedIds.length > 0)) { e.preventDefault(); delSel(); }
+      // Enter finishes an in-progress flow path (open polyline, >=2 points).
+      if (k === "ENTER" && !editingLabelId && drawFlowPath && drawFlowPath.points.length >= 2) {
+        e.preventDefault();
+        const pts = drawFlowPath.points;
+        if (drawFlowPath.editingId) {
+          const eid = drawFlowPath.editingId;
+          setFlowPaths(prev => prev.map(f => f.id === eid ? { ...f, points: pts } : f));
+          setSelectedId(eid); setSelType("flowPath"); setSelectedIds([eid]);
+        } else {
+          const nid = uid();
+          setFlowPaths(prev => [...prev, { id: nid, points: pts, width: 36, color: "#4A90D9", label: "", phase: activePhase }]);
+          setSelectedId(nid); setSelType("flowPath"); setSelectedIds([nid]);
+        }
+        setDrawFlowPath(null);
+        setT("select");
+        return;
+      }
       if (k === "ESCAPE") {
         if (addingLeaderToId) { setAddingLeaderToId(null); }
         else if (drawRevCloud) { setDrawRevCloud(null); }
+        else if (drawFlowPath) { setDrawFlowPath(null); }
+        else if (drawFloorRegion) { setDrawFloorRegion(null); }
         else if (drawChain || drawPolyZone || drawDim) {
           setDrawChain(null); setDrawPolyZone(null); setCursorPos(null); setDimInput(""); setDrawDim(null);
         } else {
@@ -2922,6 +3208,8 @@ export default function TestfitTool() {
         setColumns(prev => prev.map(c => ids.has(c.id) ? nudgeXY(c) : c));
         setLabels(prev => prev.map(l => !ids.has(l.id) ? l : { ...l, x: l.x + dx, y: l.y + dy, lx: l.lx != null ? l.lx + dx : null, ly: l.ly != null ? l.ly + dy : null }));
         setRevClouds(prev => prev.map(r => !ids.has(r.id) ? r : { ...r, points: r.points.map(pt => ({ x: pt.x + dx, y: pt.y + dy })) }));
+        setFlowPaths(prev => prev.map(r => !ids.has(r.id) ? r : { ...r, points: r.points.map(pt => ({ x: pt.x + dx, y: pt.y + dy })) }));
+        setFloorRegions(prev => prev.map(r => !ids.has(r.id) ? r : { ...r, points: r.points.map(pt => ({ x: pt.x + dx, y: pt.y + dy })) }));
         return;
       }
 
@@ -2933,7 +3221,7 @@ export default function TestfitTool() {
     window.addEventListener("keydown", down);
     window.addEventListener("keyup", up);
     return () => { window.removeEventListener("keydown", down); window.removeEventListener("keyup", up); };
-  }, [selectedId, selectedIds, selType, delSel, selDoor, selWindow, undo, redo, fitAll, dimInput, cursorPos, drawChain, pxPerFoot, commitWallSegment, tool, findNear, walls, nodes, doors, windows, columns, markers, zones, clipboard, pasteOffset, outletType, htrackAngle, lightingType, lastCopyInfo, repeatInput, resolvePos, resolvePoints, editingLabelId, addingLeaderToId, activePhase, labels, revClouds]);
+  }, [selectedId, selectedIds, selType, delSel, selDoor, selWindow, undo, redo, fitAll, dimInput, cursorPos, drawChain, pxPerFoot, commitWallSegment, tool, findNear, walls, nodes, doors, windows, columns, markers, zones, clipboard, pasteOffset, outletType, htrackAngle, lightingType, lastCopyInfo, repeatInput, resolvePos, resolvePoints, editingLabelId, addingLeaderToId, activePhase, labels, revClouds, flowPaths, drawFlowPath, drawFloorRegion]);
 
   const $ = (n) => "$" + n.toLocaleString();
   const font = "'SF Mono','Consolas','Monaco',monospace";
@@ -2951,8 +3239,9 @@ export default function TestfitTool() {
       columns: columns.filter(c => phaseVisible(c.phase)).map(c => ({ ...c, ...resolvePos(c) })),
       zones: zones.filter(z => phaseVisible(z.phase)).map(z => z.points ? { ...z, points: resolvePoints(z) } : z),
       markers: markers.filter(m => markerVisible(m)).map(m => ({ ...m, ...resolvePos(m) })),
+      floorRegions: visibleFloorRegions ? floorRegions.filter(r => phaseVisible(r.phase)) : [],
     };
-  }, [view3d, splitView, walls, nodes, doors, windows, columns, zones, markers, phaseVisible, markerVisible, gn, resolvePos, resolvePoints]);
+  }, [view3d, splitView, walls, nodes, doors, windows, columns, zones, markers, floorRegions, visibleFloorRegions, phaseVisible, markerVisible, gn, resolvePos, resolvePoints]);
 
   const DimLbl = ({ cx, cy, text, angle, off = -14, color = T.dimText }) => {
     let a = angle; if (a > 90) a -= 180; if (a < -90) a += 180;
@@ -3255,7 +3544,18 @@ export default function TestfitTool() {
   };
 
   // ── Mode system ─────────────────────────────────────────────────────
-  const setT = (t) => { setTool(t); setGhostPos(null); setDrawChain(null); setDrawPolyZone(null); setCursorPos(null); setDimInput(""); setDrawDim(null); setDrawRevCloud(null); if (t !== "select" && t !== "pan") { setSelectedId(null); setSelType(null); setSelectedIds([]); } };
+  const setT = (t) => {
+    setTool(t); setGhostPos(null); setDrawChain(null); setDrawPolyZone(null); setCursorPos(null); setDimInput(""); setDrawDim(null); setDrawRevCloud(null); setDrawFloorRegion(null);
+    // Re-entering the flow-path tool with a flow path selected → continue it.
+    if (t === "flowPath" && selType === "flowPath" && selectedId) {
+      const fp = flowPaths.find(f => f.id === selectedId);
+      if (fp && fp.points.length) { setDrawFlowPath({ points: fp.points.map(p => ({ ...p })), editingId: fp.id }); }
+      else setDrawFlowPath(null);
+    } else {
+      setDrawFlowPath(null);
+    }
+    if (t !== "select" && t !== "pan") { setSelectedId(null); setSelType(null); setSelectedIds([]); }
+  };
 
   const MODES = {
     build:  { label: "(1) Build",   color: "#9A9488" },
@@ -3391,7 +3691,7 @@ export default function TestfitTool() {
     }),
   };
 
-  const isDrawing = drawChain || drawPolyZone || drawRevCloud;
+  const isDrawing = drawChain || drawPolyZone || drawRevCloud || drawFlowPath || drawFloorRegion;
 
   return (
     <TooltipProvider>
@@ -3453,10 +3753,26 @@ export default function TestfitTool() {
         <div style={{ width: 1, height: 20, background: T.border, margin: "0 3px" }} />
         <button style={S.smBtn} onClick={() => setThemeMode(m => m === "dark" ? "light" : "dark")}>{themeMode === "dark" ? "Light" : "Dark"}</button>
         <div style={{ width: 1, height: 20, background: T.border, margin: "0 3px" }} />
-        <button style={S.smBtn} onClick={exportPng}>PNG</button>
-        <button style={S.smBtn} onClick={exportPdf}>PDF</button>
-        <div style={{ width: 1, height: 20, background: T.border, margin: "0 3px" }} />
-        <button style={S.smBtn} onClick={exportProject}>Save</button>
+        <div style={{ position: "relative" }}>
+          <button style={{ ...S.smBtn, display: "flex", alignItems: "center", gap: 4 }} onClick={() => setShowSaveMenu(v => !v)}>
+            Save<ChevronDown size={11} style={{ opacity: 0.7, transition: "transform 0.15s", transform: showSaveMenu ? "rotate(180deg)" : "none" }} />
+          </button>
+          {showSaveMenu && <>
+            <div style={{ position: "fixed", inset: 0, zIndex: 999 }} onClick={() => setShowSaveMenu(false)} />
+            <div style={{ position: "absolute", top: "calc(100% + 6px)", right: 0, background: T.panelBg, border: "1px solid " + T.border, borderRadius: 8, padding: 6, zIndex: 1000, minWidth: 160, boxShadow: T.panelShadow, backdropFilter: "blur(16px)" }}>
+              {[
+                { label: "Save Project (.json)", fn: exportProject },
+                { label: "Export PNG", fn: exportPng },
+                { label: "Export PDF", fn: exportPdf },
+              ].map(({ label, fn }) => (
+                <div key={label} onClick={() => { setShowSaveMenu(false); fn(); }}
+                  style={{ padding: "7px 10px", borderRadius: 6, cursor: "pointer", fontSize: 11, color: T.textMuted, fontFamily: "inherit", transition: "background 0.12s" }}
+                  onMouseEnter={e => e.currentTarget.style.background = T.border + "60"}
+                  onMouseLeave={e => e.currentTarget.style.background = "transparent"}>{label}</div>
+              ))}
+            </div>
+          </>}
+        </div>
         <button style={S.smBtn} onClick={() => loadRef.current?.click()}>Load</button>
         <button style={S.smBtn} onClick={() => { if (walls.length || zones.length || markers.length) { if (confirm("New project?")) newProject(); } else newProject(); }}>New</button>
         <input ref={loadRef} type="file" accept=".json" style={{ display: "none" }} onChange={e => { const f = e.target.files?.[0]; if (f) importProject(f); e.target.value = ""; }} />
@@ -3540,6 +3856,19 @@ export default function TestfitTool() {
                   </button>
                 </div>
               )}
+              {/* Floor material — project default, shown in Detailed 3D */}
+              <div style={S.sec}>
+                <div style={S.sh}>Floor</div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+                  {FLOOR_MATERIALS.map(m => { const isSel = floorMaterial === m; const hex = FLOOR_MATERIAL_HEX[m];
+                    return <button key={m} onClick={() => { setFloorMaterial(m); setSelType("floor"); setSelectedId(null); setSelectedIds([]); }}
+                      style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 9px", background: isSel ? hex + "30" : "transparent",
+                        border: "1.5px solid " + (isSel ? hex : T.border), borderRadius: 5, cursor: "pointer", fontFamily: "inherit",
+                        color: isSel ? T.textBright : T.textMuted, fontSize: 10, fontWeight: isSel ? 600 : 400, transition: "all 0.12s ease" }}>
+                      <span style={{ width: 12, height: 12, borderRadius: 3, background: hex, flexShrink: 0, boxShadow: "0 0 0 1px rgba(0,0,0,0.1) inset" }} />{m}
+                    </button>; })}
+                </div>
+              </div>
               {/* Drawing Scale — hidden, state + functionality preserved */}
               <div style={S.sec}>
                 <div style={S.sh}>Summary</div>
@@ -3734,7 +4063,7 @@ export default function TestfitTool() {
                       if (wallsWithInfo.length) {
                         lines.push("  —");
                         wallsWithInfo.forEach(w => {
-                          const wk = WALL_KINDS[w.kind || "existing"];
+                          const wk = wallKinds[w.kind || "existing"];
                           const parts = [`${wk.label} · ${ft(wl(w))}`];
                           if (w.material) parts.push(w.material);
                           if (w.paintFinish) parts.push(`Paint: ${w.paintFinish}`);
@@ -3807,13 +4136,16 @@ export default function TestfitTool() {
               { key: "dims",       label: "Dimensions",     color: T.dimText,              visible: visibleDims,           toggle: () => setVisibleDims(v => !v),           count: dims.length },
               { key: "labels",     label: "Labels",         color: T.textBright,           visible: visibleLabels,         toggle: () => setVisibleLabels(v => !v),         count: labels.length },
               { key: "revClouds",  label: "Rev Clouds",     color: "#E05252",              visible: visibleRevClouds,      toggle: () => setVisibleRevClouds(v => !v),      count: revClouds.length },
-              // ITMEP-specific
-              ...(mode === "itmep" ? [
+              { key: "flowPaths",  label: "Flow Paths",     color: "#4A90D9",              visible: visibleFlowPaths,      toggle: () => setVisibleFlowPaths(v => !v),      count: flowPaths.length },
+              { key: "floorRegions", label: "Floors",       color: "#7A9E5A",              visible: visibleFloorRegions,   toggle: () => setVisibleFloorRegions(v => !v),   count: floorRegions.length },
+              { key: "itmep",      label: "IT / MEP",       color: T.uiElec ?? "#E0A030",  visible: visibleITMEP,          toggle: () => setVisibleITMEP(v => !v),          count: markers.length },
+              // ITMEP-specific per-layer toggles (only inside IT/MEP mode, and only when the master is on)
+              ...(mode === "itmep" && visibleITMEP ? [
                 { key: "elec",   label: "Electrical", color: T.uiElec,     visible: visibleBuildElectrical, toggle: () => setVisibleBuildElectrical(v => !v), count: markers.filter(m => m.layer === "power" && !isLightComp(m.componentType)).length },
                 { key: "light",  label: "Lighting",   color: T.uiLighting, visible: visibleBuildLighting,   toggle: () => setVisibleBuildLighting(v => !v),   count: markers.filter(m => m.layer === "power" && isLightComp(m.componentType)).length },
               ] : []),
               // ITMEP spec layers
-              ...(mode === "itmep" ? Object.entries(SPEC_LAYERS).filter(([k]) => k !== "power").map(([k, l]) => ({
+              ...(mode === "itmep" && visibleITMEP ? Object.entries(SPEC_LAYERS).filter(([k]) => k !== "power").map(([k, l]) => ({
                 key: k, label: l.name, color: uiColor(l.color), visible: visibleLayers[k],
                 toggle: () => setVisibleLayers(v => ({ ...v, [k]: !v[k] })),
                 count: markers.filter(m => m.layer === k).length,
@@ -3822,7 +4154,7 @@ export default function TestfitTool() {
             return (
               <div style={{ borderTop: "1px solid " + T.bg3, padding: "10px 12px", background: T.bg1, flexShrink: 0 }}>
                 <div style={{ fontSize: 9, color: T.textDim, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6, fontWeight: 600 }}>Visibility</div>
-                {rows.map(({ key, label, color, visible, toggle, count }) => (
+                {[...rows].sort((a, b) => a.label.localeCompare(b.label)).map(({ key, label, color, visible, toggle, count }) => (
                   <div key={key} style={{ ...S.lr, padding: "4px 4px", borderRadius: 6, marginBottom: 1 }}>
                     <div style={S.chk(visible, color)} onClick={toggle}>{visible && "✓"}</div>
                     <span style={{ color: visible ? T.accent : T.textMuted, flex: 1, fontSize: 11 }}>{label}</span>
@@ -3930,11 +4262,13 @@ export default function TestfitTool() {
               show3dLabels={show3dLabels} setShow3dLabels={setShow3dLabels}
               show3dDims={show3dDims}     setShow3dDims={setShow3dDims}
               style3d={style3d}
+              floorMaterial={floorMaterial}
+              floorRegions={data3d.floorRegions}
               zoneLibrary={zoneLibrary}
               visibleLayers={visibleLayers}
               visibleBuildElectrical={visibleBuildElectrical}
               visibleBuildLighting={visibleBuildLighting}
-              onSelect={(id, type) => { setSelectedId(id); setSelType(type); }}
+              onSelect={(id, type) => { setSelectedId(id); setSelType(type); setSelectedIds(id ? [id] : []); }}
             />
           )}
 
@@ -4006,6 +4340,20 @@ export default function TestfitTool() {
                   : "Click to add points · Click first point to close"}
             </div>
           )}
+          {tool === "flowPath" && (
+            <div style={{ position: "absolute", top: "16px", left: "50%", transform: "translateX(-50%)", background: T.panelBg, border: "1px solid " + T.border, borderRadius: 6, padding: "6px 14px", fontSize: 10, color: "#4A90D9", zIndex: 10, backdropFilter: "blur(12px)", boxShadow: T.panelShadow, fontWeight: 500, pointerEvents: "none" }}>
+              {!drawFlowPath ? "Click to start flow path"
+                : `${drawFlowPath.points.length} point${drawFlowPath.points.length > 1 ? "s" : ""} · click to add · Enter or double-click to finish`}
+            </div>
+          )}
+          {tool === "floorRegion" && (
+            <div style={{ position: "absolute", top: "16px", left: "50%", transform: "translateX(-50%)", background: T.panelBg, border: "1px solid " + T.border, borderRadius: 6, padding: "6px 14px", fontSize: 10, color: "#7A9E5A", zIndex: 10, backdropFilter: "blur(12px)", boxShadow: T.panelShadow, fontWeight: 500, pointerEvents: "none" }}>
+              {!drawFloorRegion ? "Click to start floor region"
+                : drawFloorRegion.points.length < 3
+                  ? `${drawFloorRegion.points.length} point${drawFloorRegion.points.length > 1 ? "s" : ""} — need at least 3 to close`
+                  : "Click to add points · Click first point to close"}
+            </div>
+          )}
           {addingLeaderToId && (
             <div style={{ position: "absolute", top: "16px", left: "50%", transform: "translateX(-50%)", background: T.panelBg, border: "1px solid " + T.accent + "88", borderRadius: "6px", padding: "6px 14px", fontSize: "10px", color: T.accent, zIndex: 10, backdropFilter: "blur(12px)", boxShadow: T.panelShadow, fontWeight: 500, pointerEvents: "none" }}>
               Click any object or point to attach leader · Esc to cancel
@@ -4074,7 +4422,7 @@ export default function TestfitTool() {
           })()}
 
           <svg ref={cvs} width="100%" height="100%"
-            style={{ cursor: (panning || spaceHeld) ? "grabbing" : resize ? ({ n:"ns-resize",s:"ns-resize",e:"ew-resize",w:"ew-resize",ne:"nesw-resize",sw:"nesw-resize",nw:"nwse-resize",se:"nwse-resize" }[resize.edge] || "nwse-resize") : (drag?.type === "zone-edge" && drag.cursor) ? drag.cursor : (drag?.type === "revcloud-edge" && drag.cursor) ? drag.cursor : zoneEdge ? zoneEdge.cursor : cadCrosshair(T.crosshairColor), userSelect: "none", display: (view3d && !splitView) ? "none" : undefined, transform: canvasRotation ? `rotate(${canvasRotation}deg)` : undefined, transformOrigin: "center", transition: canvasRotNoTransition ? "none" : "transform 0.25s cubic-bezier(0.4,0,0.2,1)" }}
+            style={{ cursor: (panning || spaceHeld) ? "grabbing" : resize ? ({ n:"ns-resize",s:"ns-resize",e:"ew-resize",w:"ew-resize",ne:"nesw-resize",sw:"nesw-resize",nw:"nwse-resize",se:"nwse-resize" }[resize.edge] || "nwse-resize") : (drag?.type === "zone-edge" && drag.cursor) ? drag.cursor : (drag?.type === "revcloud-edge" && drag.cursor) ? drag.cursor : (drag?.type === "floorRegion-edge" && drag.cursor) ? drag.cursor : zoneEdge ? zoneEdge.cursor : cadCrosshair(T.crosshairColor), userSelect: "none", display: (view3d && !splitView) ? "none" : undefined, transform: canvasRotation ? `rotate(${canvasRotation}deg)` : undefined, transformOrigin: "center", transition: canvasRotNoTransition ? "none" : "transform 0.25s cubic-bezier(0.4,0,0.2,1)" }}
             onMouseDown={onDown} onMouseMove={onMove} onMouseUp={onUp} onMouseLeave={onUp} onWheel={onWheel}>
             <defs>
               <filter id="glow-budget" x="-50%" y="-50%" width="200%" height="200%">
@@ -4147,6 +4495,27 @@ export default function TestfitTool() {
                 <line x1="0" y1="12" x2="12" y2="0" stroke="#9A9488" strokeWidth="0.6" opacity="0.4"/>
                 <line x1="-3" y1="12" x2="9" y2="0" stroke="#9A9488" strokeWidth="0.6" opacity="0.4"/>
               </pattern>
+              {/* Floor-region material hatches */}
+              <pattern id="floor-hatch-wood" patternUnits="userSpaceOnUse" width="20" height="6">
+                <rect width="20" height="6" fill="#C8A878" opacity="0.18"/>
+                <line x1="0" y1="0" x2="20" y2="0" stroke="#8B6914" strokeWidth="0.5" opacity="0.45"/>
+                <line x1="0" y1="3" x2="20" y2="3" stroke="#8B6914" strokeWidth="0.3" opacity="0.25"/>
+              </pattern>
+              <pattern id="floor-hatch-concrete" patternUnits="userSpaceOnUse" width="8" height="8">
+                <rect width="8" height="8" fill="#AEABA4" opacity="0.18"/>
+                <circle cx="2" cy="2" r="0.5" fill="#5a5a5a" opacity="0.55"/>
+                <circle cx="6" cy="5" r="0.4" fill="#5a5a5a" opacity="0.45"/>
+                <circle cx="4" cy="7" r="0.35" fill="#5a5a5a" opacity="0.4"/>
+              </pattern>
+              <pattern id="floor-hatch-vinyl" patternUnits="userSpaceOnUse" width="12" height="12">
+                <rect width="12" height="12" fill="#BFA889" opacity="0.18"/>
+                <line x1="0" y1="0" x2="12" y2="0" stroke="#604020" strokeWidth="0.5" opacity="0.5"/>
+                <line x1="0" y1="0" x2="0" y2="12" stroke="#604020" strokeWidth="0.5" opacity="0.5"/>
+              </pattern>
+              <pattern id="floor-hatch-carpet" patternUnits="userSpaceOnUse" width="6" height="6">
+                <rect width="6" height="6" fill="#786758" opacity="0.2"/>
+                <line x1="0" y1="6" x2="6" y2="0" stroke="#4a3a2a" strokeWidth="0.4" opacity="0.4"/>
+              </pattern>
             </defs>
             <g transform={`translate(${viewOff.x},${viewOff.y}) scale(${zoom})`}>
               {showGrid && (() => {
@@ -4211,6 +4580,41 @@ export default function TestfitTool() {
               })()}
               {bgImage && <image href={bgImage} x={bgOffset.x} y={bgOffset.y} style={{ opacity: bgOpacity, transform: `scale(${bgScale})`, transformOrigin: `${bgOffset.x}px ${bgOffset.y}px` }} preserveAspectRatio="xMidYMid meet" />}
 
+              {/* Floor regions — hatch fill, above bg image / below walls */}
+              {visibleFloorRegions && floorRegions.map(fr => {
+                if (!phaseVisible(fr.phase)) return null;
+                if (!fr.points || fr.points.length < 3) return null;
+                const sel = (selectedId === fr.id && selType === "floorRegion") || selectedIds.includes(fr.id);
+                const d = "M " + fr.points.map(p => `${p.x},${p.y}`).join(" L ") + " Z";
+                const hatchId = FLOOR_MATERIAL_HATCHES[fr.material] || FLOOR_MATERIAL_HATCHES.Wood;
+                const c = polyCentroid(fr.points);
+                return <g key={fr.id} style={{ cursor: tool === "select" ? "pointer" : "inherit" }}
+                  onClick={() => { if (tool === "select") { setSelectedId(fr.id); setSelType("floorRegion"); setSelectedIds([fr.id]); } }}>
+                  <path d={d} fill={`url(#${hatchId})`} stroke={sel ? T.accent : "transparent"} strokeWidth={sel ? 1.5 : 0} strokeDasharray={sel ? "4 3" : "none"} />
+                  {sel && fr.points.map((a, ei) => {
+                    const b = fr.points[(ei + 1) % fr.points.length];
+                    return <line key={"e" + ei} x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke="transparent" strokeWidth={16} strokeLinecap="round" style={{ cursor: wallResizeCursor(a.x, a.y, b.x, b.y) }} />;
+                  })}
+                  {fr.label && <text x={c.x} y={c.y} textAnchor="middle" dominantBaseline="middle" fontSize={11} fill={T.textMuted} fontFamily="inherit" style={{ pointerEvents: "none" }}>{fr.label}</text>}
+                  {sel && fr.points.map((p, i) => <circle key={i} cx={p.x} cy={p.y} r={5} fill={T.accent} stroke={T.nodeFill} strokeWidth={1.5} style={{ cursor: "move" }} />)}
+                </g>;
+              })}
+              {/* Floor region ghost while drawing */}
+              {tool === "floorRegion" && drawFloorRegion && drawFloorRegion.points.length >= 1 && ghostPos && (() => {
+                const preview = [...drawFloorRegion.points, ghostPos];
+                const closeable = preview.length > 3 && dst(ghostPos.x, ghostPos.y, drawFloorRegion.points[0].x, drawFloorRegion.points[0].y) < SNAP_R * 1.5;
+                const d = preview.length >= 3 ? "M " + preview.map(p => `${p.x},${p.y}`).join(" L ") + " Z" : "M " + preview.map(p => `${p.x},${p.y}`).join(" L ");
+                return <g style={{ pointerEvents: "none" }}>
+                  <path d={d} fill={closeable ? T.accent + "20" : "none"} stroke={T.accent} strokeWidth={1.5} strokeDasharray={preview.length >= 3 ? "none" : "5 3"} opacity={0.7} />
+                  {drawFloorRegion.points.map((pt, i) => <circle key={i} cx={pt.x} cy={pt.y} r={i === 0 ? 5 : 3} fill={T.accent} opacity={0.8} />)}
+                  {ghostPos.snapped && !closeable && <>
+                    <circle cx={ghostPos.x} cy={ghostPos.y} r={SNAP_R * 1.5} fill={T.accent} fillOpacity={0.12} stroke={T.accent} strokeWidth={1.5} strokeDasharray="3 2" />
+                    <circle cx={ghostPos.x} cy={ghostPos.y} r={3} fill={T.accent} />
+                  </>}
+                  {closeable && <circle cx={drawFloorRegion.points[0].x} cy={drawFloorRegion.points[0].y} r={SNAP_R * 1.5} fill="none" stroke={T.accent} strokeWidth={1} opacity={0.5} strokeDasharray="3 2" />}
+                </g>;
+              })()}
+
               {/* Walls — two-pass render: fills first, then all edge lines on top.
                   This prevents double-hatching at overlaps and keeps edges always visible. */}
               {(() => {
@@ -4235,7 +4639,7 @@ export default function TestfitTool() {
                     const ody = atN1 ? oc.y2 - oc.y1 : oc.y1 - oc.y2;
                     const olen = Math.hypot(odx, ody) || 1;
                     const oux = odx/olen, ouy = ody/olen;
-                    const owk = WALL_KINDS[ow.kind || "existing"];
+                    const owk = wallKinds[ow.kind || "existing"];
                     const oTI = ow.kind === "pony" ? (ow.ponyDepth || 6) : (owk.thickness || 5);
                     const oHalfT = (oTI / 12) * pxPerFoot / 2;
                     return { oux, ouy, onx: -ouy, ony: oux, oHalfT, na: norm(Math.atan2(ouy, oux)) };
@@ -4262,7 +4666,7 @@ export default function TestfitTool() {
                   if (!phaseVisible(w.phase)) return null;
                   const c = wc(w); if (!c) return null;
                   const sel = (selectedId === w.id && selType === "wall") || selectedIds.includes(w.id);
-                  const wk = WALL_KINDS[w.kind || "existing"];
+                  const wk = wallKinds[w.kind || "existing"];
                   const wLen = dst(c.x1, c.y1, c.x2, c.y2); if (wLen < 1) return null;
                   const dx = c.x2 - c.x1, dy = c.y2 - c.y1;
                   const wallThicknessIn = w.kind === "pony" ? (w.ponyDepth || 6) : (wk.thickness || 5);
@@ -4347,7 +4751,7 @@ export default function TestfitTool() {
                       return { x: drawChain.lastX + Math.cos(angle) * lockedDist, y: drawChain.lastY + Math.sin(angle) * lockedDist, snap: false };
                     })()
                   : cursorPos;
-                const pwk = WALL_KINDS[wallKind];
+                const pwk = wallKinds[wallKind];
                 const pdx = effectiveCursor.x - drawChain.lastX, pdy = effectiveCursor.y - drawChain.lastY;
                 const pLen = Math.hypot(pdx, pdy);
                 if (pLen < 2) return null;
@@ -4584,6 +4988,51 @@ export default function TestfitTool() {
                   <circle cx={ghostPos.x} cy={ghostPos.y} r={SNAP_R * 1.5}
                     fill={T.accent} fillOpacity={0.12} stroke={T.accent} strokeWidth={1.5} strokeDasharray="3 2" />
                   <circle cx={ghostPos.x} cy={ghostPos.y} r={3} fill={T.accent} />
+                </g>
+              )}
+
+              {/* Flow paths — translucent walkway band + dashed centerline */}
+              {visibleFlowPaths && flowPaths.map(fp => {
+                if (!phaseVisible(fp.phase)) return null;
+                if (!fp.points || fp.points.length < 2) return null;
+                if (drawFlowPath?.editingId === fp.id) return null; // hidden while being extended (ghost shows it)
+                const sel = (selectedId === fp.id && selType === "flowPath") || selectedIds.includes(fp.id);
+                const d = "M " + fp.points.map(p => `${p.x},${p.y}`).join(" L ");
+                const bandPx = (fp.width / 12) * pxPerFoot;
+                const cx = fp.points.reduce((s,p)=>s+p.x,0)/fp.points.length, cy = fp.points.reduce((s,p)=>s+p.y,0)/fp.points.length;
+                return <g key={fp.id} style={{ cursor: tool === "select" ? "pointer" : "inherit" }}
+                  onClick={() => { if (tool === "select") { setSelectedId(fp.id); setSelType("flowPath"); setSelectedIds([fp.id]); } }}>
+                  <path d={d} fill="none" stroke={fp.color} strokeWidth={bandPx} strokeOpacity={sel ? 0.32 : 0.22}
+                    strokeLinecap="round" strokeLinejoin="round" />
+                  <path d={d} fill="none" stroke={fp.color} strokeWidth={1.5} strokeDasharray="6 5"
+                    strokeOpacity={0.85} strokeLinecap="round" style={{ pointerEvents: "none" }} />
+                  {fp.label && <text x={cx} y={cy} textAnchor="middle" dominantBaseline="middle" fontSize={11}
+                    fill={fp.color} fontFamily="inherit" style={{ pointerEvents: "none" }}>{fp.label}</text>}
+                  {sel && fp.points.map((p, i) => <circle key={i} cx={p.x} cy={p.y} r={5}
+                    fill={fp.color} stroke={T.nodeFill} strokeWidth={1.5} style={{ cursor: "move" }} />)}
+                </g>;
+              })}
+
+              {/* Flow path ghost preview while drawing */}
+              {tool === "flowPath" && drawFlowPath && drawFlowPath.points.length >= 1 && ghostPos && (() => {
+                const preview = [...drawFlowPath.points, ghostPos];
+                const d = "M " + preview.map(p => `${p.x},${p.y}`).join(" L ");
+                const bandPx = (36 / 12) * pxPerFoot;
+                return <g style={{ pointerEvents: "none" }}>
+                  <path d={d} fill="none" stroke="#4A90D9" strokeWidth={bandPx} strokeOpacity={0.16}
+                    strokeLinecap="round" strokeLinejoin="round" />
+                  <path d={d} fill="none" stroke="#4A90D9" strokeWidth={1.5} strokeDasharray="6 5" opacity={0.7} />
+                  {drawFlowPath.points.map((pt, i) => <circle key={i} cx={pt.x} cy={pt.y} r={i === 0 ? 5 : 3} fill="#4A90D9" opacity={0.85} />)}
+                  {ghostPos.snapped && <>
+                    <circle cx={ghostPos.x} cy={ghostPos.y} r={SNAP_R * 1.5} fill="#4A90D9" fillOpacity={0.12} stroke="#4A90D9" strokeWidth={1.5} strokeDasharray="3 2" />
+                    <circle cx={ghostPos.x} cy={ghostPos.y} r={3} fill="#4A90D9" />
+                  </>}
+                </g>;
+              })()}
+              {tool === "flowPath" && !drawFlowPath && ghostPos && ghostPos.snapped && (
+                <g style={{ pointerEvents: "none" }}>
+                  <circle cx={ghostPos.x} cy={ghostPos.y} r={SNAP_R * 1.5} fill="#4A90D9" fillOpacity={0.12} stroke="#4A90D9" strokeWidth={1.5} strokeDasharray="3 2" />
+                  <circle cx={ghostPos.x} cy={ghostPos.y} r={3} fill="#4A90D9" />
                 </g>
               )}
 
@@ -4833,12 +5282,12 @@ export default function TestfitTool() {
           </svg>
 
           {/* Detail panel */}
-          {(selZone || selMarker || selWall || selNode || selDoor || selWindow || selColumn || selLabel || selRevCloud || (selectedIds.length > 1 && multiSelType)) && <div style={S.det}>
+          {(selZone || selMarker || selWall || selNode || selDoor || selWindow || selColumn || selLabel || selRevCloud || selFlowPath || selFloorRegion || selType === "floor" || (selectedIds.length > 1 && multiSelType)) && <div style={S.det}>
             {selectedIds.length <= 1 && selNode && <><div style={{ fontSize: 11, color: T.textBright, marginBottom: 6, fontWeight: 600 }}>Node · {wallsAt(selNode.id).length} walls</div><button style={S.del} onClick={delSel}>Delete Node + Walls</button></>}
-            {selectedIds.length <= 1 && selWall && (() => { const wk = WALL_KINDS[selWall.kind || "existing"]; return <>
+            {selectedIds.length <= 1 && selWall && (() => { const wk = wallKinds[selWall.kind || "existing"]; return <>
               <div style={{ fontSize: 12, color: wk.color, marginBottom: 10, fontWeight: 600 }}>{wk.label} Wall · {ft(wl(selWall))}</div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginBottom: 10 }}>
-                {Object.entries(WALL_KINDS).map(([k, v]) => <button key={k} style={{ padding: "6px 8px", background: (selWall.kind || "existing") === k ? v.color + "40" : "transparent", color: (selWall.kind || "existing") === k ? T.textBright : v.color, border: "1.5px solid " + v.color + "50", borderRadius: 5, fontSize: 9, cursor: "pointer", fontFamily: "inherit", fontWeight: 500, transition: "all 0.12s ease" }}
+                {Object.entries(wallKinds).map(([k, v]) => <button key={k} style={{ padding: "6px 8px", background: (selWall.kind || "existing") === k ? v.color + "40" : "transparent", color: (selWall.kind || "existing") === k ? T.textBright : v.color, border: "1.5px solid " + v.color + "50", borderRadius: 5, fontSize: 9, cursor: "pointer", fontFamily: "inherit", fontWeight: 500, transition: "all 0.12s ease" }}
                   onClick={() => updWall({ kind: k })}>{v.label}</button>)}
               </div>
               <div style={{ marginBottom: 8 }}><div style={S.lbl}>Material</div>
@@ -5011,6 +5460,86 @@ export default function TestfitTool() {
                 <button style={S.del} onClick={delSel}>Delete Cloud</button>
               </>;
             })()}
+            {selectedIds.length <= 1 && selFlowPath && <>
+              <div style={{ fontSize: 12, color: selFlowPath.color, marginBottom: 10, fontWeight: 600 }}>Flow Path</div>
+              <div style={{ marginBottom: 8 }}>
+                <div style={S.lbl}>Width</div>
+                <SliderInput value={selFlowPath.width} min={18} max={96} step={6} onChange={v => updFlowPath({ width: v })}
+                  accent={selFlowPath.color} textColor={T.textBright} bgColor={T.bg2} borderColor={T.border} />
+                <div style={{ fontSize: 9, color: T.textDim, marginTop: 2 }}>{ft(selFlowPath.width / 12 * pxPerFoot)} wide</div>
+              </div>
+              <div style={{ marginBottom: 8 }}>
+                <div style={S.lbl}>Label (optional)</div>
+                <input style={S.inp} value={selFlowPath.label || ""} onChange={e => updFlowPath({ label: e.target.value })} placeholder="Main aisle…" />
+              </div>
+              <div style={{ marginBottom: 10 }}>
+                <div style={S.lbl}>Color</div>
+                <div style={{ display: "flex", gap: 6 }}>
+                  {FLOW_PATH_COLORS.map(c =>
+                    <button key={c} title={c}
+                      style={{ width: 22, height: 22, borderRadius: 4, background: c, cursor: "pointer", border: "none", outline: "none",
+                        boxShadow: selFlowPath.color === c ? "0 0 0 2px " + T.accent : "0 0 0 1.5px rgba(255,255,255,0.12)" }}
+                      onClick={() => updFlowPath({ color: c })} />)}
+                </div>
+              </div>
+              <div style={{ marginBottom: 10 }}>
+                <div style={S.lbl}>Version</div>
+                <select value={selFlowPath.phase} onChange={e => updFlowPath({ phase: e.target.value })}
+                  style={{ ...S.inp, cursor: "pointer", color: T.textBright, background: T.bg2, fontFamily: "inherit", fontSize: 11 }}>
+                  {phases.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                </select>
+              </div>
+              <button style={S.del} onClick={delSel}>Delete Flow Path</button>
+            </>}
+            {selectedIds.length <= 1 && selFloorRegion && (() => {
+              const FR_COLORS = { "Wood": "#C8A878", "Concrete": "#AEABA4", "Vinyl": "#BFA889", "Carpet": "#786758" };
+              return <>
+                <div style={{ fontSize: 12, color: T.textBright, marginBottom: 10, fontWeight: 600 }}>Floor Region · {selFloorRegion.material}</div>
+                <div style={{ marginBottom: 10 }}>
+                  <div style={S.lbl}>Material</div>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+                    {FLOOR_MATERIALS.map(m => { const isSel = selFloorRegion.material === m; const hex = FR_COLORS[m];
+                      return <button key={m} onClick={() => updFloorRegion({ material: m })}
+                        style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 9px", background: isSel ? hex + "30" : "transparent",
+                          border: "1.5px solid " + (isSel ? hex : T.border), borderRadius: 5, cursor: "pointer", fontFamily: "inherit",
+                          color: isSel ? T.textBright : T.textMuted, fontSize: 10, fontWeight: isSel ? 600 : 400 }}>
+                        <span style={{ width: 12, height: 12, borderRadius: 3, background: hex, flexShrink: 0 }} />{m}
+                      </button>; })}
+                  </div>
+                </div>
+                <div style={{ marginBottom: 8 }}>
+                  <div style={S.lbl}>Label (optional)</div>
+                  <input style={S.inp} value={selFloorRegion.label || ""} onChange={e => updFloorRegion({ label: e.target.value })} placeholder="Bathroom, Kitchen…" />
+                </div>
+                <div style={{ marginBottom: 10 }}>
+                  <div style={S.lbl}>Version</div>
+                  <select value={selFloorRegion.phase} onChange={e => updFloorRegion({ phase: e.target.value })}
+                    style={{ ...S.inp, cursor: "pointer", color: T.textBright, background: T.bg2, fontFamily: "inherit", fontSize: 11 }}>
+                    {phases.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                  </select>
+                </div>
+                <button style={S.del} onClick={delSel}>Delete Floor Region</button>
+              </>;
+            })()}
+            {selectedIds.length <= 1 && selType === "floor" && (() => {
+              const FR_COLORS = { "Wood": "#C8A878", "Concrete": "#AEABA4", "Vinyl": "#BFA889", "Carpet": "#786758" };
+              return <>
+                <div style={{ fontSize: 12, color: T.textBright, marginBottom: 10, fontWeight: 600 }}>Floor · {floorMaterial}</div>
+                <div style={{ marginBottom: 10 }}>
+                  <div style={S.lbl}>Material</div>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+                    {FLOOR_MATERIALS.map(m => { const isSel = floorMaterial === m; const hex = FR_COLORS[m];
+                      return <button key={m} onClick={() => setFloorMaterial(m)}
+                        style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 9px", background: isSel ? hex + "30" : "transparent",
+                          border: "1.5px solid " + (isSel ? hex : T.border), borderRadius: 5, cursor: "pointer", fontFamily: "inherit",
+                          color: isSel ? T.textBright : T.textMuted, fontSize: 10, fontWeight: isSel ? 600 : 400 }}>
+                        <span style={{ width: 12, height: 12, borderRadius: 3, background: hex, flexShrink: 0 }} />{m}
+                      </button>; })}
+                  </div>
+                </div>
+                <div style={{ fontSize: 10, color: T.textDim, fontStyle: "italic" }}>Visible in Detailed 3D view. Click elsewhere to deselect.</div>
+              </>;
+            })()}
             {selectedIds.length <= 1 && selColumn && <>
               <div style={{ fontSize: 12, color: "#9A9488", marginBottom: 10, fontWeight: 600 }}>Column · {selColumn.size}"</div>
               <div style={{ marginBottom: 8 }}>
@@ -5142,11 +5671,11 @@ export default function TestfitTool() {
             {selectedIds.length > 1 && multiSelType === "wall" && (() => {
               const items = multiSelItems;
               const kind = cv(items, "kind") || "existing";
-              const wk = WALL_KINDS[kind];
+              const wk = wallKinds[kind];
               return <>
                 <div style={{ fontSize: 12, color: wk?.color || "#9A9488", marginBottom: 10, fontWeight: 600 }}>{items.length} Walls Selected</div>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginBottom: 10 }}>
-                  {Object.entries(WALL_KINDS).map(([k, v]) => <button key={k} style={{ padding: "6px 8px", background: kind === k ? v.color + "40" : "transparent", color: kind === k ? T.textBright : v.color, border: "1.5px solid " + v.color + "50", borderRadius: 5, fontSize: 9, cursor: "pointer", fontFamily: "inherit", fontWeight: 500, transition: "all 0.12s ease" }}
+                  {Object.entries(wallKinds).map(([k, v]) => <button key={k} style={{ padding: "6px 8px", background: kind === k ? v.color + "40" : "transparent", color: kind === k ? T.textBright : v.color, border: "1.5px solid " + v.color + "50", borderRadius: 5, fontSize: 9, cursor: "pointer", fontFamily: "inherit", fontWeight: 500, transition: "all 0.12s ease" }}
                     onClick={() => updWall({ kind: k })}>{v.label}</button>)}
                 </div>
                 <div style={{ marginBottom: 8 }}><div style={S.lbl}>Material</div>
@@ -5254,13 +5783,13 @@ export default function TestfitTool() {
           {/* Tool options panel — shown when a placement tool is active */}
           {!selectedId && ((mode === "build" && (isWallTool(tool) || tool === "door" || tool === "window" || tool === "column")) || (mode === "itmep" && (tool === "marker" || tool === "outlet" || tool === "lighting")) || (mode === "zone" && tool === "zone")) && <div style={S.det}>
 
-            {mode === "build" && isWallTool(tool) && (() => { const wk = WALL_KINDS[wallKind]; return <>
+            {mode === "build" && isWallTool(tool) && (() => { const wk = wallKinds[wallKind]; return <>
               {/* Header */}
               <div style={{ fontSize: 12, color: wk.color, marginBottom: 10, fontWeight: 600 }}>{wk.label} Wall</div>
 
               {/* Type */}
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginBottom: 10 }}>
-                {Object.entries(WALL_KINDS).map(([k, v]) => <button key={k} onClick={() => setWallKind(k)}
+                {Object.entries(wallKinds).map(([k, v]) => <button key={k} onClick={() => setWallKind(k)}
                   style={{ padding: "6px 8px", background: wallKind === k ? v.color + "40" : "transparent", color: wallKind === k ? T.textBright : v.color, border: "1.5px solid " + v.color + "50", borderRadius: 5, fontSize: 9, cursor: "pointer", fontFamily: "inherit", fontWeight: 500, transition: "all 0.12s ease" }}>
                   {v.label}
                 </button>)}
@@ -5653,13 +6182,38 @@ export default function TestfitTool() {
               <TooltipContent side="top" sideOffset={8}>Revision Cloud (N)</TooltipContent>
             </Tooltip>
 
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button style={S.toolBtn(tool === "flowPath", "#4A90D9")} onClick={() => setT("flowPath")}>
+                  <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                    <path d="M3 15 L8 7 L13 12 L17 5" stroke={tool === "flowPath" ? "#4A90D9" : T.textMuted} strokeWidth="3.5" strokeOpacity="0.3" strokeLinecap="round" strokeLinejoin="round" />
+                    <path d="M3 15 L8 7 L13 12 L17 5" stroke={tool === "flowPath" ? "#4A90D9" : T.textMuted} strokeWidth="1" strokeDasharray="2 2" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="top" sideOffset={8}>Flow Path (K)</TooltipContent>
+            </Tooltip>
+
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button style={S.toolBtn(tool === "floorRegion", "#7A9E5A")} onClick={() => setT("floorRegion")}>
+                  <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                    <rect x="3" y="3" width="14" height="14" rx="1.5" stroke={tool === "floorRegion" ? "#7A9E5A" : T.textMuted} strokeWidth="1.5" />
+                    <line x1="3" y1="8"  x2="17" y2="8"  stroke={tool === "floorRegion" ? "#7A9E5A" : T.textMuted} strokeWidth="0.8" opacity="0.6" />
+                    <line x1="3" y1="12" x2="17" y2="12" stroke={tool === "floorRegion" ? "#7A9E5A" : T.textMuted} strokeWidth="0.8" opacity="0.6" />
+                  </svg>
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="top" sideOffset={8}>Floor Region (A)</TooltipContent>
+            </Tooltip>
+
             {/* ── Build-mode tools ───────────────────────────────────── */}
             {mode === "build" && <>
               <div style={S.toolSep} />
 
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <button style={S.toolBtn(tool === "wall", WALL_KINDS[wallKind].color)} onClick={() => setT("wall")}>
+                  <button style={S.toolBtn(tool === "wall", wallKinds[wallKind].color)} onClick={() => setT("wall")}>
                     <WallIcon />
                   </button>
                 </TooltipTrigger>
@@ -5906,11 +6460,13 @@ export default function TestfitTool() {
               show3dLabels={show3dLabels} setShow3dLabels={setShow3dLabels}
               show3dDims={show3dDims}     setShow3dDims={setShow3dDims}
               style3d={style3d}
+              floorMaterial={floorMaterial}
+              floorRegions={data3d.floorRegions}
               zoneLibrary={zoneLibrary}
               visibleLayers={visibleLayers}
               visibleBuildElectrical={visibleBuildElectrical}
               visibleBuildLighting={visibleBuildLighting}
-              onSelect={(id, type) => { setSelectedId(id); setSelType(type); }}
+              onSelect={(id, type) => { setSelectedId(id); setSelType(type); setSelectedIds(id ? [id] : []); }}
             />}
 
             {/* Labels / dims toggles — top-right of 3D pane */}
