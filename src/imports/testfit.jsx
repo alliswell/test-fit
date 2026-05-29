@@ -656,6 +656,9 @@ export default function TestfitTool() {
   const [viewOff, setViewOff] = useState({ x: 0, y: 0 });
   const [zoom, setZoom] = useState(1);
   const [hoverNid, setHoverNid] = useState(null);
+  // Proximity hover — preview the nearest hoverable object as cursor approaches.
+  // Lights up at PROX_R px, brightens linearly as cursor closes in.
+  const [proxHover, setProxHover] = useState(null); // null | { type, id, x, y, dist }
   const [ghostPos, setGhostPos] = useState(null);
   const [smartGuides, setSmartGuides] = useState([]);
 
@@ -907,6 +910,46 @@ export default function TestfitTool() {
   const wl = useCallback((w) => { const c = wc(w); return c ? dst(c.x1, c.y1, c.x2, c.y2) : 0; }, [wc]);
   const wa = useCallback((w) => { const c = wc(w); return c ? (Math.atan2(c.y2 - c.y1, c.x2 - c.x1) * 180) / Math.PI : 0; }, [wc]);
   const findNear = useCallback((x, y, excl) => { let best = null, bd = SNAP_R; for (const n of nodes) { if (excl?.includes(n.id)) continue; const d = dst(x, y, n.x, n.y); if (d < bd) { best = n; bd = d; } } return best; }, [nodes]);
+  // Proximity-hover scan — broader radius than findNear (which is for click-snap).
+  // Walks wall nodes, markers, columns, doors, windows, dim endpoints, label anchors,
+  // and (when their parent is selected) zone / floor region / revcloud / flow path vertices.
+  const findProxHover = useCallback((x, y) => {
+    const PROX_R = 32;
+    let best = null, bd = PROX_R;
+    const add = (type, id, px, py, sub) => { const d = dst(x, y, px, py); if (d < bd) { bd = d; best = { type, id, x: px, y: py, dist: d, sub }; } };
+    // Wall nodes
+    for (const n of nodes) add("node", n.id, n.x, n.y);
+    // Markers
+    for (const m of markers) { if (!markerVisible(m)) continue; const rp = resolvePos(m); add("marker", m.id, rp.x, rp.y); }
+    // Columns
+    for (const c of columns) { if (!phaseVisible(c.phase)) continue; const rp = resolvePos(c); add("column", c.id, rp.x, rp.y); }
+    // Doors / windows (centers)
+    for (const dd of doors) { if (!phaseVisible(dd.phase)) continue; const rp = resolvePos(dd); add("door", dd.id, rp.x, rp.y); }
+    for (const w of windows) { if (!phaseVisible(w.phase)) continue; const rp = resolvePos(w); add("window", w.id, rp.x, rp.y); }
+    // Labels — text anchor + leader tip if present
+    for (const lbl of labels) { if (!phaseVisible(lbl.phase)) continue;
+      add("label", lbl.id, lbl.x, lbl.y);
+      if (lbl.lx != null) add("label-tip", lbl.id, lbl.lx, lbl.ly);
+    }
+    // Selected-polygon vertices (so handles preview as cursor approaches them)
+    if (selType === "zone" && selectedId) {
+      const z = zones.find(zz => zz.id === selectedId);
+      if (z?.points) { const rp = resolvePoints(z); rp.forEach((p, i) => add("zone-vertex", z.id, p.x, p.y, i)); }
+    }
+    if (selType === "floorRegion" && selectedId) {
+      const fr = floorRegions.find(r => r.id === selectedId);
+      if (fr?.points) fr.points.forEach((p, i) => add("floorRegion-vertex", fr.id, p.x, p.y, i));
+    }
+    if (selType === "revcloud" && selectedId) {
+      const rc = revClouds.find(r => r.id === selectedId);
+      if (rc?.points) rc.points.forEach((p, i) => add("revcloud-vertex", rc.id, p.x, p.y, i));
+    }
+    if (selType === "flowPath" && selectedId) {
+      const fp = flowPaths.find(r => r.id === selectedId);
+      if (fp?.points) fp.points.forEach((p, i) => add("flowPath-vertex", fp.id, p.x, p.y, i));
+    }
+    return best;
+  }, [nodes, markers, columns, doors, windows, labels, zones, floorRegions, revClouds, flowPaths, selType, selectedId, markerVisible, phaseVisible, resolvePos, resolvePoints]);
   const wallsAt = useCallback((nid) => walls.filter(w => w.n1 === nid || w.n2 === nid), [walls]);
 
   // Snap for dimension tool: snaps to any significant point on canvas
@@ -2048,7 +2091,14 @@ export default function TestfitTool() {
       return;
     }
 
-    if (tool === "select" && !drag) { const near = findNear(pos.x, pos.y); setHoverNid(near ? near.id : null); }
+    if (tool === "select" && !drag) {
+      const near = findNear(pos.x, pos.y);
+      setHoverNid(near ? near.id : null);
+      // Proximity-hover: preview the nearest hoverable as cursor approaches
+      setProxHover(findProxHover(pos.x, pos.y));
+    } else if (proxHover) {
+      setProxHover(null);
+    }
     if (tool === "dim") { const dsnap = findDimSnap(pos.x, pos.y); setGhostPos(dsnap ? { x: dsnap.x, y: dsnap.y, snapped: true } : { x: pos.x, y: pos.y, snapped: false }); }
     if (tool === "zone" || tool === "marker" || tool === "column") { setGhostPos({ x: sx, y: sy }); }
     if (tool === "revcloud") {
@@ -2539,7 +2589,7 @@ export default function TestfitTool() {
         return { ...z, x, y, w, h };
       }));
     }
-  }, [panning, panSt, canvasRotation, drawChain, drag, resize, s2c, findNear, findDimSnap, walls, wc, tool, snapToWall, snapGrid, marquee, calibrationLine, dims, drawDim, zones, zoom, rotatingMarker, outletType, lightingType, htrackAngle, nodes, doors, windows, columns, markers, activePhase, snapLabelAnchor, revClouds, drawRevCloud, flowPaths, drawFlowPath, floorRegions, drawFloorRegion, resolveDimEndpoints]);
+  }, [panning, panSt, canvasRotation, drawChain, drag, resize, s2c, findNear, findDimSnap, walls, wc, tool, snapToWall, snapGrid, marquee, calibrationLine, dims, drawDim, zones, zoom, rotatingMarker, outletType, lightingType, htrackAngle, nodes, doors, windows, columns, markers, activePhase, snapLabelAnchor, revClouds, drawRevCloud, flowPaths, drawFlowPath, floorRegions, drawFloorRegion, resolveDimEndpoints, findProxHover, proxHover]);
 
   const onUp = useCallback((e) => {
     // Commit label placement
@@ -2728,7 +2778,7 @@ export default function TestfitTool() {
       });
     }
     // No re-clipping on zone drag/vertex drag end — user controls shape manually
-    setDrag(null); setResize(null); setPanning(false); setPanSt(null); setHoverNid(null); setRotatingMarker(null); setSmartGuides([]);
+    setDrag(null); setResize(null); setPanning(false); setPanSt(null); setHoverNid(null); setProxHover(null); setRotatingMarker(null); setSmartGuides([]);
   }, [drag, resize, hoverNid, marquee, selectedIds, selectedId, mode, nodes, walls, doors, windows, zones, markers, columns, labels, revClouds, flowPaths, floorRegions, phaseVisible, resolvePos, resolvePoints, wc, lastCopyInfo, s2c, themeMode, activePhase, snapLabelAnchor]);
 
   // Smooth zoom centered on cursor
@@ -3552,7 +3602,7 @@ export default function TestfitTool() {
 
   // ── Mode system ─────────────────────────────────────────────────────
   const setT = (t) => {
-    setTool(t); setGhostPos(null); setDrawChain(null); setDrawPolyZone(null); setCursorPos(null); setDimInput(""); setDrawDim(null); setDrawRevCloud(null); setDrawFloorRegion(null);
+    setTool(t); setGhostPos(null); setDrawChain(null); setDrawPolyZone(null); setCursorPos(null); setDimInput(""); setDrawDim(null); setDrawRevCloud(null); setDrawFloorRegion(null); setProxHover(null);
     // Re-entering the flow-path tool with a flow path selected → continue it.
     if (t === "flowPath" && selType === "flowPath" && selectedId) {
       const fp = flowPaths.find(f => f.id === selectedId);
@@ -5250,8 +5300,20 @@ export default function TestfitTool() {
                 </g>;
               })}
 
+              {/* Proximity-hover preview ring — fades in as cursor approaches a hoverable */}
+              {proxHover && !marquee && tool === "select" && !drag && (() => {
+                const PROX_R = 32;
+                const fade = Math.max(0, 1 - proxHover.dist / PROX_R);
+                const r = 8 + (1 - fade) * 4;
+                return <g style={{ pointerEvents: "none" }}>
+                  <circle cx={proxHover.x} cy={proxHover.y} r={r} fill="none" stroke={T.accent} strokeWidth={1.5}
+                    opacity={0.2 + fade * 0.55} strokeDasharray="3 3" />
+                  <circle cx={proxHover.x} cy={proxHover.y} r={2.5} fill={T.accent} opacity={0.25 + fade * 0.65} />
+                </g>;
+              })()}
+
               {/* Marquee selection box */}
-              {marquee && <rect 
+              {marquee && <rect
                 x={Math.min(marquee.startX, marquee.endX)} 
                 y={Math.min(marquee.startY, marquee.endY)} 
                 width={Math.abs(marquee.endX - marquee.startX)} 
@@ -5466,7 +5528,26 @@ export default function TestfitTool() {
             {selectedIds.length <= 1 && selFlowPath && <>
               <div style={{ fontSize: 12, color: selFlowPath.color, marginBottom: 10, fontWeight: 600 }}>Flow Path</div>
               <div style={{ marginBottom: 8 }}>
-                <div style={S.lbl}>Width</div>
+                <div style={S.lbl}>Clearance Preset</div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 4, marginBottom: 6 }}>
+                  {[
+                    { w: 36, label: "Main", sub: "36\"" , tip: "Main walking path (minimum)" },
+                    { w: 48, label: "Tight", sub: "48\"" , tip: "Tighter spaces / behind seated chairs" },
+                    { w: 60, label: "Dining", sub: "60\"", tip: "Dining: scoot out + walk behind" },
+                  ].map(({ w, label, sub, tip }) => {
+                    const isSel = selFlowPath.width === w;
+                    return <button key={w} title={tip} onClick={() => updFlowPath({ width: w })}
+                      style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 1, padding: "5px 4px",
+                        background: isSel ? selFlowPath.color + "30" : "transparent",
+                        border: "1.5px solid " + (isSel ? selFlowPath.color : T.border),
+                        borderRadius: 5, cursor: "pointer", fontFamily: "inherit",
+                        color: isSel ? T.textBright : T.textMuted }}>
+                      <span style={{ fontSize: 10, fontWeight: isSel ? 600 : 500 }}>{label}</span>
+                      <span style={{ fontSize: 9, color: isSel ? selFlowPath.color : T.textDim }}>{sub}</span>
+                    </button>;
+                  })}
+                </div>
+                <div style={S.lbl}>Custom Width</div>
                 <SliderInput value={selFlowPath.width} min={18} max={96} step={6} onChange={v => updFlowPath({ width: v })}
                   accent={selFlowPath.color} textColor={T.textBright} bgColor={T.bg2} borderColor={T.border} />
                 <div style={{ fontSize: 9, color: T.textDim, marginTop: 2 }}>{ft(selFlowPath.width / 12 * pxPerFoot)} wide</div>
