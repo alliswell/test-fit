@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from "react";
-import { MousePointer2, X, Plus, DoorOpen, Ruler, Box, LayoutDashboard, RotateCcw, RotateCw, Undo2, Redo2, Tag, Settings, ChevronDown, ChevronRight, Trash2, History, GitBranch, Columns2 } from "lucide-react";
+import { MousePointer2, X, Plus, DoorOpen, Ruler, Box, LayoutDashboard, RotateCcw, RotateCw, Undo2, Redo2, Tag, Settings, ChevronDown, ChevronRight, Trash2, History, GitBranch, Columns2, PanelLeft, PanelLeftClose } from "lucide-react";
 import ZONE_LIBRARY_DEFAULTS from "../data/zone-library.json";
 import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "../app/components/ui/tooltip";
 import TestFit3D from "./testfit3d";
@@ -499,6 +499,13 @@ export default function TestfitTool() {
   const [showVersions, setShowVersions] = useState(false);
   const [showPhaseMenu, setShowPhaseMenu] = useState(false);
   const [showSaveMenu, setShowSaveMenu] = useState(false);
+  // Collapsible sidebar — start collapsed on narrow screens.
+  const [sidebarOpen, setSidebarOpen] = useState(() => (typeof window === "undefined" ? true : window.innerWidth >= 1000));
+  useEffect(() => {
+    const onResize = () => { if (window.innerWidth < 760) setSidebarOpen(false); };
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
   const [previewPhase, setPreviewPhase] = useState(null);
 
   // ── Undo / Redo ────────────────────────────────────────────────────
@@ -3566,7 +3573,7 @@ export default function TestfitTool() {
 
   const S = {
     root: { display: "flex", flexDirection: "column", height: "100vh", fontFamily: font, fontSize: 11, background: T.bg0, color: T.text, overflow: "hidden" },
-    bar: { display: "flex", alignItems: "center", background: T.bg2, borderBottom: "1px solid " + T.border, padding: "0 12px", height: "44px", flexShrink: 0, gap: "6px" },
+    bar: { display: "flex", alignItems: "center", background: T.bg2, borderBottom: "1px solid " + T.border, padding: "0 12px", height: "44px", flexShrink: 0, gap: "6px", overflowX: "auto", overflowY: "hidden" },
     mbtn: (a, c) => ({
       padding: "7px 14px",
       background: a ? c + "20" : "transparent",
@@ -3581,7 +3588,7 @@ export default function TestfitTool() {
       transition: "all 0.15s ease"
     }),
     main: { display: "flex", flex: 1, overflow: "hidden" },
-    side: { width: "220px", background: T.bg1, borderRight: "1px solid " + T.bg3, display: "flex", flexDirection: "column", flexShrink: 0 },
+    side: { width: sidebarOpen ? "clamp(190px, 18vw, 240px)" : "0px", background: T.bg1, borderRight: sidebarOpen ? "1px solid " + T.bg3 : "none", display: "flex", flexDirection: "column", flexShrink: 0, overflow: "hidden", transition: "width 0.2s cubic-bezier(0.4,0,0.2,1)" },
     body: { flex: 1, overflow: "auto", padding: "12px" },
     cv: { flex: 1, position: "relative", overflow: "hidden", background: T.canvas },
     sb: { position: "absolute", bottom: 0, left: 0, right: 0, background: T.bg1, borderTop: "1px solid " + T.bg3, padding: "4px 12px", display: "flex", justifyContent: "space-between", fontSize: "10px", color: T.textDim, zIndex: 10 },
@@ -3623,7 +3630,7 @@ export default function TestfitTool() {
       position: "absolute",
       top: "12px",
       right: "12px",
-      width: "220px",
+      width: "clamp(190px, 20vw, 230px)",
       maxHeight: "calc(100vh - 120px)",
       overflow: "auto",
       background: T.panelBg,
@@ -3698,6 +3705,15 @@ export default function TestfitTool() {
     <div style={S.root}>
       {/* ── Top Mode Bar ──────────────────────────────────────────── */}
       <div style={S.bar}>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button style={{ ...S.smBtn, padding: "5px 6px" }} onClick={() => setSidebarOpen(v => !v)}>
+              {sidebarOpen ? <PanelLeftClose size={15} /> : <PanelLeft size={15} />}
+            </button>
+          </TooltipTrigger>
+          <TooltipContent>{sidebarOpen ? "Hide panel" : "Show panel"}</TooltipContent>
+        </Tooltip>
+        <div style={{ width: 1, height: 20, background: T.border, margin: "0 3px" }} />
         {/* Phase Selector */}
         {(() => {
           const ap = phases.find(p => p.id === activePhase);
@@ -3856,19 +3872,6 @@ export default function TestfitTool() {
                   </button>
                 </div>
               )}
-              {/* Floor material — project default, shown in Detailed 3D */}
-              <div style={S.sec}>
-                <div style={S.sh}>Floor</div>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
-                  {FLOOR_MATERIALS.map(m => { const isSel = floorMaterial === m; const hex = FLOOR_MATERIAL_HEX[m];
-                    return <button key={m} onClick={() => { setFloorMaterial(m); setSelType("floor"); setSelectedId(null); setSelectedIds([]); }}
-                      style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 9px", background: isSel ? hex + "30" : "transparent",
-                        border: "1.5px solid " + (isSel ? hex : T.border), borderRadius: 5, cursor: "pointer", fontFamily: "inherit",
-                        color: isSel ? T.textBright : T.textMuted, fontSize: 10, fontWeight: isSel ? 600 : 400, transition: "all 0.12s ease" }}>
-                      <span style={{ width: 12, height: 12, borderRadius: 3, background: hex, flexShrink: 0, boxShadow: "0 0 0 1px rgba(0,0,0,0.1) inset" }} />{m}
-                    </button>; })}
-                </div>
-              </div>
               {/* Drawing Scale — hidden, state + functionality preserved */}
               <div style={S.sec}>
                 <div style={S.sh}>Summary</div>
