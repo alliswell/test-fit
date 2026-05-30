@@ -188,6 +188,16 @@ const WINDOW_TYPES = ["Window", "Cut Opening"];
 
 const FLOW_PATH_COLORS = ["#4A90D9", "#2BB3A3", "#E0A030", "#9B6BD6"]; // blue, teal, amber, violet
 
+// Drag types where proximity-hover preview should stay live (so nearby snap
+// targets light up as the user drags a face/edge/vertex/element near them).
+const PROX_DRAG_TYPES = new Set([
+  "node", "marker", "door", "window", "column",
+  "zone", "zone-vertex", "zone-edge",
+  "revcloud", "revcloud-vertex", "revcloud-edge",
+  "floorRegion", "floorRegion-vertex", "floorRegion-edge",
+  "flowPath", "flowPath-vertex",
+]);
+
 const WALL_MATERIALS = ["Drywall", "Brick", "CMU / Block", "Concrete", "Plaster", "Other"];
 const WALL_MATERIAL_HATCHES = {
   "Drywall":     "mat-drywall",
@@ -917,21 +927,27 @@ export default function TestfitTool() {
     const PROX_R = 32;
     let best = null, bd = PROX_R;
     const add = (type, id, px, py, sub) => { const d = dst(x, y, px, py); if (d < bd) { bd = d; best = { type, id, x: px, y: py, dist: d, sub }; } };
-    // Wall nodes
-    for (const n of nodes) add("node", n.id, n.x, n.y);
-    // Markers
-    for (const m of markers) { if (!markerVisible(m)) continue; const rp = resolvePos(m); add("marker", m.id, rp.x, rp.y); }
-    // Columns
-    for (const c of columns) { if (!phaseVisible(c.phase)) continue; const rp = resolvePos(c); add("column", c.id, rp.x, rp.y); }
-    // Doors / windows (centers)
-    for (const dd of doors) { if (!phaseVisible(dd.phase)) continue; const rp = resolvePos(dd); add("door", dd.id, rp.x, rp.y); }
-    for (const w of windows) { if (!phaseVisible(w.phase)) continue; const rp = resolvePos(w); add("window", w.id, rp.x, rp.y); }
-    // Labels — text anchor + leader tip if present
+    // ── Per-mode element rules — mirrors hitTest selection rules ──
+    // build : nodes / columns / doors / windows / power-layer markers
+    // zone  : nothing (zones aren't node-like; vertices handled below)
+    // itmep : markers (all layers)
+    // budget: no elements selectable
+    if (mode === "build") {
+      for (const n of nodes) add("node", n.id, n.x, n.y);
+      for (const c of columns) { if (!phaseVisible(c.phase)) continue; const rp = resolvePos(c); add("column", c.id, rp.x, rp.y); }
+      for (const dd of doors) { if (!phaseVisible(dd.phase)) continue; const rp = resolvePos(dd); add("door", dd.id, rp.x, rp.y); }
+      for (const w of windows) { if (!phaseVisible(w.phase)) continue; const rp = resolvePos(w); add("window", w.id, rp.x, rp.y); }
+      for (const m of markers) { if (m.layer !== "power" || !markerVisible(m)) continue; const rp = resolvePos(m); add("marker", m.id, rp.x, rp.y); }
+    } else if (mode === "itmep") {
+      for (const m of markers) { if (!markerVisible(m)) continue; const rp = resolvePos(m); add("marker", m.id, rp.x, rp.y); }
+    }
+    // ── Universal annotations (available in every mode that allows selecting them) ──
     for (const lbl of labels) { if (!phaseVisible(lbl.phase)) continue;
       add("label", lbl.id, lbl.x, lbl.y);
       if (lbl.lx != null) add("label-tip", lbl.id, lbl.lx, lbl.ly);
     }
-    // Selected-polygon vertices (so handles preview as cursor approaches them)
+    // Selected-polygon vertices — the parent type is already mode-gated by being selectable,
+    // and selType only equals these values when the parent is in fact selected.
     if (selType === "zone" && selectedId) {
       const z = zones.find(zz => zz.id === selectedId);
       if (z?.points) { const rp = resolvePoints(z); rp.forEach((p, i) => add("zone-vertex", z.id, p.x, p.y, i)); }
@@ -949,7 +965,7 @@ export default function TestfitTool() {
       if (fp?.points) fp.points.forEach((p, i) => add("flowPath-vertex", fp.id, p.x, p.y, i));
     }
     return best;
-  }, [nodes, markers, columns, doors, windows, labels, zones, floorRegions, revClouds, flowPaths, selType, selectedId, markerVisible, phaseVisible, resolvePos, resolvePoints]);
+  }, [mode, nodes, markers, columns, doors, windows, labels, zones, floorRegions, revClouds, flowPaths, selType, selectedId, markerVisible, phaseVisible, resolvePos, resolvePoints]);
   const wallsAt = useCallback((nid) => walls.filter(w => w.n1 === nid || w.n2 === nid), [walls]);
 
   // Snap for dimension tool: snaps to any significant point on canvas
@@ -2096,6 +2112,11 @@ export default function TestfitTool() {
       setHoverNid(near ? near.id : null);
       // Proximity-hover: preview the nearest hoverable as cursor approaches
       setProxHover(findProxHover(pos.x, pos.y));
+    } else if (drag && PROX_DRAG_TYPES.has(drag.type)) {
+      // While dragging a face/edge/vertex/element, keep the proximity preview
+      // alive (excluding the dragged item itself) so nearby snap targets glow.
+      const ph = findProxHover(pos.x, pos.y);
+      setProxHover(ph && ph.id !== drag.id ? ph : null);
     } else if (proxHover) {
       setProxHover(null);
     }
@@ -3400,7 +3421,7 @@ export default function TestfitTool() {
     const cross = (fx - hx) * (ey - hy) - (fy - hy) * (ex - hx);
     const sweep = cross > 0 ? 1 : 0;
     const isCaseOpening = d.doorType === "Case Opening";
-    return <g style={{ cursor: tool === "select" ? "pointer" : "inherit" }}>
+    return <g style={{ cursor: tool === "select" && mode === "build" ? "pointer" : "inherit" }}>
       <circle cx={d.x} cy={d.y} r={wpx / 2 + 8} fill="transparent" />
       {isCaseOpening ? <>
         <line x1={d.x - wdx * wpx / 2} y1={d.y - wdy * wpx / 2} x2={d.x + wdx * wpx / 2} y2={d.y + wdy * wpx / 2} stroke={sel ? T.nodeFill : T.uiDoor + "80"} strokeWidth={2} strokeDasharray="4 3" />
@@ -3426,7 +3447,7 @@ export default function TestfitTool() {
       const nx = -Math.sin(rad) * 3, ny = Math.cos(rad) * 3;
       // Jamb hatch length along the opening direction
       const jx = Math.cos(rad) * 4, jy = Math.sin(rad) * 4;
-      return <g style={{ cursor: tool === "select" ? "pointer" : "inherit" }}>
+      return <g style={{ cursor: tool === "select" && mode === "build" ? "pointer" : "inherit" }}>
         <line x1={w.x - dx} y1={w.y - dy} x2={w.x + dx} y2={w.y + dy} stroke="transparent" strokeWidth={12} />
         {/* Top and bottom lines of opening rectangle */}
         <line x1={w.x - dx + nx} y1={w.y - dy + ny} x2={w.x + dx + nx} y2={w.y + dy + ny} stroke={col} strokeWidth={1.5} />
@@ -3440,7 +3461,7 @@ export default function TestfitTool() {
       </g>;
     }
     const nx = -Math.sin(rad) * 3, ny = Math.cos(rad) * 3;
-    return <g style={{ cursor: tool === "select" ? "pointer" : "inherit" }}>
+    return <g style={{ cursor: tool === "select" && mode === "build" ? "pointer" : "inherit" }}>
       <line x1={w.x - dx} y1={w.y - dy} x2={w.x + dx} y2={w.y + dy} stroke="transparent" strokeWidth={12} />
       <line x1={w.x - dx + nx} y1={w.y - dy + ny} x2={w.x + dx + nx} y2={w.y + dy + ny} stroke={sel ? T.nodeFill : "#60A0C8"} strokeWidth={1.5} />
       <line x1={w.x - dx - nx} y1={w.y - dy - ny} x2={w.x + dx - nx} y2={w.y + dy - ny} stroke={sel ? T.nodeFill : "#60A0C8"} strokeWidth={1.5} />
@@ -3508,7 +3529,7 @@ export default function TestfitTool() {
       const angleDeg = (marker.angle || 0) * 180 / Math.PI;
       const isSurface = compData.mount === "surface";
       const isQuad = compData.outletCount === 4;
-      return <g transform={`translate(${marker.x},${marker.y}) rotate(${angleDeg})`} style={{ cursor: tool === "select" ? "pointer" : "inherit" }}>
+      return <g transform={`translate(${marker.x},${marker.y}) rotate(${angleDeg})`} style={{ cursor: tool === "select" && (mode === "itmep" || (mode === "build" && marker.layer === "power")) ? "pointer" : "inherit" }}>
         <circle cx={0} cy={0} r={r + 6} fill="transparent" />
         {isSurface && <rect x={-(r+4)} y={-(r+4)} width={(r+4)*2} height={(r+4)*2} fill="none" stroke={color} strokeWidth={1} strokeDasharray="3 2" rx={2} style={{ pointerEvents: "none" }} />}
         <circle cx={0} cy={0} r={r} fill={color + "18"} stroke={color} strokeWidth={strokeW} style={{ pointerEvents: "none" }} />
@@ -3517,7 +3538,7 @@ export default function TestfitTool() {
       </g>;
     }
     if (symbol === "outlet_ceiling") {
-      return <g style={{ cursor: tool === "select" ? "pointer" : "inherit" }}>
+      return <g style={{ cursor: tool === "select" && (mode === "itmep" || (mode === "build" && marker.layer === "power")) ? "pointer" : "inherit" }}>
         <circle cx={marker.x} cy={marker.y} r={r + 6} fill="transparent" />
         <circle cx={marker.x} cy={marker.y} r={r} fill="none" stroke={color} strokeWidth={strokeW} style={{ pointerEvents: "none" }} />
         <line x1={marker.x - r} y1={marker.y} x2={marker.x + r} y2={marker.y} stroke={color} strokeWidth={strokeW} style={{ pointerEvents: "none" }} />
@@ -3528,7 +3549,7 @@ export default function TestfitTool() {
     if (symbol === "switch") {
       const angleDeg = (marker.angle || 0) * 180 / Math.PI;
       const lbl = compData?.letter || "S";
-      return <g transform={`translate(${marker.x},${marker.y}) rotate(${angleDeg})`} style={{ cursor: tool === "select" ? "pointer" : "inherit" }}>
+      return <g transform={`translate(${marker.x},${marker.y}) rotate(${angleDeg})`} style={{ cursor: tool === "select" && (mode === "itmep" || (mode === "build" && marker.layer === "power")) ? "pointer" : "inherit" }}>
         <circle cx={0} cy={0} r={r + 6} fill="transparent" />
         {/* Square body */}
         <rect x={-r} y={-r} width={r * 2} height={r * 2} fill={color + "18"} stroke={color} strokeWidth={strokeW} rx={2} style={{ pointerEvents: "none" }} />
@@ -3541,7 +3562,7 @@ export default function TestfitTool() {
     if (symbol === "panel") {
       const angleDeg = (marker.angle || 0) * 180 / Math.PI;
       const pw = r * 2.2, ph = r * 3;
-      return <g transform={`translate(${marker.x},${marker.y}) rotate(${angleDeg})`} style={{ cursor: tool === "select" ? "pointer" : "inherit" }}>
+      return <g transform={`translate(${marker.x},${marker.y}) rotate(${angleDeg})`} style={{ cursor: tool === "select" && (mode === "itmep" || (mode === "build" && marker.layer === "power")) ? "pointer" : "inherit" }}>
         <rect x={-(pw / 2) - 4} y={-(ph / 2) - 4} width={pw + 8} height={ph + 8} fill="transparent" />
         {/* Panel body */}
         <rect x={-pw / 2} y={-ph / 2} width={pw} height={ph} fill={color + "18"} stroke={color} strokeWidth={selected ? 2 : 1.5} rx={2} style={{ pointerEvents: "none" }} />
@@ -3556,7 +3577,7 @@ export default function TestfitTool() {
       const sz = compData.size || 4; // inches
       const rPx = (sz / 12) * pxPerFoot / 2;
       const rv = Math.max(rPx, selected ? 10 : 8);
-      return <g style={{ cursor: tool === "select" ? "pointer" : "default" }}>
+      return <g style={{ cursor: tool === "select" && (mode === "itmep" || (mode === "build" && marker.layer === "power")) ? "pointer" : "default" }}>
         <circle cx={marker.x} cy={marker.y} r={rv + 5} fill="transparent" />
         <circle cx={marker.x} cy={marker.y} r={rv} fill={color + "18"} stroke={color} strokeWidth={strokeW} style={{ pointerEvents: "none" }} />
         <circle cx={marker.x} cy={marker.y} r={rv * 0.45} fill={color + "55"} stroke={color} strokeWidth={0.75} style={{ pointerEvents: "none" }} />
@@ -3566,7 +3587,7 @@ export default function TestfitTool() {
       </g>;
     }
     if (symbol === "pendant") {
-      return <g style={{ cursor: tool === "select" ? "pointer" : "default" }}>
+      return <g style={{ cursor: tool === "select" && (mode === "itmep" || (mode === "build" && marker.layer === "power")) ? "pointer" : "default" }}>
         <circle cx={marker.x} cy={marker.y} r={r + 5} fill="transparent" />
         <circle cx={marker.x} cy={marker.y} r={r} fill={color + "18"} stroke={color} strokeWidth={strokeW} style={{ pointerEvents: "none" }} />
         <circle cx={marker.x} cy={marker.y} r={3} fill={color} style={{ pointerEvents: "none" }} />
@@ -3579,7 +3600,7 @@ export default function TestfitTool() {
       const lenPx = ftLen * pxPerFoot;
       const thk = selected ? 5 : 4;
       const angle = marker.angle || 0;
-      return <g transform={`translate(${marker.x},${marker.y}) rotate(${angle * 180 / Math.PI})`} style={{ cursor: tool === "select" ? "pointer" : "default" }}>
+      return <g transform={`translate(${marker.x},${marker.y}) rotate(${angle * 180 / Math.PI})`} style={{ cursor: tool === "select" && (mode === "itmep" || (mode === "build" && marker.layer === "power")) ? "pointer" : "default" }}>
         <rect x={-lenPx / 2 - 4} y={-thk - 4} width={lenPx + 8} height={thk * 2 + 8} fill="transparent" />
         <rect x={-lenPx / 2} y={-thk / 2} width={lenPx} height={thk} fill={color + "40"} stroke={color} strokeWidth={selected ? 1.5 : 1} rx={1} style={{ pointerEvents: "none" }} />
         <text x={0} y={thk / 2 + 9} textAnchor="middle" fontSize={7} fill={color} fontWeight="bold" style={{ pointerEvents: "none" }}>{ftLen}'</text>
@@ -3587,7 +3608,7 @@ export default function TestfitTool() {
     }
     if (symbol === "sconce") {
       const angleDeg = (marker.angle || 0) * 180 / Math.PI;
-      return <g transform={`translate(${marker.x},${marker.y}) rotate(${angleDeg})`} style={{ cursor: tool === "select" ? "pointer" : "default" }}>
+      return <g transform={`translate(${marker.x},${marker.y}) rotate(${angleDeg})`} style={{ cursor: tool === "select" && (mode === "itmep" || (mode === "build" && marker.layer === "power")) ? "pointer" : "default" }}>
         <circle cx={0} cy={0} r={r + 5} fill="transparent" />
         {/* Wall plate */}
         <rect x={-r * 0.5} y={-r} width={r} height={r * 2} fill={color + "18"} stroke={color} strokeWidth={strokeW} rx={1} style={{ pointerEvents: "none" }} />
@@ -4770,7 +4791,7 @@ export default function TestfitTool() {
                   {/* Pass 2: hit-detection + dims only */}
                   {wallData.filter(Boolean).map(({ w, c, sel, halfT, glowEffect }) =>
                     <g key={"s"+w.id} filter={glowEffect ? "url(#glow-budget)" : undefined}>
-                      <line x1={c.x1} y1={c.y1} x2={c.x2} y2={c.y2} stroke="transparent" strokeWidth={halfT * 2 + 6} style={{ cursor: tool === "select" ? wallResizeCursor(c.x1, c.y1, c.x2, c.y2) : "inherit" }} />
+                      <line x1={c.x1} y1={c.y1} x2={c.x2} y2={c.y2} stroke="transparent" strokeWidth={halfT * 2 + 6} style={{ cursor: tool === "select" && mode === "build" ? wallResizeCursor(c.x1, c.y1, c.x2, c.y2) : "inherit" }} />
                       {showDims && visibleDims && <WallDim w={w} hi={sel} />}
                     </g>
                   )}
@@ -4898,12 +4919,12 @@ export default function TestfitTool() {
                 return <g key={col.id} filter={glowEffect ? "url(#glow-budget)" : undefined}>
                   {col.shape === "circle" ? (
                     <>
-                      <circle cx={rp.x} cy={rp.y} r={r + 8} fill="transparent" style={{ cursor: tool === "select" ? "move" : "inherit" }} />
+                      <circle cx={rp.x} cy={rp.y} r={r + 8} fill="transparent" style={{ cursor: tool === "select" && mode === "build" ? "move" : "inherit" }} />
                       <circle cx={rp.x} cy={rp.y} r={r} fill={sel ? "#9A9488" : T.nodeStroke} stroke={sel ? T.nodeFill : "#9A9488"} strokeWidth={sel ? 2.5 : 1.5} style={{ pointerEvents: "none" }} />
                     </>
                   ) : (
                     <>
-                      <rect x={rp.x - r - 8} y={rp.y - r - 8} width={(r + 8) * 2} height={(r + 8) * 2} fill="transparent" style={{ cursor: tool === "select" ? "move" : "inherit" }} />
+                      <rect x={rp.x - r - 8} y={rp.y - r - 8} width={(r + 8) * 2} height={(r + 8) * 2} fill="transparent" style={{ cursor: tool === "select" && mode === "build" ? "move" : "inherit" }} />
                       <rect x={rp.x - r} y={rp.y - r} width={r * 2} height={r * 2} fill={sel ? "#9A9488" : T.nodeStroke} stroke={sel ? T.nodeFill : "#9A9488"} strokeWidth={sel ? 2.5 : 1.5} rx={2} style={{ pointerEvents: "none" }} />
                     </>
                   )}
@@ -5301,7 +5322,7 @@ export default function TestfitTool() {
               })}
 
               {/* Proximity-hover preview ring — fades in as cursor approaches a hoverable */}
-              {proxHover && !marquee && tool === "select" && !drag && (() => {
+              {proxHover && !marquee && tool === "select" && (!drag || PROX_DRAG_TYPES.has(drag.type)) && (() => {
                 const PROX_R = 32;
                 const fade = Math.max(0, 1 - proxHover.dist / PROX_R);
                 const r = 8 + (1 - fade) * 4;
@@ -5531,7 +5552,7 @@ export default function TestfitTool() {
                 <div style={S.lbl}>Clearance Preset</div>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 4, marginBottom: 6 }}>
                   {[
-                    { w: 36, label: "Main", sub: "36\"" , tip: "Main walking path (minimum)" },
+                    { w: 36, label: "Walkway", sub: "36\"" , tip: "Main walking path (minimum)" },
                     { w: 48, label: "Tight", sub: "48\"" , tip: "Tighter spaces / behind seated chairs" },
                     { w: 60, label: "Dining", sub: "60\"", tip: "Dining: scoot out + walk behind" },
                   ].map(({ w, label, sub, tip }) => {
