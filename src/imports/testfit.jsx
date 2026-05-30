@@ -509,6 +509,10 @@ export default function TestfitTool() {
   const [showVersions, setShowVersions] = useState(false);
   const [showPhaseMenu, setShowPhaseMenu] = useState(false);
   const [showSaveMenu, setShowSaveMenu] = useState(false);
+  // Anchor rects for top-bar dropdowns — fixed positioning so they escape the
+  // bar's overflow clip (the bar scrolls horizontally on narrow screens).
+  const [phaseMenuRect, setPhaseMenuRect] = useState(null);
+  const [saveMenuRect, setSaveMenuRect] = useState(null);
   // Collapsible sidebar — start collapsed on narrow screens.
   const [sidebarOpen, setSidebarOpen] = useState(() => (typeof window === "undefined" ? true : window.innerWidth >= 1000));
   useEffect(() => {
@@ -3790,7 +3794,7 @@ export default function TestfitTool() {
           const ap = phases.find(p => p.id === activePhase);
           return <div style={{ position: "relative", marginRight: 4 }}>
             <button
-              onClick={() => setShowPhaseMenu(v => !v)}
+              onClick={e => { setPhaseMenuRect(e.currentTarget.getBoundingClientRect()); setShowPhaseMenu(v => !v); }}
               style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 10px", background: showPhaseMenu ? ap?.color + "28" : ap?.color + "18", border: "1px solid " + (ap?.color || T.border) + (showPhaseMenu ? "88" : "44"), borderRadius: 6, cursor: "pointer", color: ap?.color || T.textMuted, fontWeight: 600, fontSize: 10, fontFamily: "inherit", transition: "all 0.12s ease", height: 28 }}
             >
               <span style={{ width: 7, height: 7, borderRadius: "50%", background: ap?.color, flexShrink: 0 }} />
@@ -3799,7 +3803,7 @@ export default function TestfitTool() {
             </button>
             {showPhaseMenu && <>
               <div style={{ position: "fixed", inset: 0, zIndex: 999 }} onClick={() => { setShowPhaseMenu(false); setPreviewPhase(null); }} />
-              <div style={{ position: "absolute", top: "calc(100% + 6px)", left: 0, background: T.panelBg, border: "1px solid " + T.border, borderRadius: 8, padding: "6px", zIndex: 1000, minWidth: 160, boxShadow: T.panelShadow, backdropFilter: "blur(16px)" }}
+              <div style={{ position: "fixed", top: (phaseMenuRect?.bottom ?? 44) + 6, left: phaseMenuRect?.left ?? 12, background: T.panelBg, border: "1px solid " + T.border, borderRadius: 8, padding: "6px", zIndex: 1000, minWidth: 160, boxShadow: T.panelShadow, backdropFilter: "blur(16px)" }}
                 onMouseLeave={() => setPreviewPhase(null)}>
                 {phases.map((p, i) => {
                   const activeIdx = phases.findIndex(ph => ph.id === activePhase);
@@ -3841,12 +3845,12 @@ export default function TestfitTool() {
         <button style={S.smBtn} onClick={() => setThemeMode(m => m === "dark" ? "light" : "dark")}>{themeMode === "dark" ? "Light" : "Dark"}</button>
         <div style={{ width: 1, height: 20, background: T.border, margin: "0 3px" }} />
         <div style={{ position: "relative" }}>
-          <button style={{ ...S.smBtn, display: "flex", alignItems: "center", gap: 4 }} onClick={() => setShowSaveMenu(v => !v)}>
+          <button style={{ ...S.smBtn, display: "flex", alignItems: "center", gap: 4 }} onClick={e => { setSaveMenuRect(e.currentTarget.getBoundingClientRect()); setShowSaveMenu(v => !v); }}>
             Save<ChevronDown size={11} style={{ opacity: 0.7, transition: "transform 0.15s", transform: showSaveMenu ? "rotate(180deg)" : "none" }} />
           </button>
           {showSaveMenu && <>
             <div style={{ position: "fixed", inset: 0, zIndex: 999 }} onClick={() => setShowSaveMenu(false)} />
-            <div style={{ position: "absolute", top: "calc(100% + 6px)", right: 0, background: T.panelBg, border: "1px solid " + T.border, borderRadius: 8, padding: 6, zIndex: 1000, minWidth: 160, boxShadow: T.panelShadow, backdropFilter: "blur(16px)" }}>
+            <div style={{ position: "fixed", top: (saveMenuRect?.bottom ?? 44) + 6, right: Math.max(8, window.innerWidth - (saveMenuRect?.right ?? 0)), background: T.panelBg, border: "1px solid " + T.border, borderRadius: 8, padding: 6, zIndex: 1000, minWidth: 160, boxShadow: T.panelShadow, backdropFilter: "blur(16px)" }}>
               {[
                 { label: "Save Project (.json)", fn: exportProject },
                 { label: "Export PNG", fn: exportPng },
@@ -4246,7 +4250,7 @@ export default function TestfitTool() {
           ? { ...S.cv, flex: "none", width: `${splitPos * 100}%` }
           : S.cv}>
           {/* 3D controls row — all buttons inline at bottom-right */}
-          <div style={{ position: "absolute", bottom: 40, right: 12, zIndex: 20, display: "flex", alignItems: "center", gap: 4 }}>
+          <div style={{ position: "absolute", bottom: 40, right: 12, zIndex: 20, display: "flex", alignItems: "center", justifyContent: "flex-end", flexWrap: "wrap", gap: 4, maxWidth: "calc(100vw - 24px)" }}>
             {view3d && (<>
               <Tooltip>
                 <TooltipTrigger asChild>
@@ -4932,7 +4936,7 @@ export default function TestfitTool() {
               })}
 
               {/* Dimension strings */}
-              {showDims && visibleDims && dims.map(d => {
+              {visibleDims && dims.map(d => {
                 const sel = selectedId === d.id && selType === "dim";
                 const dr = { ...d, ...resolveDimEndpoints(d) };
                 return <g key={d.id} onClick={() => { setSelectedId(d.id); setSelType("dim"); }}><DimString d={dr} sel={sel} /></g>;
