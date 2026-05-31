@@ -11,8 +11,8 @@ import { OutputPass }     from "three/examples/jsm/postprocessing/OutputPass.js"
 const WALL_KINDS = {
   existing: { label: "Existing", color: "#9A9488", thickness: 7 },
   demo:     { label: "Demo",     color: "#E05050", thickness: 7 },
-  new:      { label: "New",      color: "#50A0E0", thickness: 4.5 },
-  pony:     { label: "Pony",     color: "#C8A060", thickness: 3.5 },
+  new:      { label: "New",      color: "#50A0E0", thickness: 7   },
+  pony:     { label: "Pony",     color: "#C8A060", thickness: 4   },
 };
 
 // Per-material PBR specs used in detailed-mode rendering. Drafting kind colors

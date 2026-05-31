@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from "react";
-import { MousePointer2, X, Plus, DoorOpen, Ruler, Box, LayoutDashboard, RotateCcw, RotateCw, Undo2, Redo2, Tag, Settings, ChevronDown, ChevronRight, Trash2, History, GitBranch, Columns2, PanelLeft, PanelLeftClose } from "lucide-react";
+import { MousePointer2, X, Plus, DoorOpen, Ruler, Box, LayoutDashboard, RotateCcw, RotateCw, Undo2, Redo2, Tag, Settings, ChevronDown, ChevronRight, Trash2, GitBranch, Columns2, PanelLeft, PanelLeftClose } from "lucide-react";
 import ZONE_LIBRARY_DEFAULTS from "../data/zone-library.json";
 import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "../app/components/ui/tooltip";
 import TestFit3D from "./testfit3d";
@@ -137,15 +137,15 @@ const cadCrosshair = (color) => `url("data:image/svg+xml,%3Csvg xmlns='http://ww
 const WALL_KINDS = {
   existing: { label: "Existing", color: "#9A9488", dash: null,  thickness: 7   },
   demo:     { label: "Demo",     color: "#E05050", dash: "8 4", thickness: 7   },
-  new:      { label: "New",      color: "#50A0E0", dash: null,  thickness: 4.5 },
-  pony:     { label: "Pony",     color: "#C8A060", dash: null,  thickness: 3.5, thin: true },
+  new:      { label: "New",      color: "#50A0E0", dash: null,  thickness: 7   },
+  pony:     { label: "Pony",     color: "#C8A060", dash: null,  thickness: 4,   thin: true },
 };
 // Darker wall colors for light-mode rendering — high contrast on the pale canvas.
 const WALL_KINDS_LIGHT = {
   existing: { label: "Existing", color: "#3A352A", dash: null,  thickness: 7   },
   demo:     { label: "Demo",     color: "#B83838", dash: "8 4", thickness: 7   },
-  new:      { label: "New",      color: "#1F5FA8", dash: null,  thickness: 4.5 },
-  pony:     { label: "Pony",     color: "#86601E", dash: null,  thickness: 3.5, thin: true },
+  new:      { label: "New",      color: "#1F5FA8", dash: null,  thickness: 7   },
+  pony:     { label: "Pony",     color: "#86601E", dash: null,  thickness: 4,   thin: true },
 };
 
 // Slider + inline number input — replaces both button grids and static range+span combos
@@ -500,18 +500,22 @@ export default function TestfitTool() {
   }, [zoneLibrary]);
   const [showSettings, setShowSettings] = useState(false);
 
-  // ── Phases ──────────────────────────────────────────────────────────
+  // ── Phases (retired — kept as inert defaults so legacy writes/refs work) ──
   const [phases, setPhases] = useState(DEFAULT_PHASES);
   const [activePhase, setActivePhase] = useState("existing");
 
-  // ── Versions (named snapshots) ───────────────────────────────────────
-  const [versions, setVersions] = useState([]);
-  const [showVersions, setShowVersions] = useState(false);
-  const [showPhaseMenu, setShowPhaseMenu] = useState(false);
+  // ── Snapshots (named, independent full-model states) ─────────────────
+  // [{ id, name, ts, data }] where data is a full captureModel() of the project.
+  const [snapshots, setSnapshots] = useState([]);
+  const [activeSnapshotId, setActiveSnapshotId] = useState(null);
+  const [showSnapMenu, setShowSnapMenu] = useState(false);
+  const [snapMenuRect, setSnapMenuRect] = useState(null);
+  const [renamingSnapId, setRenamingSnapId] = useState(null);
+  const [newSnapMode, setNewSnapMode] = useState(false); // inline "save as new" input
+  const [snapDraftName, setSnapDraftName] = useState("");
   const [showSaveMenu, setShowSaveMenu] = useState(false);
-  // Anchor rects for top-bar dropdowns — fixed positioning so they escape the
+  // Anchor rect for the Save dropdown — fixed positioning so it escapes the
   // bar's overflow clip (the bar scrolls horizontally on narrow screens).
-  const [phaseMenuRect, setPhaseMenuRect] = useState(null);
   const [saveMenuRect, setSaveMenuRect] = useState(null);
   // Collapsible sidebar — start collapsed on narrow screens.
   const [sidebarOpen, setSidebarOpen] = useState(() => (typeof window === "undefined" ? true : window.innerWidth >= 1000));
@@ -520,7 +524,6 @@ export default function TestfitTool() {
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, []);
-  const [previewPhase, setPreviewPhase] = useState(null);
 
   // ── Undo / Redo ────────────────────────────────────────────────────
   const historyRef = useRef([]);
@@ -685,46 +688,29 @@ export default function TestfitTool() {
   const fRef = useRef(null);
   const loadRef = useRef(null);
 
-  // ── Phase visibility helper ────────────────────────────────────────
-  // effectivePhase: previewPhase (hover) overrides activePhase for all rendering.
-  const effectivePhase = previewPhase ?? activePhase;
-
-  // A phase is visible if it comes at or before the effective phase in the phases array.
-  // Selecting a phase shows that phase and all earlier ones (cumulative stack).
-  const phaseVisible = useCallback((phase) => {
-    if (!phase) return true;
-    const activeIdx = phases.findIndex(p => p.id === effectivePhase);
-    const phaseIdx  = phases.findIndex(p => p.id === phase);
-    if (phaseIdx === -1) return true;
-    return phaseIdx <= activeIdx;
-  }, [phases, effectivePhase]);
-
-  // Like phaseVisible but also respects deletedAtPhase for cross-phase soft-deletion.
-  // useMemo builds the index Map once per phases/effectivePhase change (not per marker).
+  // ── Visibility helpers (phase system retired — see Snapshots) ──────────
+  // The cumulative-phase model was replaced by independent named snapshots.
+  // These helpers are now phase-agnostic pass-throughs kept so the ~200 call
+  // sites keep working; everything is always visible regardless of any legacy
+  // `phase` tag still present on older data.
+  const effectivePhase = "existing";
+  const phaseVisible = useCallback(() => true, []);
   const markerVisible = useMemo(() => {
-    const idxMap = new Map(phases.map((p, i) => [p.id, i]));
-    const activeIdx = idxMap.get(effectivePhase) ?? -1;
-    return (m) => {
-      if (!visibleITMEP) return false; // master IT/MEP toggle — hides all markers in every mode
-      if (m.phase) {
-        const pi = idxMap.get(m.phase);
-        if (pi !== undefined && pi > activeIdx) return false;
-      }
-      if (m.deletedAtPhase) {
-        const di = idxMap.get(m.deletedAtPhase);
-        if (di !== undefined && di <= activeIdx) return false;
-      }
-      return true;
-    };
-  }, [phases, effectivePhase, visibleITMEP]);
+    return (m) => visibleITMEP; // only the master IT/MEP visibility toggle applies now
+  }, [visibleITMEP]);
 
   // ── Project management ─────────────────────────────────────────────
-  const getProjectData = useCallback(() => ({
+  // captureModel: the full live model WITHOUT snapshot meta (used as a snapshot's data).
+  const captureModel = useCallback(() => ({
     projectName, nodes, walls, zones, markers, doors, windows, columns, dims, labels, revClouds, flowPaths, floorRegions, floorMaterial,
     bgOpacity, bgScale, bgOffset, pxPerFoot, showDims, zoneLibrary,
-    phases, activePhase, versions,
-    version: "testfit-v7",
-  }), [projectName, nodes, walls, zones, markers, doors, windows, columns, dims, labels, revClouds, flowPaths, floorRegions, floorMaterial, bgOpacity, bgScale, bgOffset, pxPerFoot, showDims, zoneLibrary, phases, activePhase, versions]);
+    version: "testfit-v8",
+  }), [projectName, nodes, walls, zones, markers, doors, windows, columns, dims, labels, revClouds, flowPaths, floorRegions, floorMaterial, bgOpacity, bgScale, bgOffset, pxPerFoot, showDims, zoneLibrary]);
+
+  // getProjectData: full file payload — the model plus the snapshot library.
+  const getProjectData = useCallback(() => ({
+    ...captureModel(), snapshots, activeSnapshotId,
+  }), [captureModel, snapshots, activeSnapshotId]);
 
   const exportProject = useCallback(() => {
     const data = getProjectData();
@@ -737,16 +723,11 @@ export default function TestfitTool() {
     URL.revokeObjectURL(url);
   }, [getProjectData, projectName]);
 
-  const saveVersion = useCallback((name) => {
-    const snap = { id: uid(), name: name || "Version " + Date.now(), ts: Date.now(), data: getProjectData() };
-    setVersions(prev => [...prev, snap]);
-  }, [getProjectData]);
-
-  const restoreVersion = useCallback((v) => {
-    const d = v.data;
+  // loadModel: replace the live working state from a captured model blob.
+  const loadModel = useCallback((d) => {
     if (!d) return;
     const arr = (x) => Array.isArray(x) ? x : [];
-    setProjectName(d.projectName || "Restored");
+    setProjectName(d.projectName || "Untitled");
     setNodes(arr(d.nodes)); setWalls(arr(d.walls)); setZones(arr(d.zones));
     setMarkers(arr(d.markers)); setDoors(arr(d.doors)); setWindows(arr(d.windows));
     setColumns(arr(d.columns)); setDims(arr(d.dims)); setLabels(arr(d.labels)); setRevClouds(arr(d.revClouds)); setFlowPaths(arr(d.flowPaths)); setFloorRegions(arr(d.floorRegions)); if (d.floorMaterial) setFloorMaterial(d.floorMaterial);
@@ -755,11 +736,52 @@ export default function TestfitTool() {
     if (d.pxPerFoot) setPxPerFoot(d.pxPerFoot);
     if (d.showDims !== undefined) setShowDims(d.showDims);
     if (d.zoneLibrary) setZoneLibrary(d.zoneLibrary);
-    if (d.phases) setPhases(d.phases);
-    if (d.activePhase) setActivePhase(d.activePhase);
     historyRef.current = []; historyIdxRef.current = -1;
     setCanUndo(false); setCanRedo(false);
-    setShowVersions(false);
+  }, []);
+
+  // ── Snapshot operations ──────────────────────────────────────────────
+  // Has the live model diverged from the active snapshot's stored data?
+  // Stringify the live model once per actual model change (captureModel's identity
+  // only changes when the underlying data does) — keeps drag/hover re-renders cheap.
+  const liveModelStr = useMemo(() => JSON.stringify(captureModel()), [captureModel]);
+  const liveDirtyMemo = useMemo(() => {
+    if (!activeSnapshotId) return (nodes.length || zones.length || markers.length) > 0;
+    const snap = snapshots.find(s => s.id === activeSnapshotId);
+    if (!snap) return true;
+    return liveModelStr !== JSON.stringify(snap.data);
+  }, [activeSnapshotId, snapshots, liveModelStr, nodes, zones, markers]);
+  const liveDirty = useCallback(() => liveDirtyMemo, [liveDirtyMemo]);
+
+  // Save the current model as a brand-new snapshot and make it active.
+  const takeSnapshot = useCallback((name) => {
+    const nm = (name || "").trim() || "Snapshot " + (snapshots.length + 1);
+    const id = uid();
+    setSnapshots(prev => [...prev, { id, name: nm, ts: Date.now(), data: captureModel() }]);
+    setActiveSnapshotId(id);
+  }, [snapshots, captureModel]);
+
+  // Overwrite an existing snapshot with the current model.
+  const updateSnapshot = useCallback((id) => {
+    setSnapshots(prev => prev.map(s => s.id === id ? { ...s, ts: Date.now(), data: captureModel() } : s));
+    setActiveSnapshotId(id);
+  }, [captureModel]);
+
+  // Switch the live model to a snapshot's stored state.
+  const switchSnapshot = useCallback((id) => {
+    const snap = snapshots.find(s => s.id === id);
+    if (!snap) return;
+    loadModel(snap.data);
+    setActiveSnapshotId(id);
+  }, [snapshots, loadModel]);
+
+  const renameSnapshot = useCallback((id, name) => {
+    setSnapshots(prev => prev.map(s => s.id === id ? { ...s, name: name.trim() || s.name } : s));
+  }, []);
+
+  const deleteSnapshot = useCallback((id) => {
+    setSnapshots(prev => prev.filter(s => s.id !== id));
+    setActiveSnapshotId(cur => cur === id ? null : cur);
   }, []);
 
   const exportPng = useCallback(() => {
@@ -839,9 +861,17 @@ export default function TestfitTool() {
         if (d.pxPerFoot) setPxPerFoot(d.pxPerFoot);
         if (d.showDims !== undefined) setShowDims(d.showDims);
         if (d.zoneLibrary && typeof d.zoneLibrary === "object") setZoneLibrary(d.zoneLibrary);
-        if (Array.isArray(d.phases) && d.phases.length) setPhases(d.phases);
-        if (d.activePhase) setActivePhase(d.activePhase);
-        if (Array.isArray(d.versions)) setVersions(d.versions);
+        // Snapshots: prefer the new field; migrate legacy `versions` (named full-state
+        // snapshots) into the new library when present.
+        if (Array.isArray(d.snapshots)) {
+          setSnapshots(d.snapshots);
+          setActiveSnapshotId(d.activeSnapshotId ?? null);
+        } else if (Array.isArray(d.versions) && d.versions.length) {
+          setSnapshots(d.versions.map(v => ({ id: v.id || uid(), name: v.name || "Snapshot", ts: v.ts || Date.now(), data: v.data })));
+          setActiveSnapshotId(null);
+        } else {
+          setSnapshots([]); setActiveSnapshotId(null);
+        }
         setBgImage(null);
         setSelectedId(null); setSelType(null);
         historyRef.current = []; historyIdxRef.current = -1;
@@ -862,7 +892,7 @@ export default function TestfitTool() {
     setCanUndo(false); setCanRedo(false);
     setZoneLibrary(ZONE_LIBRARY_DEFAULTS);
     localStorage.removeItem("testfit-zone-library");
-    setPhases(DEFAULT_PHASES); setActivePhase("existing"); setVersions([]);
+    setPhases(DEFAULT_PHASES); setActivePhase("existing"); setSnapshots([]); setActiveSnapshotId(null);
   }, []);
 
   const fitAll = useCallback((ns = nodes) => {
@@ -889,38 +919,16 @@ export default function TestfitTool() {
   // gn: resolve node position, applying per-phase override if the wall has one
   // gn: resolve a node's position using the cumulative phase stack (same model as resolvePos).
   // Looks from effectivePhase downward for the first override; falls back to base x/y.
-  const gn = useCallback((nid) => {
-    const n = nodes.find(n => n.id === nid);
-    if (!n) return null;
-    const activeIdx = phases.findIndex(p => p.id === effectivePhase);
-    for (let i = activeIdx; i >= 0; i--) {
-      const pid = phases[i].id;
-      if (pid !== "existing" && n.px?.[pid]) return { ...n, x: n.px[pid].x, y: n.px[pid].y };
-    }
-    return n;
-  }, [nodes, phases, effectivePhase]);
+  const gn = useCallback((nid) => nodes.find(n => n.id === nid) || null, [nodes]);
   const wc = useCallback((w) => { const a = gn(w.n1), b = gn(w.n2); return (a && b) ? { x1: a.x, y1: a.y, x2: b.x, y2: b.y } : null; }, [gn]);
 
   // resolvePos: return the effective position (and any other overridden props like angle) for an
   // element, honouring per-phase overrides up to effectivePhase (cumulative stack model).
   // Returns base {x, y} merged with the first matching override found.
-  const resolvePos = useCallback((el) => {
-    const activeIdx = phases.findIndex(p => p.id === effectivePhase);
-    for (let i = activeIdx; i >= 0; i--) {
-      const override = el.px?.[phases[i].id];
-      if (override) return { x: el.x, y: el.y, ...override };
-    }
-    return { x: el.x, y: el.y };
-  }, [phases, effectivePhase]);
+  const resolvePos = useCallback((el) => ({ x: el.x, y: el.y }), []);
 
-  // resolvePoints: same idea but for polygon zone points arrays
-  const resolvePoints = useCallback((el) => {
-    const activeIdx = phases.findIndex(p => p.id === effectivePhase);
-    for (let i = activeIdx; i >= 0; i--) {
-      if (el.px?.[phases[i].id]) return el.px[phases[i].id];
-    }
-    return el.points;
-  }, [phases, effectivePhase]);
+  // resolvePoints: polygon points pass-through (phase overrides retired)
+  const resolvePoints = useCallback((el) => el.points, []);
   const wl = useCallback((w) => { const c = wc(w); return c ? dst(c.x1, c.y1, c.x2, c.y2) : 0; }, [wc]);
   const wa = useCallback((w) => { const c = wc(w); return c ? (Math.atan2(c.y2 - c.y1, c.x2 - c.x1) * 180) / Math.PI : 0; }, [wc]);
   const findNear = useCallback((x, y, excl) => { let best = null, bd = SNAP_R; for (const n of nodes) { if (excl?.includes(n.id)) continue; const d = dst(x, y, n.x, n.y); if (d < bd) { best = n; bd = d; } } return best; }, [nodes]);
@@ -3789,39 +3797,80 @@ export default function TestfitTool() {
           <TooltipContent>{sidebarOpen ? "Hide panel" : "Show panel"}</TooltipContent>
         </Tooltip>
         <div style={{ width: 1, height: 20, background: T.border, margin: "0 3px" }} />
-        {/* Phase Selector */}
+        {/* Snapshot switcher */}
         {(() => {
-          const ap = phases.find(p => p.id === activePhase);
+          const activeSnap = snapshots.find(s => s.id === activeSnapshotId);
+          const dirty = liveDirty();
+          const ac = T.accent;
+          const openSwitcher = e => {
+            setSnapMenuRect(e.currentTarget.getBoundingClientRect());
+            setShowSnapMenu(v => !v); setNewSnapMode(false); setRenamingSnapId(null);
+          };
           return <div style={{ position: "relative", marginRight: 4 }}>
             <button
-              onClick={e => { setPhaseMenuRect(e.currentTarget.getBoundingClientRect()); setShowPhaseMenu(v => !v); }}
-              style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 10px", background: showPhaseMenu ? ap?.color + "28" : ap?.color + "18", border: "1px solid " + (ap?.color || T.border) + (showPhaseMenu ? "88" : "44"), borderRadius: 6, cursor: "pointer", color: ap?.color || T.textMuted, fontWeight: 600, fontSize: 10, fontFamily: "inherit", transition: "all 0.12s ease", height: 28 }}
+              onClick={openSwitcher}
+              title="Snapshots"
+              style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 10px", maxWidth: 200, background: showSnapMenu ? ac + "28" : ac + "14", border: "1px solid " + ac + (showSnapMenu ? "88" : "40"), borderRadius: 6, cursor: "pointer", color: ac, fontWeight: 600, fontSize: 10, fontFamily: "inherit", transition: "all 0.12s ease", height: 28 }}
             >
-              <span style={{ width: 7, height: 7, borderRadius: "50%", background: ap?.color, flexShrink: 0 }} />
-              {ap?.name || "Existing"}
-              <ChevronDown size={10} style={{ opacity: 0.7, transition: "transform 0.15s", transform: showPhaseMenu ? "rotate(180deg)" : "none" }} />
+              <span style={{ width: 7, height: 7, borderRadius: "50%", background: dirty ? ac : "transparent", border: "1.5px solid " + ac, flexShrink: 0 }} />
+              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{activeSnap ? activeSnap.name : "Draft"}{dirty && activeSnap ? " •" : ""}</span>
+              <ChevronDown size={10} style={{ opacity: 0.7, flexShrink: 0, transition: "transform 0.15s", transform: showSnapMenu ? "rotate(180deg)" : "none" }} />
             </button>
-            {showPhaseMenu && <>
-              <div style={{ position: "fixed", inset: 0, zIndex: 999 }} onClick={() => { setShowPhaseMenu(false); setPreviewPhase(null); }} />
-              <div style={{ position: "fixed", top: (phaseMenuRect?.bottom ?? 44) + 6, left: phaseMenuRect?.left ?? 12, background: T.panelBg, border: "1px solid " + T.border, borderRadius: 8, padding: "6px", zIndex: 1000, minWidth: 160, boxShadow: T.panelShadow, backdropFilter: "blur(16px)" }}
-                onMouseLeave={() => setPreviewPhase(null)}>
-                {phases.map((p, i) => {
-                  const activeIdx = phases.findIndex(ph => ph.id === activePhase);
-                  const isActive = p.id === activePhase;
-                  const isVisible = i <= activeIdx;
-                  const isPreviewing = p.id === previewPhase;
-                  return (
-                    <div key={p.id}
-                      onClick={() => { setActivePhase(p.id); setShowPhaseMenu(false); setPreviewPhase(null); }}
-                      onMouseEnter={() => setPreviewPhase(p.id)}
-                      style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 8px", borderRadius: 6, background: isPreviewing ? p.color + "28" : isActive ? p.color + "18" : "transparent", marginBottom: 2, cursor: "pointer", transition: "background 0.12s" }}>
-                      <span style={{ width: 8, height: 8, borderRadius: "50%", background: isVisible ? p.color : T.textFaint, flexShrink: 0 }} />
-                      <span style={{ flex: 1, fontSize: 10, color: isPreviewing || isActive ? p.color : isVisible ? T.textMuted : T.textFaint, fontWeight: isPreviewing || isActive ? 600 : 400, fontFamily: "inherit" }}>{p.name}</span>
-                      {isActive && !isPreviewing && <span style={{ fontSize: 8, color: p.color, opacity: 0.75, fontFamily: "inherit" }}>active</span>}
-                      {isPreviewing && <span style={{ fontSize: 8, color: p.color, opacity: 0.75, fontFamily: "inherit" }}>preview</span>}
-                    </div>
-                  );
+            {showSnapMenu && <>
+              <div style={{ position: "fixed", inset: 0, zIndex: 999 }} onClick={() => { setShowSnapMenu(false); setNewSnapMode(false); setRenamingSnapId(null); }} />
+              <div style={{ position: "fixed", top: (snapMenuRect?.bottom ?? 44) + 6, left: snapMenuRect?.left ?? 12, background: T.panelBg, border: "1px solid " + T.border, borderRadius: 8, padding: 6, zIndex: 1000, minWidth: 230, maxWidth: 300, boxShadow: T.panelShadow, backdropFilter: "blur(16px)" }}>
+                <div style={{ fontSize: 8, color: T.textDim, textTransform: "uppercase", letterSpacing: "0.08em", padding: "4px 8px 6px", fontWeight: 600 }}>Snapshots</div>
+                {snapshots.length === 0 && <div style={{ padding: "8px 10px", fontSize: 10, color: T.textFaint, fontStyle: "italic" }}>None yet — save one below.</div>}
+                {snapshots.map(s => {
+                  const isActive = s.id === activeSnapshotId;
+                  return <div key={s.id}
+                    style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 8px", borderRadius: 6, background: isActive ? ac + "18" : "transparent", marginBottom: 2, cursor: "pointer", transition: "background 0.12s" }}
+                    onMouseEnter={e => { if (!isActive) e.currentTarget.style.background = T.border + "44"; }}
+                    onMouseLeave={e => { if (!isActive) e.currentTarget.style.background = "transparent"; }}>
+                    <span style={{ width: 8, height: 8, borderRadius: "50%", background: isActive ? ac : T.textFaint, flexShrink: 0 }} />
+                    {renamingSnapId === s.id ? (
+                      <input autoFocus defaultValue={s.name}
+                        onClick={e => e.stopPropagation()}
+                        onBlur={e => { renameSnapshot(s.id, e.target.value); setRenamingSnapId(null); }}
+                        onKeyDown={e => { if (e.key === "Enter") { renameSnapshot(s.id, e.target.value); setRenamingSnapId(null); } if (e.key === "Escape") setRenamingSnapId(null); }}
+                        style={{ flex: 1, background: T.bg2, border: "1px solid " + ac, borderRadius: 4, color: T.textBright, fontSize: 10, fontFamily: "inherit", padding: "2px 6px", outline: "none" }} />
+                    ) : (
+                      <span style={{ flex: 1, fontSize: 10, color: isActive ? ac : T.textMuted, fontWeight: isActive ? 600 : 400, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                        onClick={() => { if (!isActive) { if (liveDirty() && !window.confirm("Switch snapshots? Unsaved changes to the current state will be lost.")) return; } switchSnapshot(s.id); setShowSnapMenu(false); }}
+                        onDoubleClick={() => setRenamingSnapId(s.id)}
+                        title="Click to switch · double-click to rename">{s.name}</span>
+                    )}
+                    {isActive && <span style={{ fontSize: 8, color: ac, opacity: 0.75 }}>active</span>}
+                    <button onClick={e => { e.stopPropagation(); if (window.confirm(`Delete snapshot "${s.name}"?`)) deleteSnapshot(s.id); }}
+                      style={{ background: "none", border: "none", cursor: "pointer", color: T.textFaint, padding: 2, display: "flex" }}><X size={11} /></button>
+                  </div>;
                 })}
+                <div style={{ height: 1, background: T.border, margin: "6px 4px" }} />
+                {activeSnap && (
+                  <div onClick={() => { updateSnapshot(activeSnap.id); setShowSnapMenu(false); }}
+                    style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 8px", borderRadius: 6, cursor: "pointer", fontSize: 10, color: dirty ? ac : T.textMuted, fontWeight: 500 }}
+                    onMouseEnter={e => e.currentTarget.style.background = T.border + "44"}
+                    onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
+                    <RotateCcw size={12} /> Update "{activeSnap.name}"
+                  </div>
+                )}
+                {newSnapMode ? (
+                  <div style={{ display: "flex", gap: 6, padding: "6px 8px" }} onClick={e => e.stopPropagation()}>
+                    <input autoFocus placeholder="Snapshot name…" value={snapDraftName}
+                      onChange={e => setSnapDraftName(e.target.value)}
+                      onKeyDown={e => { if (e.key === "Enter") { takeSnapshot(snapDraftName); setSnapDraftName(""); setNewSnapMode(false); setShowSnapMenu(false); } if (e.key === "Escape") { setNewSnapMode(false); setSnapDraftName(""); } }}
+                      style={{ flex: 1, background: T.bg2, border: "1px solid " + ac, borderRadius: 5, color: T.textBright, fontSize: 10, fontFamily: "inherit", padding: "5px 8px", outline: "none" }} />
+                    <button onClick={() => { takeSnapshot(snapDraftName); setSnapDraftName(""); setNewSnapMode(false); setShowSnapMenu(false); }}
+                      style={{ padding: "4px 10px", background: ac + "22", border: "1px solid " + ac + "55", borderRadius: 5, color: ac, fontSize: 10, cursor: "pointer", fontFamily: "inherit", fontWeight: 500 }}>Save</button>
+                  </div>
+                ) : (
+                  <div onClick={() => { setNewSnapMode(true); setSnapDraftName(""); }}
+                    style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 8px", borderRadius: 6, cursor: "pointer", fontSize: 10, color: T.textMuted, fontWeight: 500 }}
+                    onMouseEnter={e => e.currentTarget.style.background = T.border + "44"}
+                    onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
+                    <Plus size={12} /> Save as new snapshot
+                  </div>
+                )}
               </div>
             </>}
           </div>;
@@ -3868,12 +3917,6 @@ export default function TestfitTool() {
         <button style={S.smBtn} onClick={() => { if (walls.length || zones.length || markers.length) { if (confirm("New project?")) newProject(); } else newProject(); }}>New</button>
         <input ref={loadRef} type="file" accept=".json" style={{ display: "none" }} onChange={e => { const f = e.target.files?.[0]; if (f) importProject(f); e.target.value = ""; }} />
         <div style={{ width: 1, height: 20, background: T.border, margin: "0 3px" }} />
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <button style={S.smBtn} onClick={() => setShowVersions(true)}><History size={13} /></button>
-          </TooltipTrigger>
-          <TooltipContent>Version History</TooltipContent>
-        </Tooltip>
         <Tooltip>
           <TooltipTrigger asChild>
             <button style={S.smBtn} onClick={() => setShowSettings(true)}><Settings size={13} /></button>
@@ -4367,15 +4410,6 @@ export default function TestfitTool() {
               ))}
             </div>
           )}
-
-          {/* Phase preview banner */}
-          {previewPhase && (() => {
-            const pp = phases.find(p => p.id === previewPhase);
-            return <div style={{ position: "absolute", top: 12, left: "50%", transform: "translateX(-50%)", display: "flex", alignItems: "center", gap: 7, background: T.panelBg, border: "1px solid " + (pp?.color || T.border) + "66", borderRadius: 20, padding: "5px 14px", fontSize: 10, color: pp?.color, fontWeight: 600, zIndex: 20, backdropFilter: "blur(12px)", boxShadow: T.panelShadow, pointerEvents: "none", letterSpacing: "0.02em" }}>
-              <span style={{ width: 7, height: 7, borderRadius: "50%", background: pp?.color, flexShrink: 0 }} />
-              Previewing {pp?.name ?? "Existing"}
-            </div>;
-          })()}
 
           {repeatInput !== null && (
             <div style={{ position: "absolute", top: 12, left: "50%", transform: "translateX(-50%)", display: "flex", alignItems: "center", gap: 8, background: T.panelBg, border: "1px solid " + T.accent + "88", borderRadius: 20, padding: "5px 16px", fontSize: 11, color: T.textBright, fontWeight: 600, zIndex: 25, backdropFilter: "blur(12px)", boxShadow: T.panelShadow, letterSpacing: "0.02em" }}>
@@ -5413,11 +5447,6 @@ export default function TestfitTool() {
                   {[84, 96, 108, 120, 132, 144].map(h => <option key={h} value={h}>{Math.floor(h / 12)}'-{h % 12 ? h % 12 + '"' : '0"'}</option>)}
                 </select>
               </div>
-              <div style={{ marginBottom: 8 }}><div style={S.lbl}>Version</div>
-                <select value={selWall.phase ?? "existing"} onChange={e => updWall({ phase: e.target.value })} style={{ ...S.inp, padding: "6px 10px", fontSize: 10 }}>
-                  {phases.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-                </select>
-              </div>
               <div style={{ marginBottom: 8 }}><div style={S.lbl}>Notes</div><textarea style={{ ...S.inp, height: 72, resize: "vertical" }} value={selWall.notes || ""} onChange={e => updWall({ notes: e.target.value })} placeholder="Load-bearing, plumbing chase..." /></div>
             </>; })()}
             {selectedIds.length <= 1 && selDoor && <>
@@ -5504,14 +5533,6 @@ export default function TestfitTool() {
                     : <button style={{ ...S.inp, cursor: "pointer", textAlign: "center", fontSize: 10, color: T.accent }}
                         onClick={() => setAddingLeaderToId(selLabel.id)}>Add Leader…</button>}
                 </div>
-                {/* Version dropdown */}
-                <div style={{ marginBottom: 10 }}>
-                  <div style={S.lbl}>Version</div>
-                  <select value={selLabel.phase} onChange={e => updLabel({ phase: e.target.value })}
-                    style={{ ...S.inp, cursor: "pointer", color: T.textBright, background: T.bg2, fontFamily: "inherit", fontSize: 11 }}>
-                    {phases.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-                  </select>
-                </div>
                 <button style={S.del} onClick={delSel}>Delete Label</button>
               </>;
             })()}
@@ -5539,13 +5560,6 @@ export default function TestfitTool() {
                           boxShadow: selRevCloud.color === hex ? "0 0 0 2px " + T.accent : "0 0 0 1.5px rgba(255,255,255,0.12)" }}
                         onClick={() => updRevCloud({ color: hex })} />)}
                   </div>
-                </div>
-                <div style={{ marginBottom: 10 }}>
-                  <div style={S.lbl}>Version</div>
-                  <select value={selRevCloud.phase} onChange={e => updRevCloud({ phase: e.target.value })}
-                    style={{ ...S.inp, cursor: "pointer", color: T.textBright, background: T.bg2, fontFamily: "inherit", fontSize: 11 }}>
-                    {phases.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-                  </select>
                 </div>
                 <button style={S.del} onClick={delSel}>Delete Cloud</button>
               </>;
@@ -5591,13 +5605,6 @@ export default function TestfitTool() {
                       onClick={() => updFlowPath({ color: c })} />)}
                 </div>
               </div>
-              <div style={{ marginBottom: 10 }}>
-                <div style={S.lbl}>Version</div>
-                <select value={selFlowPath.phase} onChange={e => updFlowPath({ phase: e.target.value })}
-                  style={{ ...S.inp, cursor: "pointer", color: T.textBright, background: T.bg2, fontFamily: "inherit", fontSize: 11 }}>
-                  {phases.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-                </select>
-              </div>
               <button style={S.del} onClick={delSel}>Delete Flow Path</button>
             </>}
             {selectedIds.length <= 1 && selFloorRegion && (() => {
@@ -5619,13 +5626,6 @@ export default function TestfitTool() {
                 <div style={{ marginBottom: 8 }}>
                   <div style={S.lbl}>Label (optional)</div>
                   <input style={S.inp} value={selFloorRegion.label || ""} onChange={e => updFloorRegion({ label: e.target.value })} placeholder="Bathroom, Kitchen…" />
-                </div>
-                <div style={{ marginBottom: 10 }}>
-                  <div style={S.lbl}>Version</div>
-                  <select value={selFloorRegion.phase} onChange={e => updFloorRegion({ phase: e.target.value })}
-                    style={{ ...S.inp, cursor: "pointer", color: T.textBright, background: T.bg2, fontFamily: "inherit", fontSize: 11 }}>
-                    {phases.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-                  </select>
                 </div>
                 <button style={S.del} onClick={delSel}>Delete Floor Region</button>
               </>;
@@ -5722,11 +5722,6 @@ export default function TestfitTool() {
                   <div style={{ fontSize: 10, color: T.accentDim ?? "#8A8478", marginTop: 5, textAlign: "right", fontWeight: 600 }}>Est. {$(estCost)}</div>
                 </div>
               </div>}
-              <div style={{ marginBottom: 8 }}><div style={S.lbl}>Version</div>
-                <select value={selZone.phase ?? "existing"} onChange={e => updZone({ phase: e.target.value })} style={{ ...S.inp, padding: "6px 10px", fontSize: 10 }}>
-                  {phases.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-                </select>
-              </div>
               <button style={S.del} onClick={delSel}>Delete Zone</button>
             </>; })()}
             {selectedIds.length <= 1 && selMarker && (() => {
@@ -6629,15 +6624,6 @@ export default function TestfitTool() {
       T={T}
     />}
 
-    {/* ── Version History Modal ────────────────────────────────────── */}
-    {showVersions && <VersionsModal
-      versions={versions}
-      setVersions={setVersions}
-      onSave={saveVersion}
-      onRestore={restoreVersion}
-      onClose={() => setShowVersions(false)}
-      T={T}
-    />}
     </TooltipProvider>
   );
 }
@@ -6797,100 +6783,3 @@ function ZoneLibraryModal({ zoneLibrary, setZoneLibrary, onReset, onClose, T }) 
   );
 }
 
-// ─── Version History Modal ─────────────────────────────────────────────────────
-function VersionsModal({ versions, setVersions, onSave, onRestore, onClose, T }) {
-  const [saveName, setSaveName] = useState("");
-
-  const overlay = {
-    position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", zIndex: 1000,
-    display: "flex", alignItems: "center", justifyContent: "center",
-  };
-  const panel = {
-    background: T.bg1, border: "1px solid " + T.border, borderRadius: 12,
-    width: 520, maxHeight: "80vh", display: "flex", flexDirection: "column",
-    boxShadow: "0 24px 64px rgba(0,0,0,0.5)",
-  };
-  const inp = (extra = {}) => ({
-    background: T.bg2, border: "1px solid " + T.border, borderRadius: 6,
-    color: T.textBright, fontFamily: "inherit", fontSize: 11, padding: "7px 10px",
-    outline: "none", ...extra,
-  });
-
-  const fmt = (ts) => {
-    const d = new Date(ts);
-    return d.toLocaleDateString() + " " + d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-  };
-
-  const handleSave = () => {
-    const name = saveName.trim() || "Snapshot " + new Date().toLocaleDateString();
-    onSave(name);
-    setSaveName("");
-  };
-
-  return (
-    <div style={overlay} onClick={e => e.target === e.currentTarget && onClose()}>
-      <div style={panel}>
-        {/* Header */}
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "16px 20px", borderBottom: "1px solid " + T.border }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <History size={15} color={T.accent} />
-            <span style={{ fontSize: 14, fontWeight: 600, color: T.textBright }}>Version History</span>
-          </div>
-          <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", color: T.textMuted, padding: 4, borderRadius: 4 }}><X size={16} /></button>
-        </div>
-
-        {/* Save new version */}
-        <div style={{ padding: "14px 20px", borderBottom: "1px solid " + T.border, display: "flex", gap: 8 }}>
-          <input
-            style={{ ...inp(), flex: 1 }}
-            placeholder='Name this version, e.g. "Schematic Design"'
-            value={saveName}
-            onChange={e => setSaveName(e.target.value)}
-            onKeyDown={e => e.key === "Enter" && handleSave()}
-          />
-          <button
-            onClick={handleSave}
-            style={{ padding: "7px 14px", background: T.accent + "22", border: "1px solid " + T.accent + "55", borderRadius: 6, color: T.accent, fontSize: 11, cursor: "pointer", fontFamily: "inherit", fontWeight: 500, whiteSpace: "nowrap" }}
-          >
-            Save snapshot
-          </button>
-        </div>
-
-        {/* Version list */}
-        <div style={{ flex: 1, overflowY: "auto", padding: "8px 0" }}>
-          {versions.length === 0 && (
-            <div style={{ padding: "32px 20px", textAlign: "center", color: T.textFaint, fontSize: 11, fontStyle: "italic" }}>
-              No versions saved yet. Save a snapshot to track a milestone.
-            </div>
-          )}
-          {[...versions].reverse().map((v, i) => (
-            <div key={v.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 20px", borderBottom: "1px solid " + T.border + "44" }}>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 12, fontWeight: 600, color: T.textBright, marginBottom: 2 }}>{v.name}</div>
-                <div style={{ fontSize: 10, color: T.textFaint }}>{fmt(v.ts)}</div>
-              </div>
-              <button
-                onClick={() => { if (window.confirm(`Restore "${v.name}"? Current unsaved changes will be lost.`)) onRestore(v); }}
-                style={{ padding: "5px 10px", background: "transparent", border: "1px solid " + T.border, borderRadius: 5, color: T.textMuted, fontSize: 10, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" }}
-              >
-                Restore
-              </button>
-              <button
-                onClick={() => setVersions(prev => prev.filter(x => x.id !== v.id))}
-                style={{ background: "none", border: "none", cursor: "pointer", color: T.textFaint, padding: 4, borderRadius: 4 }}
-              >
-                <X size={13} />
-              </button>
-            </div>
-          ))}
-        </div>
-
-        {versions.length > 0 && (
-          <div style={{ padding: "10px 20px", borderTop: "1px solid " + T.border, fontSize: 10, color: T.textFaint }}>
-            {versions.length} snapshot{versions.length !== 1 ? "s" : ""} saved
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}

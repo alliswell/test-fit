@@ -20,7 +20,7 @@ render styles — all versioned, undoable, and saveable.
 - [The Four Modes](#the-four-modes)
 - [Tools & Features](#tools--features)
 - [The 3D View](#the-3d-view)
-- [Versioning (Phases)](#versioning-phases)
+- [Snapshots](#snapshots)
 - [Keyboard Shortcuts](#keyboard-shortcuts)
 - [Architecture](#architecture)
 - [Running the Code](#running-the-code)
@@ -91,12 +91,14 @@ real rules of thumb:
 The on-canvas band thickness scales 1:1 with the chosen clearance, so you literally
 see whether furniture leaves enough room to move.
 
-### Cumulative versioning
+### Snapshots, not layers
 
-Design alternatives are organized as **phases** (Existing → v0 → v1 → v2 → v3). The
-view is *cumulative*: the active phase shows its own items plus everything from
-earlier phases. This mirrors how renovation and fit-out documents are layered — an
-"existing conditions" base with successive design moves on top.
+Design alternatives are organized as **snapshots** — independent, named, full copies
+of the entire model. Save the current state as a snapshot, keep working, then either
+**update** that snapshot in place or **save a new** one. Switching snapshots loads
+that state wholesale, so each is a clean standalone option you can flip between to
+compare layouts. The active snapshot and whether the live model has unsaved changes
+are always shown in the top-left switcher.
 
 ### Proximity-first interaction
 
@@ -202,15 +204,20 @@ labels and dimensions.
 
 ---
 
-## Versioning (Phases)
+## Snapshots
 
-Every entity carries a `phase`. The phase selector (top-left) sets the active phase;
-the canvas shows the active phase plus all earlier ones. Markers placed in one phase
-and deleted in a later phase are **soft-deleted** — they remain visible in earlier
-phases and only disappear from the phase where they were removed forward. This makes
-it safe to explore alternatives without destroying earlier work.
+Snapshots are named, independent, full copies of the model — the single mechanism for
+exploring and comparing design options. The top-left **snapshot switcher** shows the
+active snapshot's name and a dot indicating whether the live model has unsaved changes.
 
-Named **versions** capture full project snapshots you can restore at any time.
+- **Save as new snapshot** — capture the current model under a name.
+- **Update "<name>"** — overwrite the active snapshot with the current model.
+- **Switch** — click any snapshot to load its state (you're warned if the current
+  state has unsaved changes).
+- **Rename** (double-click a name) and **delete** (the × on a row).
+
+Switching is a full state swap, so each snapshot is a clean, self-contained
+alternative. All snapshots are stored in the project file and survive Save/Load.
 
 ---
 
@@ -264,10 +271,10 @@ src/
 
 **State model (single top-level component)**
 
-Each entity type is a `useState` array. Positions are canvas pixels. Phase-aware
-position overrides live in a `px` map per element. Key derived helpers:
+Each entity type is a `useState` array. Positions are canvas pixels. Named snapshots
+are stored as full model blobs in a `snapshots` array. Key derived helpers:
 
-- `resolvePos` / `resolvePoints` — apply phase overrides
+- `captureModel` / `loadModel` — serialize / restore the full working state
 - `hitTest` — mode-aware pointer hit detection
 - `findNear` — node snapping for drawing
 - `findProxHover` — mode-gated proximity hover
@@ -292,6 +299,8 @@ Open the dev URL Vite prints (typically `http://localhost:5173`).
 A project serializes to a single JSON object containing every entity array
 (`nodes`, `walls`, `zones`, `markers`, `doors`, `windows`, `columns`, `dims`,
 `labels`, `revClouds`, `flowPaths`, `floorRegions`), plus `floorMaterial`,
-the reference-image settings, scale, phases, and named versions. The same payload
-backs Save/Load, undo/redo snapshots, version history, and import/export — and is
-forward-compatible: missing arrays default to empty, so older files load cleanly.
+the reference-image settings, scale, and the `snapshots` library. The same payload
+backs Save/Load, undo/redo history, snapshots, and import/export — and is
+forward-compatible: missing arrays default to empty, and older files that used the
+retired *phase* layering load cleanly (their per-entity `phase` tags are ignored, and
+any legacy named *versions* are migrated into snapshots on import).
