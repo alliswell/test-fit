@@ -4,8 +4,9 @@ A browser-based **architectural test-fit and space-planning tool** for laying ou
 commercial and residential spaces. Draw walls, place doors / windows / columns,
 define program zones, drop IT / MEP markers, annotate with dimensions, labels, and
 revision clouds, paint floor regions, plan circulation with flow paths, and review
-the result in a live **2D plan** alongside an interactive **3D model** with three
-render styles — all versioned, undoable, and saveable.
+the result across a configurable multi-pane layout — a live **2D plan**, **2D
+elevations** (Front / Back / Left / Right), and an interactive **3D model** with three
+render styles, side by side — all snapshot-versioned, undoable, and saveable.
 
 > "Test fitting" is the early-stage exercise of checking whether a program (the list
 > of rooms / functions a tenant needs) actually fits within a given floor plate, and
@@ -19,7 +20,9 @@ render styles — all versioned, undoable, and saveable.
 - [Methodology](#methodology)
 - [The Four Modes](#the-four-modes)
 - [Tools & Features](#tools--features)
+- [Views & Panes](#views--panes)
 - [The 3D View](#the-3d-view)
+- [Elevation Views](#elevation-views)
 - [Snapshots](#snapshots)
 - [Keyboard Shortcuts](#keyboard-shortcuts)
 - [Architecture](#architecture)
@@ -178,11 +181,27 @@ only surfaces the tools relevant to it.
 
 ---
 
+## Views & Panes
+
+The canvas is a **configurable pane layout** rather than a single view. A switcher
+(bottom-right: ▢ single / ◫ split / ⊞ quad) sets how many panes are shown, and each
+pane has its own selector chip (top-left) choosing what it displays:
+
+- The **Plan** pane (top-left) is always the interactive editing canvas — all drawing
+  tools, selection, and snapping live here.
+- Every other pane independently shows **3D** or any of the four **elevations**
+  (Front / Back / Left / Right).
+
+Drag the divider(s) to resize — one vertical divider in split, a vertical + horizontal
+cross in quad. Backtick `` ` `` quick-toggles between single and a Plan|3D split. A
+common setup is the quad: Plan, 3D, Front elevation, Left elevation side by side. Every
+pane reflects the **active snapshot**, so switching snapshots updates them all at once.
+
 ## The 3D View
 
-Toggle 3D with the backtick `` ` `` key or the 2D/3D button; a **Split** view shows
-both side by side with a draggable divider. Walls extrude to ceiling height, openings
-are cut for doors and windows, and three render styles are available:
+Pick **3D** in any pane's selector (or `` ` `` for a quick Plan|3D split). Walls extrude
+to ceiling height, openings are cut for doors and windows, and three render styles are
+available:
 
 - **Clay** — matte Lambert materials with a soft ambient + key light (default).
 - **X-Ray** — transparent ghost walls with crisp edge lines and a prominent grid.
@@ -201,6 +220,39 @@ are cut for doors and windows, and three render styles are available:
 
 The camera orbits / pans / zooms and auto-fits on open; toggles control 3D zone
 labels and dimensions.
+
+---
+
+## Elevation Views
+
+Any aux pane can show a **2D elevation** — an orthographic side projection looking
+along a cardinal axis: **Front / Back** (looking along Y) and **Left / Right** (along
+X). Elevations are a true projection of the live model, so they always match the plan
+and 3D.
+
+Each elevation renders:
+
+- **Walls** as vertical rectangles to their height (`ceilingHeight`, or a per-wall
+  override; pony walls are shorter), colored by kind, demo walls dashed, depth-sorted.
+- **Windows** at their real sill height and height; **doors** as openings to a standard
+  7'-0" head; **columns** full-height.
+- A **finished-floor datum** (0'-0") and **ceiling line** with height labels.
+
+Openings stay on the plane of the wall they belong to: an opening foreshortens to
+edge-on (and is omitted) when its wall is perpendicular to the view. A near-face
+hidden-surface rule means each elevation shows only the openings on the building face
+it looks at — so Front and Back (and Left and Right) read as distinct faces rather than
+mirror images of each other.
+
+Each elevation pane has an **independent camera** (scroll to zoom, drag to pan;
+auto-fits on open). 
+
+**View + annotate (v1):** click a wall / door / window / column to select it — the
+right-hand inspector opens and edits round-trip into the model (e.g. changing ceiling
+height instantly reshapes the elevation). With an elevation pane focused, the
+**Dimension** and **Label** tools place annotations directly in that elevation's own
+coordinate space (stored per direction). Editing geometry *within* an elevation
+(dragging a window's sill, etc.) is planned for a later version.
 
 ---
 
@@ -239,7 +291,7 @@ alternative. All snapshots are stored in the project file and survive Save/Load.
 | `A`       | Floor Region                    |
 | `D`       | Toggle auto-dimensions          |
 | `G`       | Toggle grid                     |
-| `` ` ``   | Toggle 3D view                  |
+| `` ` ``   | Quick Plan \| 3D split           |
 | Arrows    | Nudge selection 1" (Shift = 1') |
 | Backspace | Delete selection                |
 | ⌘Z / ⌘⇧Z  | Undo / Redo                     |
@@ -299,8 +351,10 @@ Open the dev URL Vite prints (typically `http://localhost:5173`).
 A project serializes to a single JSON object containing every entity array
 (`nodes`, `walls`, `zones`, `markers`, `doors`, `windows`, `columns`, `dims`,
 `labels`, `revClouds`, `flowPaths`, `floorRegions`), plus `floorMaterial`,
-the reference-image settings, scale, and the `snapshots` library. The same payload
-backs Save/Load, undo/redo history, snapshots, and import/export — and is
-forward-compatible: missing arrays default to empty, and older files that used the
-retired *phase* layering load cleanly (their per-entity `phase` tags are ignored, and
-any legacy named *versions* are migrated into snapshots on import).
+`elevAnnotations` (per-direction elevation dimensions/labels), the reference-image
+settings, scale, the `snapshots` library, and the `panes`/`splitPos` view layout. The
+same payload backs Save/Load, undo/redo history, snapshots, and import/export — and is
+forward-compatible: missing fields default (no elevation annotations, single Plan
+pane), and older files that used the retired *phase* layering load cleanly (their
+per-entity `phase` tags are ignored, and any legacy named *versions* are migrated into
+snapshots on import).

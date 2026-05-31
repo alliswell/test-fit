@@ -183,6 +183,7 @@ function SliderInput({ value, min, max, step = 1, onChange, accent = "#9A9488", 
 
 const DOOR_WIDTHS = [36, 48, 60];
 const DOOR_TYPES = ["Wood", "Glass", "Metal", "Case Opening"];
+const DOOR_HEIGHT_IN = 84; // 7'-0" standard door height (matches 3D DOOR_HEIGHT_FT)
 const WINDOW_WIDTHS = [24, 36, 48, 60];
 const WINDOW_TYPES = ["Window", "Cut Opening"];
 
@@ -445,6 +446,239 @@ function revCloudPath(points, arcR) {
   return d + " Z";
 }
 
+// ─── 2D Elevation view ──────────────────────────────────────────────────────
+// Orthographic side projection of the model along one cardinal axis. Read-only
+// (view + annotate); geometry editing stays in plan/3D. Each instance owns its
+// own pan/zoom camera.
+function ElevationView({ dir, nodes, walls, doors, windows, columns, ceilingHeight, pxPerFoot, T,
+  selectedId, selType, onSelect, ft, tool, anno, onPlaceDim, onPlaceLabel, onUpdateDim, onUpdateLabel }) {
+  const svgRef = useRef(null);
+  const [cam, setCam] = useState(null); // { tx, ty, z } — null until first auto-fit
+  const panRef = useRef(null);
+  const dimDraftRef = useRef(null);
+  const [dimDraft, setDimDraft] = useState(null); // elevation-space {x1,y1,x2,y2?}
+
+  // Project a plan point (x,y) to elevation horizontal u + depth d (for painter sort).
+  const proj = useCallback((x, y) => {
+    switch (dir) {
+      case "back":  return { u: -x, d: -y };
+      case "left":  return { u: y, d: -x };
+      case "right": return { u: -y, d: x };
+      default:      return { u: x, d: y }; // front
+    }
+  }, [dir]);
+  const vAt = useCallback((heightIn) => -(heightIn / 12) * pxPerFoot, [pxPerFoot]); // up = negative
+  const ceilV = vAt(ceilingHeight);
+
+  const nodeMap = useMemo(() => { const m = new Map(); for (const n of nodes) m.set(n.id, n); return m; }, [nodes]);
+
+  // Build projected, depth-sorted draw list.
+  const items = useMemo(() => {
+    const out = [];
+    let dMin = Infinity, dMax = -Infinity; // building front-to-back depth extent (this view)
+    for (const w of walls) {
+      const a = nodeMap.get(w.n1), b = nodeMap.get(w.n2); if (!a || !b) continue;
+      const pa = proj(a.x, a.y), pb = proj(b.x, b.y);
+      dMin = Math.min(dMin, pa.d, pb.d); dMax = Math.max(dMax, pa.d, pb.d);
+      const u1 = Math.min(pa.u, pb.u), u2 = Math.max(pa.u, pb.u);
+      if (u2 - u1 < 0.5) continue; // wall is edge-on to this elevation — skip sliver
+      const wk = WALL_KINDS[w.kind || "existing"];
+      const topIn = w.kind === "pony" ? (w.ponyHeight || 42) : (w.ceilingHeight ?? ceilingHeight);
+      out.push({ kind: "wall", id: w.id, u1, u2, top: vAt(topIn), d: (pa.d + pb.d) / 2,
+        color: wk.color, dash: wk.dash, demo: w.kind === "demo" });
+    }
+    // Hidden-surface rule: an elevation only shows openings on the near half of the
+    // building (the face the viewer sees). Far-wall openings are hidden behind the
+    // near wall, so Front and Back (and Left/Right) show distinct, non-mirrored faces.
+    const midD = (dMin + dMax) / 2;
+    const cull = (dMax - dMin) > pxPerFoot; // only when there's real depth between faces
+    const opening = (arr, type) => {
+      for (const it of arr) {
+        // Project the opening's two ends ALONG its host wall (angle in degrees) so it
+        // stays on that wall's plane — full width when the wall faces the viewer,
+        // collapsing to edge-on (skipped) when the wall is perpendicular to the view.
+        const rad = ((it.angle || 0) * Math.PI) / 180;
+        const half = ((it.width || 36) / 12) * pxPerFoot / 2;
+        const e1 = proj(it.x - Math.cos(rad) * half, it.y - Math.sin(rad) * half);
+        const e2 = proj(it.x + Math.cos(rad) * half, it.y + Math.sin(rad) * half);
+        if (Math.abs(e2.u - e1.u) < 1) continue; // edge-on to this elevation — its wall isn't shown here
+        const d = (e1.d + e2.d) / 2;
+        if (cull && d < midD - 0.5) continue; // on the far face — hidden behind the near wall
+        out.push({ kind: type, id: it.id, u1: Math.min(e1.u, e2.u), u2: Math.max(e1.u, e2.u), d, item: it });
+      }
+    };
+    opening(doors, "door");
+    opening(windows, "window");
+    for (const c of columns) {
+      const p = proj(c.x, c.y);
+      const halfW = ((c.size || 12) / 12) * pxPerFoot / 2;
+      out.push({ kind: "column", id: c.id, u1: p.u - halfW, u2: p.u + halfW, d: p.d, top: ceilV });
+    }
+    return out.sort((m, n) => m.d - n.d); // far → near
+  }, [walls, doors, windows, columns, nodeMap, proj, vAt, ceilingHeight, ceilV, pxPerFoot]);
+
+  // Content bounds (pre-camera) for auto-fit.
+  const bounds = useMemo(() => {
+    let uMin = Infinity, uMax = -Infinity;
+    for (const it of items) { uMin = Math.min(uMin, it.u1); uMax = Math.max(uMax, it.u2); }
+    if (!isFinite(uMin)) { uMin = -100; uMax = 100; }
+    return { uMin, uMax, vTop: ceilV, vBot: 0 };
+  }, [items, ceilV]);
+
+  // Auto-fit camera once we know the pane size (and refit when direction changes).
+  useEffect(() => {
+    const el = svgRef.current; if (!el) return;
+    const fit = () => {
+      const r = el.getBoundingClientRect(); if (!r.width || !r.height) return;
+      const m = 48;
+      const cw = (bounds.uMax - bounds.uMin) || 200, ch = (bounds.vBot - bounds.vTop) || 200;
+      const z = Math.min((r.width - 2 * m) / cw, (r.height - 2 * m) / ch, 4);
+      const cx = (bounds.uMin + bounds.uMax) / 2, cy = (bounds.vTop + bounds.vBot) / 2;
+      setCam({ z, tx: r.width / 2 - cx * z, ty: r.height / 2 - cy * z });
+    };
+    fit();
+  }, [dir, bounds.uMin, bounds.uMax, bounds.vTop, bounds.vBot]);
+
+  const cm = cam || { tx: 0, ty: 0, z: 1 };
+  // screen <-> elevation conversions
+  const toScreen = (u, v) => ({ x: u * cm.z + cm.tx, y: v * cm.z + cm.ty });
+  const toElev = (sx, sy) => ({ x: (sx - cm.tx) / cm.z, y: (sy - cm.ty) / cm.z });
+  const svgPt = (e) => { const r = svgRef.current.getBoundingClientRect(); return { sx: e.clientX - r.left, sy: e.clientY - r.top }; };
+
+  const onWheel = (e) => {
+    e.preventDefault();
+    const { sx, sy } = svgPt(e);
+    const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1;
+    setCam(c => { const cc = c || cm; const z2 = Math.min(10, Math.max(0.05, cc.z * factor));
+      const ux = (sx - cc.tx) / cc.z, uy = (sy - cc.ty) / cc.z;
+      return { z: z2, tx: sx - ux * z2, ty: sy - uy * z2 }; });
+  };
+
+  const onBgDown = (e) => {
+    const { sx, sy } = svgPt(e);
+    if (tool === "dim" || tool === "label") {
+      const p = toElev(sx, sy);
+      if (tool === "label") { onPlaceLabel?.(p); return; }
+      // dim: 2-click
+      if (!dimDraftRef.current) { dimDraftRef.current = { x1: p.x, y1: p.y }; setDimDraft({ x1: p.x, y1: p.y }); }
+      else { const d = { ...dimDraftRef.current, x2: p.x, y2: p.y }; dimDraftRef.current = null; setDimDraft(null); onPlaceDim?.(d); }
+      return;
+    }
+    // pan
+    panRef.current = { startX: e.clientX, startY: e.clientY, tx: cm.tx, ty: cm.ty };
+    const move = (ev) => setCam(c => ({ ...(c || cm), tx: panRef.current.tx + (ev.clientX - panRef.current.startX), ty: panRef.current.ty + (ev.clientY - panRef.current.startY) }));
+    const up = () => { panRef.current = null; window.removeEventListener("mousemove", move); window.removeEventListener("mouseup", up); };
+    window.addEventListener("mousemove", move); window.addEventListener("mouseup", up);
+  };
+
+  const sel = (id, type) => (e) => { e.stopPropagation(); onSelect?.(id, type); };
+  const isSel = (id, type) => selectedId === id && selType === type;
+
+  // Drag an existing annotation (elevation space). part: "p1"/"p2"/"line" for dims, "move" for labels.
+  const startAnnoDrag = (kind, id, part, e) => {
+    if (tool !== "select") return; // dim/label tools place new ones; only Select drags
+    e.stopPropagation();
+    onSelect?.(id, kind === "dim" ? "elevDim" : "elevLabel");
+    const s0 = svgPt(e), e0 = toElev(s0.sx, s0.sy);
+    const src = kind === "dim" ? (anno?.dims || []).find(x => x.id === id) : (anno?.labels || []).find(x => x.id === id);
+    if (!src) return;
+    const move = (ev) => {
+      const p = svgPt(ev), cur = toElev(p.sx, p.sy);
+      const dx = cur.x - e0.x, dy = cur.y - e0.y;
+      if (kind === "label") { onUpdateLabel?.(id, { x: src.x + dx, y: src.y + dy }); return; }
+      if (part === "p1") onUpdateDim?.(id, { x1: src.x1 + dx, y1: src.y1 + dy });
+      else if (part === "p2") onUpdateDim?.(id, { x2: src.x2 + dx, y2: src.y2 + dy });
+      else onUpdateDim?.(id, { x1: src.x1 + dx, y1: src.y1 + dy, x2: src.x2 + dx, y2: src.y2 + dy });
+    };
+    const up = () => { window.removeEventListener("mousemove", move); window.removeEventListener("mouseup", up); };
+    window.addEventListener("mousemove", move); window.addEventListener("mouseup", up);
+  };
+
+  // Datum lines in screen space (full pane width)
+  const floorY = toScreen(0, 0).y, ceilY = toScreen(0, ceilV).y;
+  const annoDims = anno?.dims || [], annoLabels = anno?.labels || [];
+
+  return (
+    <svg ref={svgRef} width="100%" height="100%" onMouseDown={onBgDown} onWheel={onWheel}
+      style={{ display: "block", background: T.canvas, cursor: (tool === "dim" || tool === "label") ? "crosshair" : "grab" }}>
+      {/* Floor + ceiling datum lines */}
+      <line x1={0} y1={floorY} x2="100%" y2={floorY} stroke={T.textMuted} strokeWidth={1} opacity={0.6} />
+      <line x1={0} y1={ceilY} x2="100%" y2={ceilY} stroke={T.textMuted} strokeWidth={0.75} strokeDasharray="5 4" opacity={0.4} />
+      <text x={6} y={floorY - 4} fontSize={9} fill={T.textMuted} fontFamily="inherit">FIN. FLOOR 0'-0"</text>
+      <text x={6} y={ceilY - 4} fontSize={9} fill={T.textMuted} fontFamily="inherit">CEILING {ft((ceilingHeight / 12) * pxPerFoot)}</text>
+
+      {items.map((it, i) => {
+        if (it.kind === "wall") {
+          const a = toScreen(it.u1, 0), b = toScreen(it.u2, it.top);
+          const x = Math.min(a.x, b.x), y = Math.min(a.y, b.y), w = Math.abs(b.x - a.x), h = Math.abs(a.y - b.y);
+          const on = isSel(it.id, "wall");
+          return <rect key={"w" + it.id + i} x={x} y={y} width={w} height={h}
+            fill={it.demo ? "none" : it.color + "55"} stroke={on ? T.accent : it.color}
+            strokeWidth={on ? 2 : 1} strokeDasharray={it.dash || "none"}
+            onClick={sel(it.id, "wall")} style={{ cursor: "pointer" }} />;
+        }
+        if (it.kind === "window") {
+          const sill = it.item.sill ?? 30, hgt = it.item.height ?? 48;
+          const a = toScreen(it.u1, vAt(sill)), b = toScreen(it.u2, vAt(sill + hgt));
+          const x = Math.min(a.x, b.x), y = Math.min(a.y, b.y), w = Math.abs(b.x - a.x), h = Math.abs(a.y - b.y);
+          const on = isSel(it.id, "window");
+          return <g key={"win" + it.id + i} onClick={sel(it.id, "window")} style={{ cursor: "pointer" }}>
+            <rect x={x} y={y} width={w} height={h} fill={"#7FB4D6" + "33"} stroke={on ? T.accent : "#60A0C8"} strokeWidth={on ? 2 : 1.2} />
+            <line x1={x} y1={y} x2={x + w} y2={y + h} stroke={"#60A0C8"} strokeWidth={0.6} opacity={0.6} />
+          </g>;
+        }
+        if (it.kind === "door") {
+          const a = toScreen(it.u1, 0), b = toScreen(it.u2, vAt(DOOR_HEIGHT_IN));
+          const x = Math.min(a.x, b.x), y = Math.min(a.y, b.y), w = Math.abs(b.x - a.x), h = Math.abs(a.y - b.y);
+          const on = isSel(it.id, "door");
+          return <rect key={"d" + it.id + i} x={x} y={y} width={w} height={h}
+            fill={"#A9885F" + "33"} stroke={on ? T.accent : "#A9885F"} strokeWidth={on ? 2 : 1.2}
+            onClick={sel(it.id, "door")} style={{ cursor: "pointer" }} />;
+        }
+        // column
+        const a = toScreen(it.u1, 0), b = toScreen(it.u2, it.top);
+        const x = Math.min(a.x, b.x), y = Math.min(a.y, b.y), w = Math.abs(b.x - a.x), h = Math.abs(a.y - b.y);
+        const on = isSel(it.id, "column");
+        return <rect key={"c" + it.id + i} x={x} y={y} width={w} height={h}
+          fill={T.nodeStroke + "66"} stroke={on ? T.accent : "#9A9488"} strokeWidth={on ? 2 : 1}
+          onClick={sel(it.id, "column")} style={{ cursor: "pointer" }} />;
+      })}
+
+      {/* Annotations (elevation space) — selectable + draggable with the Select tool */}
+      {annoDims.map(d => {
+        const p1 = toScreen(d.x1, d.y1), p2 = toScreen(d.x2, d.y2);
+        const mid = { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 };
+        const lenIn = Math.hypot(d.x2 - d.x1, d.y2 - d.y1) / pxPerFoot * 12;
+        const on = isSel(d.id, "elevDim");
+        const interactive = tool === "select";
+        return <g key={d.id}>
+          {/* wide transparent hit line — select + drag whole dim */}
+          <line x1={p1.x} y1={p1.y} x2={p2.x} y2={p2.y} stroke="transparent" strokeWidth={12}
+            onMouseDown={e => startAnnoDrag("dim", d.id, "line", e)}
+            style={{ cursor: interactive ? "move" : "inherit", pointerEvents: interactive ? "stroke" : "none" }} />
+          <line x1={p1.x} y1={p1.y} x2={p2.x} y2={p2.y} stroke={on ? T.accent : T.dimText} strokeWidth={on ? 1.6 : 1} style={{ pointerEvents: "none" }} />
+          <text x={mid.x} y={mid.y - 4} textAnchor="middle" fontSize={10} fill={on ? T.accent : T.dimText} fontFamily="inherit" style={{ pointerEvents: "none" }}>{ft((lenIn / 12) * pxPerFoot)}</text>
+          {on && interactive && [["p1", p1], ["p2", p2]].map(([part, p]) => (
+            <circle key={part} cx={p.x} cy={p.y} r={5} fill={T.accent} stroke={T.nodeFill} strokeWidth={1.5}
+              onMouseDown={e => startAnnoDrag("dim", d.id, part, e)} style={{ cursor: "move" }} />
+          ))}
+        </g>;
+      })}
+      {annoLabels.map(l => {
+        const p = toScreen(l.x, l.y);
+        const on = isSel(l.id, "elevLabel");
+        const interactive = tool === "select";
+        return <text key={l.id} x={p.x} y={p.y} fontSize={11} fill={on ? T.accent : T.textBright} fontFamily="inherit"
+          onMouseDown={e => startAnnoDrag("label", l.id, "move", e)}
+          style={{ cursor: interactive ? "move" : "inherit", pointerEvents: interactive ? "auto" : "none" }}>{l.text || "Label"}</text>;
+      })}
+      {dimDraft && (() => { const p = toScreen(dimDraft.x1, dimDraft.y1); return <circle cx={p.x} cy={p.y} r={3} fill={T.accent} />; })()}
+
+      <text x={6} y={16} fontSize={10} fontWeight={700} fill={T.textMuted} fontFamily="inherit" style={{ letterSpacing: "0.08em" }}>{dir.toUpperCase()} ELEVATION</text>
+    </svg>
+  );
+}
+
 export default function TestfitTool() {
   const [themeMode, setThemeMode] = useState("light");
   const T = THEMES[themeMode];
@@ -535,7 +769,7 @@ export default function TestfitTool() {
 
   const snapshot = useCallback(() => {
     if (skipSnapshotRef.current) { skipSnapshotRef.current = false; return; }
-    const state = JSON.stringify({ nodes, walls, zones, markers, doors, windows, columns, dims, labels, revClouds, flowPaths, floorRegions, floorMaterial });
+    const state = JSON.stringify({ nodes, walls, zones, markers, doors, windows, columns, dims, labels, revClouds, flowPaths, floorRegions, floorMaterial, elevAnnotations });
     const idx = historyIdxRef.current;
     // Trim any redo states ahead of current
     const hist = historyRef.current.slice(0, idx + 1);
@@ -547,7 +781,7 @@ export default function TestfitTool() {
     historyIdxRef.current = hist.length - 1;
     setCanUndo(hist.length > 1);
     setCanRedo(false);
-  }, [nodes, walls, zones, markers, doors, windows, columns, dims, labels, revClouds, flowPaths, floorRegions, floorMaterial]);
+  }, [nodes, walls, zones, markers, doors, windows, columns, dims, labels, revClouds, flowPaths, floorRegions, floorMaterial, elevAnnotations]);
 
   // Take snapshot after every meaningful state change (debounced)
   const snapshotTimer = useRef(null);
@@ -566,6 +800,7 @@ export default function TestfitTool() {
     setNodes(state.nodes); setWalls(state.walls); setZones(state.zones);
     setMarkers(state.markers); setDoors(state.doors); setWindows(state.windows);
     setColumns(state.columns || []); setDims(state.dims || []); setLabels(state.labels || []); setRevClouds(state.revClouds || []); setFlowPaths(state.flowPaths || []); setFloorRegions(state.floorRegions || []); if (state.floorMaterial) setFloorMaterial(state.floorMaterial);
+    setElevAnnotations(state.elevAnnotations || {});
     setSelectedId(null); setSelType(null);
     setCanUndo(newIdx > 0);
     setCanRedo(true);
@@ -581,6 +816,7 @@ export default function TestfitTool() {
     setNodes(state.nodes); setWalls(state.walls); setZones(state.zones);
     setMarkers(state.markers); setDoors(state.doors); setWindows(state.windows);
     setColumns(state.columns || []); setDims(state.dims || []); setLabels(state.labels || []); setRevClouds(state.revClouds || []); setFlowPaths(state.flowPaths || []); setFloorRegions(state.floorRegions || []); if (state.floorMaterial) setFloorMaterial(state.floorMaterial);
+    setElevAnnotations(state.elevAnnotations || {});
     setSelectedId(null); setSelType(null);
     setCanUndo(true);
     setCanRedo(newIdx < historyRef.current.length - 1);
@@ -611,11 +847,31 @@ export default function TestfitTool() {
   const [showGrid, setShowGrid] = useState(true);
   const [showDims, setShowDims] = useState(true);
   const [zoneEdge, setZoneEdge] = useState(null); // { id, edge, cursor } for rect-zone edge hover
-  const [view3d, setView3d] = useState(false);
-  const [splitView, setSplitView] = useState(false);
-  const [splitPos, setSplitPos] = useState(0.5); // 0–1, fraction of width for 2D pane
-  const splitDragRef = useRef(null); // { startX, startPos, containerWidth }
-  const splitContainerRef = useRef(null); // ref for the flex container holding both panes
+  // ── View panes ───────────────────────────────────────────────────────
+  // panes[0] is always the interactive Plan canvas; aux panes (1..3) each pick
+  // a view among 3d / front / back / left / right. 1 / 2 / 4 panes = single /
+  // split / quad layout.
+  const [panes, setPanes] = useState([{ view: "plan" }]);
+  // Per-direction elevation annotations (separate coord space from plan dims/labels).
+  const [elevAnnotations, setElevAnnotations] = useState({});
+  const [splitPos, setSplitPos] = useState(0.5);   // vertical divider (left column fraction)
+  const [splitPosV, setSplitPosV] = useState(0.5); // horizontal divider (top row fraction, quad)
+  const splitDragRef = useRef(null); // { axis, startPos, containerPx }
+  const splitContainerRef = useRef(null); // ref for the flex container holding the panes
+  const ELEV_DIRS = ["front", "back", "left", "right"];
+  const PANE_VIEW_LABEL = { plan: "Plan", "3d": "3D", front: "Front", back: "Back", left: "Left", right: "Right" };
+  // Derived compatibility flags — full-screen 3D is retired (3D lives in aux panes),
+  // so existing `view3d`/`splitView` reads keep working: plan is always visible.
+  const view3d = false;
+  const splitView = panes.length > 1;
+  const show3d = panes.some(p => p.view === "3d");
+  const setLayout = (n) => setPanes(prev => {
+    const aux = prev.slice(1);
+    if (n <= 1) return [{ view: "plan" }];
+    if (n === 2) return [{ view: "plan" }, aux[0] || { view: "3d" }];
+    return [{ view: "plan" }, aux[0] || { view: "3d" }, aux[1] || { view: "front" }, aux[2] || { view: "left" }];
+  });
+  const setPaneView = (i, view) => setPanes(prev => prev.map((p, idx) => idx === i ? { ...p, view } : p));
   const [ceilingHeight, setCeilingHeight] = useState(108); // 9'-0" in inches
   const controls3dRef = useRef(null);
   const [show3dLabels, setShow3dLabels] = useState(false);
@@ -703,14 +959,15 @@ export default function TestfitTool() {
   // captureModel: the full live model WITHOUT snapshot meta (used as a snapshot's data).
   const captureModel = useCallback(() => ({
     projectName, nodes, walls, zones, markers, doors, windows, columns, dims, labels, revClouds, flowPaths, floorRegions, floorMaterial,
+    elevAnnotations,
     bgOpacity, bgScale, bgOffset, pxPerFoot, showDims, zoneLibrary,
     version: "testfit-v8",
-  }), [projectName, nodes, walls, zones, markers, doors, windows, columns, dims, labels, revClouds, flowPaths, floorRegions, floorMaterial, bgOpacity, bgScale, bgOffset, pxPerFoot, showDims, zoneLibrary]);
+  }), [projectName, nodes, walls, zones, markers, doors, windows, columns, dims, labels, revClouds, flowPaths, floorRegions, floorMaterial, elevAnnotations, bgOpacity, bgScale, bgOffset, pxPerFoot, showDims, zoneLibrary]);
 
-  // getProjectData: full file payload — the model plus the snapshot library.
+  // getProjectData: full file payload — model + snapshot library + view layout.
   const getProjectData = useCallback(() => ({
-    ...captureModel(), snapshots, activeSnapshotId,
-  }), [captureModel, snapshots, activeSnapshotId]);
+    ...captureModel(), snapshots, activeSnapshotId, panes, splitPos, splitPosV,
+  }), [captureModel, snapshots, activeSnapshotId, panes, splitPos, splitPosV]);
 
   const exportProject = useCallback(() => {
     const data = getProjectData();
@@ -731,6 +988,7 @@ export default function TestfitTool() {
     setNodes(arr(d.nodes)); setWalls(arr(d.walls)); setZones(arr(d.zones));
     setMarkers(arr(d.markers)); setDoors(arr(d.doors)); setWindows(arr(d.windows));
     setColumns(arr(d.columns)); setDims(arr(d.dims)); setLabels(arr(d.labels)); setRevClouds(arr(d.revClouds)); setFlowPaths(arr(d.flowPaths)); setFloorRegions(arr(d.floorRegions)); if (d.floorMaterial) setFloorMaterial(d.floorMaterial);
+    setElevAnnotations(d.elevAnnotations && typeof d.elevAnnotations === "object" ? d.elevAnnotations : {});
     setBgOpacity(d.bgOpacity ?? 0.35); setBgScale(d.bgScale ?? 1);
     setBgOffset(d.bgOffset ?? { x: 0, y: 0 });
     if (d.pxPerFoot) setPxPerFoot(d.pxPerFoot);
@@ -856,6 +1114,10 @@ export default function TestfitTool() {
         const migratedCutouts = arr(d.cutouts).map(c => ({ ...c, type: "Cut Opening" }));
         setWindows([...arr(d.windows), ...migratedCutouts]);
         setColumns(arr(d.columns)); setDims(arr(d.dims)); setLabels(arr(d.labels)); setRevClouds(arr(d.revClouds)); setFlowPaths(arr(d.flowPaths)); setFloorRegions(arr(d.floorRegions)); if (d.floorMaterial) setFloorMaterial(d.floorMaterial);
+        setElevAnnotations(d.elevAnnotations && typeof d.elevAnnotations === "object" ? d.elevAnnotations : {});
+        if (Array.isArray(d.panes) && d.panes.length) setPanes(d.panes); else setPanes([{ view: "plan" }]);
+        if (typeof d.splitPos === "number") setSplitPos(d.splitPos);
+        if (typeof d.splitPosV === "number") setSplitPosV(d.splitPosV);
         setBgOpacity(d.bgOpacity ?? 0.35); setBgScale(d.bgScale ?? 1);
         setBgOffset(d.bgOffset ?? { x: 0, y: 0 });
         if (d.pxPerFoot) setPxPerFoot(d.pxPerFoot);
@@ -884,6 +1146,7 @@ export default function TestfitTool() {
   const newProject = useCallback(() => {
     setProjectName("New Club"); setNodes([]); setWalls([]); setZones([]);
     setMarkers([]); setDoors([]); setWindows([]); setDims([]); setLabels([]); setRevClouds([]); setFlowPaths([]); setFloorRegions([]); setFloorMaterial("Wood");
+    setElevAnnotations({}); setPanes([{ view: "plan" }]);
     setBgImage(null); setBgOpacity(0.35); setBgScale(1); setBgOffset({ x: 0, y: 0 });
     setPxPerFoot(20); setShowDims(true); setShowGrid(true);
     setSelectedId(null); setSelType(null); setDrawChain(null); setDrawPolyZone(null); setCursorPos(null);
@@ -1056,14 +1319,13 @@ export default function TestfitTool() {
     return () => clearTimeout(t);
   }, [canvasRotation]);
   
-  // Split-view drag divider handlers
+  // Pane divider drag — axis "v" drives splitPos (vertical divider), "h" drives splitPosV.
   useEffect(() => {
     const onMove = (e) => {
-      if (!splitDragRef.current) return;
-      const { startX, startPos, containerWidth } = splitDragRef.current;
-      const delta = e.clientX - startX;
-      const newPos = Math.min(0.85, Math.max(0.15, startPos + delta / containerWidth));
-      setSplitPos(newPos);
+      const d = splitDragRef.current; if (!d) return;
+      const delta = (d.axis === "h" ? e.clientY - d.start : e.clientX - d.start) / d.span;
+      const pos = Math.min(0.85, Math.max(0.15, d.startPos + delta));
+      (d.axis === "h" ? setSplitPosV : setSplitPos)(pos);
     };
     const onUp = () => { splitDragRef.current = null; };
     window.addEventListener("mousemove", onMove);
@@ -2978,6 +3240,10 @@ export default function TestfitTool() {
       else if (selType === "revcloud") setRevClouds(p => p.filter(r => r.id !== selectedId));
       else if (selType === "flowPath") setFlowPaths(p => p.filter(r => r.id !== selectedId));
       else if (selType === "floorRegion") setFloorRegions(p => p.filter(r => r.id !== selectedId));
+      else if (selType === "elevDim" || selType === "elevLabel") {
+        const key = selType === "elevDim" ? "dims" : "labels";
+        setElevAnnotations(prev => Object.fromEntries(Object.entries(prev).map(([dir, a]) => [dir, { ...a, [key]: (a[key] || []).filter(x => x.id !== selectedId) }])));
+      }
       else { setZones(p => p.filter(z => z.id !== selectedId)); setMarkers(p => phaseDeleteMarkers(p, m => m.id === selectedId)); }
       setSelectedId(null); setSelType(null); setSelectedIds([]);
     }
@@ -3304,7 +3570,7 @@ export default function TestfitTool() {
       }
 
       if (e.key === "0" || e.key === "Home") { e.preventDefault(); fitAll(); }
-      if (e.key === "`") { e.preventDefault(); setSplitView(false); setView3d(v => !v); }
+      if (e.key === "`") { e.preventDefault(); setPanes(prev => prev.length > 1 ? [{ view: "plan" }] : [{ view: "plan" }, { view: "3d" }]); }
       if (e.key === "/" && lastCopyInfo && (lastCopyInfo.dx !== 0 || lastCopyInfo.dy !== 0)) { e.preventDefault(); setRepeatInput(""); return; }
     };
     const up = (e) => { if (e.key === " ") setSpaceHeld(false); };
@@ -3320,7 +3586,7 @@ export default function TestfitTool() {
 
   // 3D data — only resolved when 3D or split view is active
   const data3d = useMemo(() => {
-    if (!view3d && !splitView) return null;
+    if (!show3d) return null;
     return {
       walls: walls.filter(w => phaseVisible(w.phase)),
       nodes: nodes.map(n => { const r = gn(n.id); return r ? { ...n, x: r.x, y: r.y } : n; }),
@@ -3331,7 +3597,7 @@ export default function TestfitTool() {
       markers: markers.filter(m => markerVisible(m)).map(m => ({ ...m, ...resolvePos(m) })),
       floorRegions: visibleFloorRegions ? floorRegions.filter(r => phaseVisible(r.phase)) : [],
     };
-  }, [view3d, splitView, walls, nodes, doors, windows, columns, zones, markers, floorRegions, visibleFloorRegions, phaseVisible, markerVisible, gn, resolvePos, resolvePoints]);
+  }, [show3d, walls, nodes, doors, windows, columns, zones, markers, floorRegions, visibleFloorRegions, phaseVisible, markerVisible, gn, resolvePos, resolvePoints]);
 
   const DimLbl = ({ cx, cy, text, angle, off = -14, color = T.dimText }) => {
     let a = angle; if (a > 90) a -= 180; if (a < -90) a += 180;
@@ -3782,6 +4048,83 @@ export default function TestfitTool() {
   };
 
   const isDrawing = drawChain || drawPolyZone || drawRevCloud || drawFlowPath || drawFloorRegion;
+
+  // ── Pane rendering ───────────────────────────────────────────────────
+  const render3dPane = () => (
+    <div style={{ width: "100%", height: "100%", position: "relative", background: T.canvas }}>
+      {data3d && <TestFit3D
+        walls={data3d.walls} nodes={data3d.nodes} doors={data3d.doors} windows={data3d.windows}
+        columns={data3d.columns} zones={data3d.zones} markers={data3d.markers} dims={dims}
+        pxPerFoot={pxPerFoot} ceilingHeight={ceilingHeight} T={T} themeMode={themeMode}
+        controlsRef={controls3dRef} mode={mode} selectedId={selectedId} selType={selType}
+        show3dLabels={show3dLabels} setShow3dLabels={setShow3dLabels}
+        show3dDims={show3dDims} setShow3dDims={setShow3dDims}
+        style3d={style3d} floorMaterial={floorMaterial} floorRegions={data3d.floorRegions}
+        zoneLibrary={zoneLibrary} visibleLayers={visibleLayers}
+        visibleBuildElectrical={visibleBuildElectrical} visibleBuildLighting={visibleBuildLighting}
+        onSelect={(id, type) => { setSelectedId(id); setSelType(type); setSelectedIds(id ? [id] : []); }}
+      />}
+      {/* 3D style switcher */}
+      <div style={{ position: "absolute", bottom: 12, left: "50%", transform: "translateX(-50%)", display: "flex", gap: 4, background: T.panelBg, border: "1px solid " + T.border, borderRadius: 8, padding: 4, backdropFilter: "blur(12px)", zIndex: 10 }}>
+        {[["clay", "Clay"], ["xray", "X-Ray"], ["detailed", "Detailed"]].map(([k, label]) => (
+          <button key={k} onClick={() => setStyle3d(k)}
+            style={{ padding: "4px 12px", borderRadius: 5, border: "none", cursor: "pointer", background: style3d === k ? T.accent + "40" : "transparent", color: style3d === k ? T.textBright : T.textMuted, fontSize: 10, fontFamily: "inherit", fontWeight: style3d === k ? 600 : 400, outline: style3d === k ? "1px solid " + T.accent : "none" }}>
+            {label}
+          </button>
+        ))}
+      </div>
+      <button onClick={() => controls3dRef.current?.reset()} title="Reset camera"
+        style={{ position: "absolute", bottom: 12, right: 12, zIndex: 10, display: "flex", alignItems: "center", justifyContent: "center", padding: "6px 8px", borderRadius: 6, border: "1px solid " + T.border, background: T.panelBg, color: T.textMuted, cursor: "pointer", backdropFilter: "blur(8px)", boxShadow: T.panelShadow }}>
+        <RotateCcw size={14} />
+      </button>
+    </div>
+  );
+  const renderAuxPane = (i) => {
+    const view = panes[i]?.view;
+    if (view === "3d") return render3dPane();
+    // elevation
+    const dir = view;
+    const anno = elevAnnotations[dir];
+    const placeDim = (d) => setElevAnnotations(prev => { const cur = prev[dir] || { dims: [], labels: [] }; const nid = uid(); setSelectedId(nid); setSelType("elevDim"); return { ...prev, [dir]: { ...cur, dims: [...(cur.dims || []), { id: nid, ...d }] } }; });
+    const placeLabel = (p) => { const text = window.prompt("Label text:"); if (text == null) return; setElevAnnotations(prev => { const cur = prev[dir] || { dims: [], labels: [] }; const nid = uid(); setSelectedId(nid); setSelType("elevLabel"); return { ...prev, [dir]: { ...cur, labels: [...(cur.labels || []), { id: nid, x: p.x, y: p.y, text }] } }; }); };
+    const updateDim = (id, patch) => setElevAnnotations(prev => { const cur = prev[dir] || { dims: [], labels: [] }; return { ...prev, [dir]: { ...cur, dims: (cur.dims || []).map(d => d.id === id ? { ...d, ...patch } : d) } }; });
+    const updateLabel = (id, patch) => setElevAnnotations(prev => { const cur = prev[dir] || { dims: [], labels: [] }; return { ...prev, [dir]: { ...cur, labels: (cur.labels || []).map(l => l.id === id ? { ...l, ...patch } : l) } }; });
+    return <ElevationView dir={dir} nodes={nodes} walls={walls} doors={doors} windows={windows} columns={columns}
+      ceilingHeight={ceilingHeight} pxPerFoot={pxPerFoot} T={T} ft={ft} tool={tool}
+      selectedId={selectedId} selType={selType}
+      onSelect={(id, type) => { setSelectedId(id); setSelType(type); setSelectedIds(id ? [id] : []); }}
+      anno={anno} onPlaceDim={placeDim} onPlaceLabel={placeLabel} onUpdateDim={updateDim} onUpdateLabel={updateLabel} />;
+  };
+  // Per-pane view selector chip (top-left of each pane). Plan pane is fixed.
+  const PaneChip = ({ i }) => {
+    const view = panes[i]?.view;
+    if (i === 0) return <div style={{ position: "absolute", top: 8, left: 8, zIndex: 12, padding: "3px 9px", borderRadius: 6, background: T.panelBg, border: "1px solid " + T.border, color: T.textMuted, fontSize: 10, fontWeight: 600, fontFamily: "inherit", backdropFilter: "blur(8px)", pointerEvents: "none" }}>Plan</div>;
+    return <select value={view} onChange={e => setPaneView(i, e.target.value)}
+      style={{ position: "absolute", top: 8, left: 8, zIndex: 12, padding: "3px 6px", borderRadius: 6, background: T.panelBg, border: "1px solid " + T.border, color: T.textBright, fontSize: 10, fontWeight: 600, fontFamily: "inherit", backdropFilter: "blur(8px)", cursor: "pointer", outline: "none" }}>
+      <option value="3d">3D</option>
+      {ELEV_DIRS.map(d => <option key={d} value={d}>{PANE_VIEW_LABEL[d]}</option>)}
+    </select>;
+  };
+  const VDivider = () => (
+    <div style={{ width: 5, flexShrink: 0, background: T.border, cursor: "col-resize", zIndex: 15, position: "relative" }}
+      onMouseEnter={e => e.currentTarget.style.background = T.accent}
+      onMouseLeave={e => e.currentTarget.style.background = T.border}
+      onMouseDown={e => { e.preventDefault(); const w = splitContainerRef.current?.getBoundingClientRect().width ?? 800; splitDragRef.current = { axis: "v", start: e.clientX, startPos: splitPos, span: w }; }}>
+      <div style={{ position: "absolute", top: "50%", left: "50%", transform: "translate(-50%,-50%)", display: "flex", flexDirection: "column", gap: 3, pointerEvents: "none" }}>
+        {[0, 1, 2].map(i => <div key={i} style={{ width: 3, height: 3, borderRadius: "50%", background: T.textMuted, opacity: 0.5 }} />)}
+      </div>
+    </div>
+  );
+  const HDivider = () => (
+    <div style={{ height: 5, flexShrink: 0, background: T.border, cursor: "row-resize", zIndex: 15, position: "relative" }}
+      onMouseEnter={e => e.currentTarget.style.background = T.accent}
+      onMouseLeave={e => e.currentTarget.style.background = T.border}
+      onMouseDown={e => { e.preventDefault(); const h = splitContainerRef.current?.getBoundingClientRect().height ?? 600; splitDragRef.current = { axis: "h", start: e.clientY, startPos: splitPosV, span: h }; }}>
+      <div style={{ position: "absolute", top: "50%", left: "50%", transform: "translate(-50%,-50%)", display: "flex", gap: 3, pointerEvents: "none" }}>
+        {[0, 1, 2].map(i => <div key={i} style={{ width: 3, height: 3, borderRadius: "50%", background: T.textMuted, opacity: 0.5 }} />)}
+      </div>
+    </div>
+  );
 
   return (
     <TooltipProvider>
@@ -4287,12 +4630,15 @@ export default function TestfitTool() {
           })()}
         </div>
 
-        {/* ── Canvas area — flex row, splits into 2D + 3D panes ── */}
-        <div ref={splitContainerRef} style={{ flex: 1, display: "flex", overflow: "hidden" }}>
-        <div ref={cvsContainer} style={splitView
+        {/* ── Canvas area — configurable panes (plan + elevations + 3D) ── */}
+        <div ref={splitContainerRef} style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", position: "relative" }}>
+        {/* Row 1 (plan + aux pane 1) */}
+        <div style={{ display: "flex", minHeight: 0, flex: panes.length === 4 ? "none" : 1, height: panes.length === 4 ? `${splitPosV * 100}%` : undefined }}>
+        <div ref={cvsContainer} style={panes.length > 1
           ? { ...S.cv, flex: "none", width: `${splitPos * 100}%` }
           : S.cv}>
-          {/* 3D controls row — all buttons inline at bottom-right */}
+          <PaneChip i={0} />
+          {/* 2D plan controls — bottom-right */}
           <div style={{ position: "absolute", bottom: 40, right: 12, zIndex: 20, display: "flex", alignItems: "center", justifyContent: "flex-end", flexWrap: "wrap", gap: 4, maxWidth: "calc(100vw - 24px)" }}>
             {view3d && (<>
               <Tooltip>
@@ -4347,24 +4693,6 @@ export default function TestfitTool() {
               </Tooltip>
               <div style={{ width: 1, height: 20, background: T.border, margin: "0 2px" }} />
             </>}
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <button onClick={() => { setSplitView(false); setView3d(v => !v); }} title={view3d ? "Switch to 2D (` key)" : "Switch to 3D (` key)"} style={{ display: "flex", alignItems: "center", gap: 5, padding: "5px 10px", fontSize: 11, fontWeight: 600, borderRadius: 6, border: "1px solid " + T.border, background: (view3d && !splitView) ? T.accent : T.panelBg, color: (view3d && !splitView) ? "#fff" : T.textMuted, cursor: "pointer", backdropFilter: "blur(8px)", boxShadow: T.panelShadow, userSelect: "none" }}>
-                  {(view3d && !splitView) ? <LayoutDashboard size={13} /> : <Box size={13} />}
-                  {(view3d && !splitView) ? "2D" : "3D"}
-                </button>
-              </TooltipTrigger>
-              <TooltipContent side="top" sideOffset={8}>{(view3d && !splitView) ? "Back to 2D (` key)" : "3D view (` key)"}</TooltipContent>
-            </Tooltip>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <button onClick={() => { setSplitView(v => !v); setView3d(false); }} style={{ display: "flex", alignItems: "center", gap: 5, padding: "5px 10px", fontSize: 11, fontWeight: 600, borderRadius: 6, border: "1px solid " + T.border, background: splitView ? T.accent : T.panelBg, color: splitView ? "#fff" : T.textMuted, cursor: "pointer", backdropFilter: "blur(8px)", boxShadow: T.panelShadow, userSelect: "none" }}>
-                  <Columns2 size={13} />
-                  Split
-                </button>
-              </TooltipTrigger>
-              <TooltipContent side="top" sideOffset={8}>Split 2D / 3D view</TooltipContent>
-            </Tooltip>
           </div>
 
           {view3d && !splitView && data3d && (
@@ -6528,88 +6856,25 @@ export default function TestfitTool() {
           </div>
         </div>
 
-        {/* ── Split-view: drag handle + 3D pane ── */}
-        {splitView && <>
-          {/* Drag handle */}
-          <div
-            style={{ width: 5, flexShrink: 0, background: T.border, cursor: "col-resize", zIndex: 15, position: "relative", transition: "background 0.15s" }}
-            onMouseEnter={e => e.currentTarget.style.background = T.accent}
-            onMouseLeave={e => e.currentTarget.style.background = T.border}
-            onMouseDown={e => {
-              e.preventDefault();
-              const w = splitContainerRef.current?.getBoundingClientRect().width ?? 800;
-              splitDragRef.current = { startX: e.clientX, startPos: splitPos, containerWidth: w };
-            }}
-          >
-            {/* Visual grip dots */}
-            <div style={{ position: "absolute", top: "50%", left: "50%", transform: "translate(-50%,-50%)", display: "flex", flexDirection: "column", gap: 3, pointerEvents: "none" }}>
-              {[0,1,2].map(i => <div key={i} style={{ width: 3, height: 3, borderRadius: "50%", background: T.textMuted, opacity: 0.5 }} />)}
-            </div>
+        {panes.length > 1 && <VDivider />}
+        {panes.length > 1 && <div style={{ flex: 1, position: "relative", minWidth: 0, overflow: "hidden" }}><PaneChip i={1} />{renderAuxPane(1)}</div>}
+        </div>{/* end Row 1 */}
+        {panes.length === 4 && <HDivider />}
+        {panes.length === 4 && (
+          <div style={{ display: "flex", minHeight: 0, flex: 1 }}>
+            <div style={{ width: `${splitPos * 100}%`, flex: "none", position: "relative", minWidth: 0, overflow: "hidden" }}><PaneChip i={2} />{renderAuxPane(2)}</div>
+            <VDivider />
+            <div style={{ flex: 1, position: "relative", minWidth: 0, overflow: "hidden" }}><PaneChip i={3} />{renderAuxPane(3)}</div>
           </div>
-
-          {/* 3D pane */}
-          <div style={{ flex: 1, position: "relative", overflow: "hidden", background: T.canvas }}>
-            {data3d && <TestFit3D
-              walls={data3d.walls}
-              nodes={data3d.nodes}
-              doors={data3d.doors}
-              windows={data3d.windows}
-              columns={data3d.columns}
-              zones={data3d.zones}
-              markers={data3d.markers}
-              dims={dims}
-              pxPerFoot={pxPerFoot} ceilingHeight={ceilingHeight} T={T} themeMode={themeMode}
-              controlsRef={controls3dRef} mode={mode}
-              selectedId={selectedId} selType={selType}
-              show3dLabels={show3dLabels} setShow3dLabels={setShow3dLabels}
-              show3dDims={show3dDims}     setShow3dDims={setShow3dDims}
-              style3d={style3d}
-              floorMaterial={floorMaterial}
-              floorRegions={data3d.floorRegions}
-              zoneLibrary={zoneLibrary}
-              visibleLayers={visibleLayers}
-              visibleBuildElectrical={visibleBuildElectrical}
-              visibleBuildLighting={visibleBuildLighting}
-              onSelect={(id, type) => { setSelectedId(id); setSelType(type); setSelectedIds(id ? [id] : []); }}
-            />}
-
-            {/* Labels / dims toggles — top-right of 3D pane */}
-            <div style={{ position: "absolute", top: 12, right: 12, zIndex: 20, display: "flex", alignItems: "center", gap: 4 }}>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button onClick={() => setShow3dLabels(v => !v)} style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: "6px 8px", borderRadius: 6, border: "1px solid " + T.border, background: show3dLabels ? T.accent : T.panelBg, color: show3dLabels ? "#fff" : T.textMuted, cursor: "pointer", backdropFilter: "blur(8px)", boxShadow: T.panelShadow, userSelect: "none" }}>
-                    <Tag size={14} />
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent side="bottom" sideOffset={8}>Labels</TooltipContent>
-              </Tooltip>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button onClick={() => setShow3dDims(v => !v)} style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: "6px 8px", borderRadius: 6, border: "1px solid " + T.border, background: show3dDims ? T.accent : T.panelBg, color: show3dDims ? "#fff" : T.textMuted, cursor: "pointer", backdropFilter: "blur(8px)", boxShadow: T.panelShadow, userSelect: "none" }}>
-                    <Ruler size={14} />
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent side="bottom" sideOffset={8}>Dimensions</TooltipContent>
-              </Tooltip>
-            </div>
-
-            {/* 3D style switcher — bottom center of 3D pane */}
-            <div style={{ position: "absolute", bottom: 16, left: "50%", transform: "translateX(-50%)",
-              display: "flex", gap: 4, background: T.panelBg, border: "1px solid " + T.border,
-              borderRadius: 8, padding: 4, backdropFilter: "blur(12px)", zIndex: 10 }}>
-              {[["clay","Clay"],["xray","X-Ray"],["detailed","Detailed"]].map(([k, label]) => (
-                <button key={k} onClick={() => setStyle3d(k)}
-                  style={{ padding: "5px 14px", borderRadius: 5, border: "none", cursor: "pointer",
-                    background: style3d === k ? T.accent + "40" : "transparent",
-                    color: style3d === k ? T.textBright : T.textMuted,
-                    fontSize: 11, fontFamily: "inherit", fontWeight: style3d === k ? 600 : 400,
-                    outline: style3d === k ? "1px solid " + T.accent : "none" }}>
-                  {label}
-                </button>
-              ))}
-            </div>
-          </div>
-        </>}
+        )}
+        {/* Layout switcher (single / split / quad) */}
+        <div style={{ position: "absolute", bottom: 12, right: 12, zIndex: 30, display: "flex", gap: 2, background: T.panelBg, border: "1px solid " + T.border, borderRadius: 8, padding: 3, backdropFilter: "blur(12px)", boxShadow: T.panelShadow }}>
+          {[[1, "▢", "Single"], [2, "◫", "Split"], [4, "⊞", "Quad"]].map(([n, g, label]) => (
+            <Tooltip key={n}><TooltipTrigger asChild>
+              <button onClick={() => setLayout(n)} style={{ padding: "4px 9px", borderRadius: 5, border: "none", cursor: "pointer", background: panes.length === n ? T.accent : "transparent", color: panes.length === n ? "#fff" : T.textMuted, fontSize: 13, fontWeight: 600, fontFamily: "inherit", lineHeight: 1 }}>{g}</button>
+            </TooltipTrigger><TooltipContent side="top" sideOffset={8}>{label}</TooltipContent></Tooltip>
+          ))}
+        </div>
 
         </div>{/* end splitContainerRef */}
       </div>
