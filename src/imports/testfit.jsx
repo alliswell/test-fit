@@ -699,6 +699,9 @@ export default function TestfitTool() {
   const [drawFlowPath, setDrawFlowPath] = useState(null); // null | { points:[{x,y}] }
   const [floorMaterial, setFloorMaterial] = useState("Wood"); // project default floor: Wood | Concrete | Vinyl | Carpet
   const [floorRegions, setFloorRegions] = useState([]); // [{id, points:[{x,y}], material, phase, label?}]
+  // Per-direction elevation annotations (separate coord space from plan dims/labels).
+  // Declared here (before `snapshot`) so it's initialized when snapshot's deps evaluate.
+  const [elevAnnotations, setElevAnnotations] = useState({});
   const [drawFloorRegion, setDrawFloorRegion] = useState(null); // null | { points:[{x,y}] }
   const FLOOR_MATERIALS = ["Wood", "Concrete", "Vinyl", "Carpet"];
   const FLOOR_MATERIAL_HEX = { "Wood": "#C8A878", "Concrete": "#AEABA4", "Vinyl": "#BFA889", "Carpet": "#786758" };
@@ -852,8 +855,6 @@ export default function TestfitTool() {
   // a view among 3d / front / back / left / right. 1 / 2 / 4 panes = single /
   // split / quad layout.
   const [panes, setPanes] = useState([{ view: "plan" }]);
-  // Per-direction elevation annotations (separate coord space from plan dims/labels).
-  const [elevAnnotations, setElevAnnotations] = useState({});
   const [splitPos, setSplitPos] = useState(0.5);   // vertical divider (left column fraction)
   const [splitPosV, setSplitPosV] = useState(0.5); // horizontal divider (top row fraction, quad)
   const splitDragRef = useRef(null); // { axis, startPos, containerPx }
