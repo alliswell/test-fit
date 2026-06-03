@@ -135,7 +135,8 @@ only surfaces the tools relevant to it.
 ## Tools & Features
 
 **Drawing**
-- **Wall** chains with node snapping, Shift-to-45° angle constraint, smart alignment
+- **Wall** chains with node snapping, **Shift = 90° ortho** (locks the segment to
+  horizontal or vertical, whichever way you're drawing), smart alignment
   guides, automatic mitering and wall-splitting.
 - **Doors** (Wood / Glass / Metal / Case Opening) that snap onto walls and show a
   swing arc; flippable hinge side.
@@ -158,7 +159,8 @@ only surfaces the tools relevant to it.
 - **Flow Paths** — adjustable-width circulation bands with clearance presets and a
   dashed centerline. Re-select the tool with a path selected to continue extending it.
 - **Floor Regions** — paint areas of the floor with a material (Wood / Concrete /
-  Vinyl / Carpet); rendered as a hatch in 2D and a textured surface in 3D.
+  Vinyl / Carpet); rendered as a hatch in 2D and a textured surface in 3D. Selecting a
+  region shows its **area in square feet** in the inspector.
 - **Floor material** — a project-wide default floor, overridden by any floor region.
 
 **Editing**
@@ -167,8 +169,11 @@ only surfaces the tools relevant to it.
 - Vertex / edge editing on every polygon type (zones, clouds, flow paths, floor
   regions): drag handles, double-click an edge to insert a vertex, double-click a
   vertex to remove it.
-- A consolidated **Visibility** panel (alphabetized) toggles every layer, including a
-  single master **IT / MEP** switch that hides all markers in any mode.
+- A consolidated **Layers** panel (alphabetized) where each layer can be **hidden**
+  (checkbox) or **locked** (🔓/🔒). A locked layer stays visible but its items can't be
+  hovered, selected, or edited — clicks pass through to whatever is beneath. Includes a
+  single master **IT / MEP** layer that hides/locks all markers in any mode. Layer
+  hide/lock state is saved with the project.
 
 **Project**
 - Undo / redo via a JSON-snapshot history stack.
@@ -297,7 +302,10 @@ alternative. All snapshots are stored in the project file and survive Save/Load.
 | ⌘Z / ⌘⇧Z  | Undo / Redo                     |
 | Esc       | Cancel current drawing          |
 
-Shift while placing keeps the tool active for rapid repeat placement.
+Shift while placing a single object (door / window / column / marker) keeps the tool
+active for rapid repeat placement. While drawing a multi-point object (walls, revision
+clouds, flow paths, floor regions), **hold Shift to lock the segment to 90° ortho** —
+horizontal or vertical relative to the previous point.
 
 ---
 

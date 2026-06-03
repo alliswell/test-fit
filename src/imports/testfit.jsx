@@ -184,6 +184,11 @@ function SliderInput({ value, min, max, step = 1, onChange, accent = "#9A9488", 
 const DOOR_WIDTHS = [36, 48, 60];
 const DOOR_TYPES = ["Wood", "Glass", "Metal", "Case Opening"];
 const DOOR_HEIGHT_IN = 84; // 7'-0" standard door height (matches 3D DOOR_HEIGHT_FT)
+// Power-layer markers split into Lighting vs Electrical by component type.
+const isLightComponent = (ct) => ct?.startsWith("light_") || ct?.startsWith("htrack_") || ct === "sconce_prewire" || ct === "pendent_prewire";
+// Shift-ortho: snap point B to a 90° (horizontal or vertical) line from anchor A,
+// choosing the axis the segment is mostly drawn along.
+const orthoSnap = (ax, ay, bx, by) => Math.abs(bx - ax) >= Math.abs(by - ay) ? { x: bx, y: ay } : { x: ax, y: by };
 const WINDOW_WIDTHS = [24, 36, 48, 60];
 const WINDOW_TYPES = ["Window", "Cut Opening"];
 
@@ -840,6 +845,15 @@ export default function TestfitTool() {
   const [visibleFlowPaths, setVisibleFlowPaths] = useState(true);
   const [visibleFloorRegions, setVisibleFloorRegions] = useState(true);
   const [visibleITMEP, setVisibleITMEP] = useState(true); // master IT/MEP marker visibility (all modes)
+  // Locked layers — keyed by layer id (zones/dims/labels/revClouds/flowPaths/floorRegions/itmep
+  // + spec layers). Locked items render but can't be hovered, selected, or edited.
+  const [lockedLayers, setLockedLayers] = useState({});
+  const layerLocked = useCallback((key) => !!lockedLayers[key], [lockedLayers]);
+  const markerLocked = useCallback((m) => {
+    if (lockedLayers.itmep) return true;
+    if (m.layer === "power") return isLightComponent(m.componentType) ? !!lockedLayers.light : !!lockedLayers.elec;
+    return !!lockedLayers[m.layer];
+  }, [lockedLayers]);
   const [selectedIds, setSelectedIds] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const [selType, setSelType] = useState(null);
@@ -967,8 +981,8 @@ export default function TestfitTool() {
 
   // getProjectData: full file payload — model + snapshot library + view layout.
   const getProjectData = useCallback(() => ({
-    ...captureModel(), snapshots, activeSnapshotId, panes, splitPos, splitPosV,
-  }), [captureModel, snapshots, activeSnapshotId, panes, splitPos, splitPosV]);
+    ...captureModel(), snapshots, activeSnapshotId, panes, splitPos, splitPosV, lockedLayers,
+  }), [captureModel, snapshots, activeSnapshotId, panes, splitPos, splitPosV, lockedLayers]);
 
   const exportProject = useCallback(() => {
     const data = getProjectData();
@@ -1117,6 +1131,7 @@ export default function TestfitTool() {
         setColumns(arr(d.columns)); setDims(arr(d.dims)); setLabels(arr(d.labels)); setRevClouds(arr(d.revClouds)); setFlowPaths(arr(d.flowPaths)); setFloorRegions(arr(d.floorRegions)); if (d.floorMaterial) setFloorMaterial(d.floorMaterial);
         setElevAnnotations(d.elevAnnotations && typeof d.elevAnnotations === "object" ? d.elevAnnotations : {});
         if (Array.isArray(d.panes) && d.panes.length) setPanes(d.panes); else setPanes([{ view: "plan" }]);
+        setLockedLayers(d.lockedLayers && typeof d.lockedLayers === "object" ? d.lockedLayers : {});
         if (typeof d.splitPos === "number") setSplitPos(d.splitPos);
         if (typeof d.splitPosV === "number") setSplitPosV(d.splitPosV);
         setBgOpacity(d.bgOpacity ?? 0.35); setBgScale(d.bgScale ?? 1);
@@ -1147,7 +1162,7 @@ export default function TestfitTool() {
   const newProject = useCallback(() => {
     setProjectName("New Club"); setNodes([]); setWalls([]); setZones([]);
     setMarkers([]); setDoors([]); setWindows([]); setDims([]); setLabels([]); setRevClouds([]); setFlowPaths([]); setFloorRegions([]); setFloorMaterial("Wood");
-    setElevAnnotations({}); setPanes([{ view: "plan" }]);
+    setElevAnnotations({}); setPanes([{ view: "plan" }]); setLockedLayers({});
     setBgImage(null); setBgOpacity(0.35); setBgScale(1); setBgOffset({ x: 0, y: 0 });
     setPxPerFoot(20); setShowDims(true); setShowGrid(true);
     setSelectedId(null); setSelType(null); setDrawChain(null); setDrawPolyZone(null); setCursorPos(null);
@@ -1213,12 +1228,12 @@ export default function TestfitTool() {
       for (const c of columns) { if (!phaseVisible(c.phase)) continue; const rp = resolvePos(c); add("column", c.id, rp.x, rp.y); }
       for (const dd of doors) { if (!phaseVisible(dd.phase)) continue; const rp = resolvePos(dd); add("door", dd.id, rp.x, rp.y); }
       for (const w of windows) { if (!phaseVisible(w.phase)) continue; const rp = resolvePos(w); add("window", w.id, rp.x, rp.y); }
-      for (const m of markers) { if (m.layer !== "power" || !markerVisible(m)) continue; const rp = resolvePos(m); add("marker", m.id, rp.x, rp.y); }
+      for (const m of markers) { if (m.layer !== "power" || !markerVisible(m) || markerLocked(m)) continue; const rp = resolvePos(m); add("marker", m.id, rp.x, rp.y); }
     } else if (mode === "itmep") {
-      for (const m of markers) { if (!markerVisible(m)) continue; const rp = resolvePos(m); add("marker", m.id, rp.x, rp.y); }
+      for (const m of markers) { if (!markerVisible(m) || markerLocked(m)) continue; const rp = resolvePos(m); add("marker", m.id, rp.x, rp.y); }
     }
     // ── Universal annotations (available in every mode that allows selecting them) ──
-    for (const lbl of labels) { if (!phaseVisible(lbl.phase)) continue;
+    if (!layerLocked("labels")) for (const lbl of labels) { if (!phaseVisible(lbl.phase)) continue;
       add("label", lbl.id, lbl.x, lbl.y);
       if (lbl.lx != null) add("label-tip", lbl.id, lbl.lx, lbl.ly);
     }
@@ -1241,7 +1256,7 @@ export default function TestfitTool() {
       if (fp?.points) fp.points.forEach((p, i) => add("flowPath-vertex", fp.id, p.x, p.y, i));
     }
     return best;
-  }, [mode, nodes, markers, columns, doors, windows, labels, zones, floorRegions, revClouds, flowPaths, selType, selectedId, markerVisible, phaseVisible, resolvePos, resolvePoints]);
+  }, [mode, nodes, markers, columns, doors, windows, labels, zones, floorRegions, revClouds, flowPaths, selType, selectedId, markerVisible, phaseVisible, resolvePos, resolvePoints, layerLocked, markerLocked]);
   const wallsAt = useCallback((nid) => walls.filter(w => w.n1 === nid || w.n2 === nid), [walls]);
 
   // Snap for dimension tool: snaps to any significant point on canvas
@@ -1461,7 +1476,7 @@ export default function TestfitTool() {
 
   const hitTest = useCallback((pos) => {
     // Dim strings are always selectable in any mode
-    for (let i = dims.length - 1; i >= 0; i--) {
+    for (let i = dims.length - 1; i >= 0 && !layerLocked("dims"); i--) {
       const d = dims[i];
       const dx2 = d.x2 - d.x1, dy2 = d.y2 - d.y1, dlen = Math.hypot(dx2, dy2);
       if (dlen < 1) continue;
@@ -1482,7 +1497,7 @@ export default function TestfitTool() {
       for (let i = markers.length - 1; i >= 0; i--) {
         const p = markers[i];
         if (p.layer !== "power") continue;
-        if (!markerVisible(p)) continue;
+        if (!markerVisible(p) || markerLocked(p)) continue;
         const rp = resolvePos(p);
         const ct = p.componentType;
         const isHtrack = ct === "htrack_4" || ct === "htrack_8" || ct === "htrack";
@@ -1512,7 +1527,7 @@ export default function TestfitTool() {
       for (let i = walls.length - 1; i >= 0; i--) { const w = walls[i]; if (!phaseVisible(w.phase)) continue; const c = wc(w); if (c && ptSeg(pos.x, pos.y, c.x1, c.y1, c.x2, c.y2) < 10) return { type: "wall", id: w.id }; }
     } else if (mode === "zone") {
       // In ZONE mode — check zone vertices first, then edges, then zone bodies (all using resolved positions)
-      for (let i = zones.length - 1; i >= 0; i--) { const z = zones[i];
+      for (let i = zones.length - 1; i >= 0 && !layerLocked("zones"); i--) { const z = zones[i];
         if (!phaseVisible(z.phase)) continue;
         if (z.points && (selectedId === z.id || selectedIds.includes(z.id))) {
           const rpts = resolvePoints(z);
@@ -1521,7 +1536,7 @@ export default function TestfitTool() {
           }
         }
       }
-      for (let i = zones.length - 1; i >= 0; i--) { const z = zones[i];
+      for (let i = zones.length - 1; i >= 0 && !layerLocked("zones"); i--) { const z = zones[i];
         if (!phaseVisible(z.phase)) continue;
         if (z.points && (selectedId === z.id || selectedIds.includes(z.id))) {
           const rpts = resolvePoints(z);
@@ -1531,15 +1546,15 @@ export default function TestfitTool() {
           }
         }
       }
-      for (let i = zones.length - 1; i >= 0; i--) { const z = zones[i];
+      for (let i = zones.length - 1; i >= 0 && !layerLocked("zones"); i--) { const z = zones[i];
         if (!phaseVisible(z.phase)) continue;
         if (z.points) { if (pointInPoly(pos.x, pos.y, resolvePoints(z))) return { type: "zone", id: z.id }; }
         else { if (pos.x >= z.x && pos.x <= z.x + z.w && pos.y >= z.y && pos.y <= z.y + z.h) return { type: "zone", id: z.id }; }
       }
     } else if (mode === "itmep") {
-      for (let i = markers.length - 1; i >= 0; i--) { const p = markers[i]; if (!markerVisible(p)) continue; const rp = resolvePos(p); if (dst(pos.x, pos.y, rp.x, rp.y) < 14) return { type: "marker", id: p.id }; }
+      for (let i = markers.length - 1; i >= 0; i--) { const p = markers[i]; if (!markerVisible(p) || markerLocked(p)) continue; const rp = resolvePos(p); if (dst(pos.x, pos.y, rp.x, rp.y) < 14) return { type: "marker", id: p.id }; }
     }
-    for (let i = labels.length - 1; i >= 0; i--) {
+    for (let i = labels.length - 1; i >= 0 && !layerLocked("labels"); i--) {
       const lbl = labels[i];
       if (!phaseVisible(lbl.phase)) continue;
       // Leader tip hit (small circle, checked before box so tip is always reachable)
@@ -1553,7 +1568,7 @@ export default function TestfitTool() {
         return { type: "label", id: lbl.id };
     }
     // RevCloud hit testing
-    for (let i = revClouds.length - 1; i >= 0; i--) {
+    for (let i = revClouds.length - 1; i >= 0 && !layerLocked("revClouds"); i--) {
       const rc = revClouds[i];
       if (!phaseVisible(rc.phase)) continue;
       const isSel = selectedId === rc.id && selType === "revcloud";
@@ -1571,7 +1586,7 @@ export default function TestfitTool() {
         return { type: "revcloud", id: rc.id };
     }
     // Flow path hit testing — open polyline, band half-width as the hit margin.
-    for (let i = flowPaths.length - 1; i >= 0; i--) {
+    for (let i = flowPaths.length - 1; i >= 0 && !layerLocked("flowPaths"); i--) {
       const fp = flowPaths[i];
       if (!phaseVisible(fp.phase)) continue;
       const isSel = selectedId === fp.id && selType === "flowPath";
@@ -1587,7 +1602,7 @@ export default function TestfitTool() {
       }
     }
     // Floor region hit testing — checked last so everything above wins.
-    for (let i = floorRegions.length - 1; i >= 0; i--) {
+    for (let i = floorRegions.length - 1; i >= 0 && !layerLocked("floorRegions"); i--) {
       const fr = floorRegions[i];
       if (!phaseVisible(fr.phase)) continue;
       const isSel = selectedId === fr.id && selType === "floorRegion";
@@ -1605,7 +1620,7 @@ export default function TestfitTool() {
         return { type: "floorRegion", id: fr.id };
     }
     return null;
-  }, [mode, nodes, walls, zones, markers, doors, windows, columns, dims, labels, revClouds, flowPaths, floorRegions, pxPerFoot, wc, inToPx, selectedId, selectedIds, selType, resolvePos, resolvePoints, phaseVisible, resolveLeaderTip]);
+  }, [mode, nodes, walls, zones, markers, doors, windows, columns, dims, labels, revClouds, flowPaths, floorRegions, pxPerFoot, wc, inToPx, selectedId, selectedIds, selType, resolvePos, resolvePoints, phaseVisible, resolveLeaderTip, layerLocked, markerLocked]);
 
   const onDown = useCallback((e) => {
     // Pan with middle click or spacebar held
@@ -1622,12 +1637,8 @@ export default function TestfitTool() {
         setDrawChain(null); setCursorPos(null); setDimInput(""); return;
       }
       if (e.shiftKey && drawChain) {
-        const dx = sx - drawChain.lastX, dy = sy - drawChain.lastY;
-        const angle = Math.atan2(dy, dx);
-        const snapped = Math.round(angle / (Math.PI / 4)) * (Math.PI / 4);
-        const dist = Math.hypot(dx, dy);
-        sx = sn(drawChain.lastX + Math.cos(snapped) * dist, snapGrid);
-        sy = sn(drawChain.lastY + Math.sin(snapped) * dist, snapGrid);
+        const o = orthoSnap(drawChain.lastX, drawChain.lastY, sx, sy);
+        sx = sn(o.x, snapGrid); sy = sn(o.y, snapGrid);
       }
       const near = findNear(sx, sy, drawChain?.lastNodeId ? [drawChain.lastNodeId] : []);
       // If no nearby node, snap to wall body if cursor is close
@@ -1752,7 +1763,9 @@ export default function TestfitTool() {
     }
     if (tool === "revcloud") {
       const near = findNear(pos.x, pos.y);
-      const cx = near ? near.x : sx, cy = near ? near.y : sy;
+      let cx = near ? near.x : sx, cy = near ? near.y : sy;
+      const lpRC = drawRevCloud?.points?.[drawRevCloud.points.length - 1];
+      if (e.shiftKey && lpRC) { const o = orthoSnap(lpRC.x, lpRC.y, sx, sy); cx = o.x; cy = o.y; }
       if (!drawRevCloud) {
         setDrawRevCloud({ points: [{ x: cx, y: cy }] });
       } else {
@@ -1792,7 +1805,9 @@ export default function TestfitTool() {
         return;
       }
       const near = findNear(pos.x, pos.y);
-      const cx = near ? near.x : sx, cy = near ? near.y : sy;
+      let cx = near ? near.x : sx, cy = near ? near.y : sy;
+      const lpFP = drawFlowPath?.points?.[drawFlowPath.points.length - 1];
+      if (e.shiftKey && lpFP) { const o = orthoSnap(lpFP.x, lpFP.y, sx, sy); cx = o.x; cy = o.y; }
       if (!drawFlowPath) {
         setDrawFlowPath({ points: [{ x: cx, y: cy }] });
       } else {
@@ -1816,7 +1831,9 @@ export default function TestfitTool() {
         }
       }
       const near = findNear(pos.x, pos.y);
-      const cx = near ? near.x : sx, cy = near ? near.y : sy;
+      let cx = near ? near.x : sx, cy = near ? near.y : sy;
+      const lpFR = drawFloorRegion?.points?.[drawFloorRegion.points.length - 1];
+      if (e.shiftKey && lpFR) { const o = orthoSnap(lpFR.x, lpFR.y, sx, sy); cx = o.x; cy = o.y; }
       if (!drawFloorRegion) {
         setDrawFloorRegion({ points: [{ x: cx, y: cy }] });
       } else {
@@ -2340,12 +2357,8 @@ export default function TestfitTool() {
     // Wall chain: track cursor for preview
     if (isWallTool(tool)) {
       if (e.shiftKey && drawChain) {
-        const dx = sx - drawChain.lastX, dy = sy - drawChain.lastY;
-        const angle = Math.atan2(dy, dx);
-        const snapped = Math.round(angle / (Math.PI / 4)) * (Math.PI / 4);
-        const dist = Math.hypot(dx, dy);
-        sx = sn(drawChain.lastX + Math.cos(snapped) * dist, snapGrid);
-        sy = sn(drawChain.lastY + Math.sin(snapped) * dist, snapGrid);
+        const o = orthoSnap(drawChain.lastX, drawChain.lastY, sx, sy);
+        sx = sn(o.x, snapGrid); sy = sn(o.y, snapGrid);
       }
       const near = findNear(sx, sy, drawChain?.lastNodeId ? [drawChain.lastNodeId] : []);
       const wallSnap2 = !near ? snapToWall(sx, sy, SNAP_R) : null;
@@ -2398,12 +2411,14 @@ export default function TestfitTool() {
     if (tool === "dim") { const dsnap = findDimSnap(pos.x, pos.y); setGhostPos(dsnap ? { x: dsnap.x, y: dsnap.y, snapped: true } : { x: pos.x, y: pos.y, snapped: false }); }
     if (tool === "zone" || tool === "marker" || tool === "column") { setGhostPos({ x: sx, y: sy }); }
     if (tool === "revcloud") {
-      const near = findNear(pos.x, pos.y);
-      setGhostPos(near ? { x: near.x, y: near.y, snapped: true } : { x: sx, y: sy, snapped: false });
+      const lp = drawRevCloud?.points?.[drawRevCloud.points.length - 1];
+      if (e.shiftKey && lp) { const o = orthoSnap(lp.x, lp.y, sx, sy); setGhostPos({ x: o.x, y: o.y, snapped: false }); }
+      else { const near = findNear(pos.x, pos.y); setGhostPos(near ? { x: near.x, y: near.y, snapped: true } : { x: sx, y: sy, snapped: false }); }
     }
     if (tool === "flowPath") {
-      const near = findNear(pos.x, pos.y);
-      setGhostPos(near ? { x: near.x, y: near.y, snapped: true } : { x: sx, y: sy, snapped: false });
+      const lp = drawFlowPath?.points?.[drawFlowPath.points.length - 1];
+      if (e.shiftKey && lp) { const o = orthoSnap(lp.x, lp.y, sx, sy); setGhostPos({ x: o.x, y: o.y, snapped: false }); }
+      else { const near = findNear(pos.x, pos.y); setGhostPos(near ? { x: near.x, y: near.y, snapped: true } : { x: sx, y: sy, snapped: false }); }
     }
     if (tool === "floorRegion") {
       // snap-to-first when near the opening vertex (3+ pts) for a clean close
@@ -2412,6 +2427,8 @@ export default function TestfitTool() {
         const p0 = drawFloorRegion.points[0];
         if (dst(pos.x, pos.y, p0.x, p0.y) < SNAP_R * 1.5) { setGhostPos({ x: p0.x, y: p0.y, snapped: true, closing: true }); snappedFirst = true; }
       }
+      const lp = drawFloorRegion?.points?.[drawFloorRegion.points.length - 1];
+      if (!snappedFirst && e.shiftKey && lp) { const o = orthoSnap(lp.x, lp.y, sx, sy); setGhostPos({ x: o.x, y: o.y, snapped: false }); snappedFirst = true; }
       if (!snappedFirst) {
         const near = findNear(pos.x, pos.y);
         setGhostPos(near ? { x: near.x, y: near.y, snapped: true } : { x: sx, y: sy, snapped: false });
@@ -4593,39 +4610,45 @@ export default function TestfitTool() {
           </div>
           {/* ── Visibility panel — all modes ── */}
           {(() => {
-            const isLightComp = ct => ct?.startsWith("light_") || ct?.startsWith("htrack_") || ct === "sconce_prewire" || ct === "pendent_prewire";
+            const isLightComp = isLightComponent;
             const rows = [
-              // Universal items
-              { key: "grid",       label: "Grid",           color: T.textMuted,            visible: showGrid,              toggle: () => setShowGrid(v => !v),              count: null },
-              { key: "zones",      label: "Zones",          color: T.uiZone ?? "#6A9BCC", visible: visibleZones,          toggle: () => setVisibleZones(v => !v),          count: zones.length },
-              { key: "dims",       label: "Dimensions",     color: T.dimText,              visible: visibleDims,           toggle: () => setVisibleDims(v => !v),           count: dims.length },
-              { key: "labels",     label: "Labels",         color: T.textBright,           visible: visibleLabels,         toggle: () => setVisibleLabels(v => !v),         count: labels.length },
-              { key: "revClouds",  label: "Rev Clouds",     color: "#E05252",              visible: visibleRevClouds,      toggle: () => setVisibleRevClouds(v => !v),      count: revClouds.length },
-              { key: "flowPaths",  label: "Flow Paths",     color: "#4A90D9",              visible: visibleFlowPaths,      toggle: () => setVisibleFlowPaths(v => !v),      count: flowPaths.length },
-              { key: "floorRegions", label: "Floors",       color: "#7A9E5A",              visible: visibleFloorRegions,   toggle: () => setVisibleFloorRegions(v => !v),   count: floorRegions.length },
-              { key: "itmep",      label: "IT / MEP",       color: T.uiElec ?? "#E0A030",  visible: visibleITMEP,          toggle: () => setVisibleITMEP(v => !v),          count: markers.length },
+              // Universal items (lockable = items can be locked from selection/editing)
+              { key: "grid",       label: "Grid",           color: T.textMuted,            visible: showGrid,              toggle: () => setShowGrid(v => !v),              count: null, lockable: false },
+              { key: "zones",      label: "Zones",          color: T.uiZone ?? "#6A9BCC", visible: visibleZones,          toggle: () => setVisibleZones(v => !v),          count: zones.length, lockable: true },
+              { key: "dims",       label: "Dimensions",     color: T.dimText,              visible: visibleDims,           toggle: () => setVisibleDims(v => !v),           count: dims.length, lockable: true },
+              { key: "labels",     label: "Labels",         color: T.textBright,           visible: visibleLabels,         toggle: () => setVisibleLabels(v => !v),         count: labels.length, lockable: true },
+              { key: "revClouds",  label: "Rev Clouds",     color: "#E05252",              visible: visibleRevClouds,      toggle: () => setVisibleRevClouds(v => !v),      count: revClouds.length, lockable: true },
+              { key: "flowPaths",  label: "Flow Paths",     color: "#4A90D9",              visible: visibleFlowPaths,      toggle: () => setVisibleFlowPaths(v => !v),      count: flowPaths.length, lockable: true },
+              { key: "floorRegions", label: "Floors",       color: "#7A9E5A",              visible: visibleFloorRegions,   toggle: () => setVisibleFloorRegions(v => !v),   count: floorRegions.length, lockable: true },
+              { key: "itmep",      label: "IT / MEP",       color: T.uiElec ?? "#E0A030",  visible: visibleITMEP,          toggle: () => setVisibleITMEP(v => !v),          count: markers.length, lockable: true },
               // ITMEP-specific per-layer toggles (only inside IT/MEP mode, and only when the master is on)
               ...(mode === "itmep" && visibleITMEP ? [
-                { key: "elec",   label: "Electrical", color: T.uiElec,     visible: visibleBuildElectrical, toggle: () => setVisibleBuildElectrical(v => !v), count: markers.filter(m => m.layer === "power" && !isLightComp(m.componentType)).length },
-                { key: "light",  label: "Lighting",   color: T.uiLighting, visible: visibleBuildLighting,   toggle: () => setVisibleBuildLighting(v => !v),   count: markers.filter(m => m.layer === "power" && isLightComp(m.componentType)).length },
+                { key: "elec",   label: "Electrical", color: T.uiElec,     visible: visibleBuildElectrical, toggle: () => setVisibleBuildElectrical(v => !v), count: markers.filter(m => m.layer === "power" && !isLightComp(m.componentType)).length, lockable: true },
+                { key: "light",  label: "Lighting",   color: T.uiLighting, visible: visibleBuildLighting,   toggle: () => setVisibleBuildLighting(v => !v),   count: markers.filter(m => m.layer === "power" && isLightComp(m.componentType)).length, lockable: true },
               ] : []),
               // ITMEP spec layers
               ...(mode === "itmep" && visibleITMEP ? Object.entries(SPEC_LAYERS).filter(([k]) => k !== "power").map(([k, l]) => ({
                 key: k, label: l.name, color: uiColor(l.color), visible: visibleLayers[k],
                 toggle: () => setVisibleLayers(v => ({ ...v, [k]: !v[k] })),
-                count: markers.filter(m => m.layer === k).length,
+                count: markers.filter(m => m.layer === k).length, lockable: true,
               })) : []),
             ];
+            const toggleLock = (key) => setLockedLayers(v => ({ ...v, [key]: !v[key] }));
             return (
               <div style={{ borderTop: "1px solid " + T.bg3, padding: "10px 12px", background: T.bg1, flexShrink: 0 }}>
-                <div style={{ fontSize: 9, color: T.textDim, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6, fontWeight: 600 }}>Visibility</div>
-                {[...rows].sort((a, b) => a.label.localeCompare(b.label)).map(({ key, label, color, visible, toggle, count }) => (
+                <div style={{ fontSize: 9, color: T.textDim, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6, fontWeight: 600 }}>Layers</div>
+                {[...rows].sort((a, b) => a.label.localeCompare(b.label)).map(({ key, label, color, visible, toggle, count, lockable }) => {
+                  const locked = lockable && layerLocked(key);
+                  return (
                   <div key={key} style={{ ...S.lr, padding: "4px 4px", borderRadius: 6, marginBottom: 1 }}>
                     <div style={S.chk(visible, color)} onClick={toggle}>{visible && "✓"}</div>
-                    <span style={{ color: visible ? T.accent : T.textMuted, flex: 1, fontSize: 11 }}>{label}</span>
+                    <span style={{ color: locked ? T.textDim : visible ? T.accent : T.textMuted, flex: 1, fontSize: 11 }}>{label}</span>
                     {count != null && <span style={{ color: visible ? color : T.accentDim, fontSize: 10, fontWeight: 500 }}>{count}</span>}
+                    {lockable && <span onClick={() => toggleLock(key)} title={locked ? "Locked — click to unlock" : "Lock layer"}
+                      style={{ cursor: "pointer", fontSize: 11, width: 16, textAlign: "center", color: locked ? T.accent : T.textFaint, userSelect: "none" }}>{locked ? "🔒" : "🔓"}</span>}
                   </div>
-                ))}
+                  );
+                })}
               </div>
             );
           })()}
@@ -5029,7 +5052,7 @@ export default function TestfitTool() {
                 const d = "M " + fr.points.map(p => `${p.x},${p.y}`).join(" L ") + " Z";
                 const hatchId = FLOOR_MATERIAL_HATCHES[fr.material] || FLOOR_MATERIAL_HATCHES.Wood;
                 const c = polyCentroid(fr.points);
-                return <g key={fr.id} style={{ cursor: tool === "select" ? "pointer" : "inherit" }}
+                return <g key={fr.id} style={{ cursor: tool === "select" ? "pointer" : "inherit", pointerEvents: layerLocked("floorRegions") ? "none" : undefined }}
                   onClick={() => { if (tool === "select") { setSelectedId(fr.id); setSelType("floorRegion"); setSelectedIds([fr.id]); } }}>
                   <path d={d} fill={`url(#${hatchId})`} stroke={sel ? T.accent : "transparent"} strokeWidth={sel ? 1.5 : 0} strokeDasharray={sel ? "4 3" : "none"} />
                   {sel && fr.points.map((a, ei) => {
@@ -5302,7 +5325,7 @@ export default function TestfitTool() {
               {visibleDims && dims.map(d => {
                 const sel = selectedId === d.id && selType === "dim";
                 const dr = { ...d, ...resolveDimEndpoints(d) };
-                return <g key={d.id} onClick={() => { setSelectedId(d.id); setSelType("dim"); }}><DimString d={dr} sel={sel} /></g>;
+                return <g key={d.id} style={{ pointerEvents: layerLocked("dims") ? "none" : undefined }} onClick={() => { setSelectedId(d.id); setSelType("dim"); }}><DimString d={dr} sel={sel} /></g>;
               })}
 
               {/* Labels & Callouts */}
@@ -5313,7 +5336,7 @@ export default function TestfitTool() {
                 const sel = selectedId === lbl.id && selType === "label";
                 const tip = resolveLeaderTip(lbl);
                 const lblR = { ...lbl, lx: tip.lx, ly: tip.ly };
-                return <g key={lbl.id}
+                return <g key={lbl.id} style={{ pointerEvents: layerLocked("labels") ? "none" : undefined }}
                   onClick={(e) => {
                     if (e.detail >= 2) {
                       setEditingLabelId(lbl.id); setEditingLabelText(lbl.text);
@@ -5376,7 +5399,7 @@ export default function TestfitTool() {
                 const sel = selectedId === rc.id && selType === "revcloud";
                 const d = revCloudPath(rc.points, rc.arcR ?? 8);
                 const c = polyCentroid(rc.points);
-                return <g key={rc.id} style={{ cursor: tool === "select" ? (sel ? "move" : "pointer") : "inherit" }}
+                return <g key={rc.id} style={{ cursor: tool === "select" ? (sel ? "move" : "pointer") : "inherit", pointerEvents: layerLocked("revClouds") ? "none" : undefined }}
                   onClick={() => { if (tool === "select") { setSelectedId(rc.id); setSelType("revcloud"); setSelectedIds([rc.id]); } }}>
                   {/* Interior hit area — move cursor */}
                   <path d={d} fill="transparent" stroke="none" />
@@ -5441,7 +5464,7 @@ export default function TestfitTool() {
                 const d = "M " + fp.points.map(p => `${p.x},${p.y}`).join(" L ");
                 const bandPx = (fp.width / 12) * pxPerFoot;
                 const cx = fp.points.reduce((s,p)=>s+p.x,0)/fp.points.length, cy = fp.points.reduce((s,p)=>s+p.y,0)/fp.points.length;
-                return <g key={fp.id} style={{ cursor: tool === "select" ? "pointer" : "inherit" }}
+                return <g key={fp.id} style={{ cursor: tool === "select" ? "pointer" : "inherit", pointerEvents: layerLocked("flowPaths") ? "none" : undefined }}
                   onClick={() => { if (tool === "select") { setSelectedId(fp.id); setSelType("flowPath"); setSelectedIds([fp.id]); } }}>
                   <path d={d} fill="none" stroke={fp.color} strokeWidth={bandPx} strokeOpacity={sel ? 0.32 : 0.22}
                     strokeLinecap="round" strokeLinejoin="round" />
@@ -5938,8 +5961,13 @@ export default function TestfitTool() {
             </>}
             {selectedIds.length <= 1 && selFloorRegion && (() => {
               const FR_COLORS = { "Wood": "#C8A878", "Concrete": "#AEABA4", "Vinyl": "#BFA889", "Carpet": "#786758" };
+              const frSf = selFloorRegion.points?.length >= 3 ? Math.round(polyArea(selFloorRegion.points) / (pxPerFoot * pxPerFoot)) : 0;
               return <>
                 <div style={{ fontSize: 12, color: T.textBright, marginBottom: 10, fontWeight: 600 }}>Floor Region · {selFloorRegion.material}</div>
+                <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 10, padding: "6px 9px", background: T.bg2, borderRadius: 5 }}>
+                  <span style={{ fontSize: 10, color: T.textMuted }}>Area</span>
+                  <span style={{ fontSize: 13, fontWeight: 600, color: T.textBright }}>{frSf.toLocaleString()} sf</span>
+                </div>
                 <div style={{ marginBottom: 10 }}>
                   <div style={S.lbl}>Material</div>
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
