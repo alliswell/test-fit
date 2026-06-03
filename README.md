@@ -183,13 +183,16 @@ only surfaces the tools relevant to it.
   calibration.
 - **Light and dark themes** (light is default; wall colors darken for contrast).
 - **Collapsible sidebar** and responsive panel widths for small screens.
+- **Left tool rail** — the tool palette is a fixed vertical rail on the left edge of the
+  canvas area (full height, scrolls if a mode has more tools than fit). It's independent
+  of the pane layout, so every tool stays reachable even in quad view.
 
 ---
 
 ## Views & Panes
 
-The canvas is a **configurable pane layout** rather than a single view. A switcher
-(bottom-right: ▢ single / ◫ split / ⊞ quad) sets how many panes are shown, and each
+The canvas is a **configurable pane layout** rather than a single view. A switcher in the
+**top bar** (▢ single / ◫ split / ⊞ quad) sets how many panes are shown, and each
 pane has its own selector chip (top-left) choosing what it displays:
 
 - The **Plan** pane (top-left) is always the interactive editing canvas — all drawing

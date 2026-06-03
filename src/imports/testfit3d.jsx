@@ -1341,9 +1341,13 @@ export default function TestFit3D({
       <Canvas
         shadows={style3d === "detailed" ? "soft" : false}
         dpr={[1, 1.5]}
-        camera={{ fov: 50, near: 0.1, far: 2000 }}
+        camera={{ fov: 50, near: 0.1, far: 1000 }}
         gl={{
           antialias: true,
+          // Uniform depth precision across distance — without it the floor / grid /
+          // floor-region surfaces z-fight (flicker) when zoomed out, where the
+          // standard depth buffer's far-side precision is too coarse to separate them.
+          logarithmicDepthBuffer: true,
           toneMapping: style3d === "detailed" ? THREE.ACESFilmicToneMapping : THREE.NoToneMapping,
           toneMappingExposure: 0.95,
           outputColorSpace: THREE.SRGBColorSpace,
@@ -1403,7 +1407,9 @@ export default function TestFit3D({
           />
         )}
         {style3d !== "detailed" && (
-          <Grid args={[500, 500]} cellSize={1} sectionSize={10} cellColor={gridCell} sectionColor={gridSec} position={[gridOffX, 0.002, gridOffZ]} fadeDistance={camDist * 2.5} fadeStrength={1.2} />
+          // Sits clearly above the floor stack (base 0.001, regions 0.004, selection 0.012)
+          // so it never z-fights with the floor — a 0.001 gap flickered at camera distance.
+          <Grid args={[500, 500]} cellSize={1} sectionSize={10} cellColor={gridCell} sectionColor={gridSec} position={[gridOffX, 0.02, gridOffZ]} fadeDistance={camDist * 2.5} fadeStrength={1.2} />
         )}
 
         {walls.map(w => (

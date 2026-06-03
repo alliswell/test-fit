@@ -461,6 +461,7 @@ function ElevationView({ dir, nodes, walls, doors, windows, columns, ceilingHeig
   const [cam, setCam] = useState(null); // { tx, ty, z } — null until first auto-fit
   const panRef = useRef(null);
   const dimDraftRef = useRef(null);
+  const fittedRef = useRef(null); // last direction we auto-fit, so edits don't reset the camera
   const [dimDraft, setDimDraft] = useState(null); // elevation-space {x1,y1,x2,y2?}
 
   // Project a plan point (x,y) to elevation horizontal u + depth d (for painter sort).
@@ -530,18 +531,19 @@ function ElevationView({ dir, nodes, walls, doors, windows, columns, ceilingHeig
     return { uMin, uMax, vTop: ceilV, vBot: 0 };
   }, [items, ceilV]);
 
-  // Auto-fit camera once we know the pane size (and refit when direction changes).
+  // Auto-fit the camera once per direction (on mount / when the direction changes).
+  // Guarded by fittedRef so editing geometry doesn't reset the user's pan/zoom; retries
+  // across bounds changes only until the first successful fit for this direction.
   useEffect(() => {
+    if (fittedRef.current === dir) return;
     const el = svgRef.current; if (!el) return;
-    const fit = () => {
-      const r = el.getBoundingClientRect(); if (!r.width || !r.height) return;
-      const m = 48;
-      const cw = (bounds.uMax - bounds.uMin) || 200, ch = (bounds.vBot - bounds.vTop) || 200;
-      const z = Math.min((r.width - 2 * m) / cw, (r.height - 2 * m) / ch, 4);
-      const cx = (bounds.uMin + bounds.uMax) / 2, cy = (bounds.vTop + bounds.vBot) / 2;
-      setCam({ z, tx: r.width / 2 - cx * z, ty: r.height / 2 - cy * z });
-    };
-    fit();
+    const r = el.getBoundingClientRect(); if (!r.width || !r.height) return;
+    const m = 48;
+    const cw = (bounds.uMax - bounds.uMin) || 200, ch = (bounds.vBot - bounds.vTop) || 200;
+    const z = Math.min((r.width - 2 * m) / cw, (r.height - 2 * m) / ch, 4);
+    const cx = (bounds.uMin + bounds.uMax) / 2, cy = (bounds.vTop + bounds.vBot) / 2;
+    setCam({ z, tx: r.width / 2 - cx * z, ty: r.height / 2 - cy * z });
+    fittedRef.current = dir;
   }, [dir, bounds.uMin, bounds.uMax, bounds.vTop, bounds.vBot]);
 
   const cm = cam || { tx: 0, ty: 0, z: 1 };
@@ -2991,37 +2993,37 @@ export default function TestfitTool() {
           }
         });
         markers.forEach(m => {
-          if (!markerVisible(m)) return;
+          if (!markerVisible(m) || markerLocked(m)) return;
           const rp = resolvePos(m);
           if (rp.x >= minX && rp.x <= maxX && rp.y >= minY && rp.y <= maxY) {
             selected.push({ id: m.id, type: "marker" });
           }
         });
-        labels.forEach(lbl => {
+        if (!layerLocked("labels")) labels.forEach(lbl => {
           if (!phaseVisible(lbl.phase)) return;
           if (lbl.x >= minX && lbl.x <= maxX && lbl.y >= minY && lbl.y <= maxY)
             selected.push({ id: lbl.id, type: "label" });
         });
-        revClouds.forEach(rc => {
+        if (!layerLocked("revClouds")) revClouds.forEach(rc => {
           if (!phaseVisible(rc.phase)) return;
           const c = polyCentroid(rc.points);
           if (c.x >= minX && c.x <= maxX && c.y >= minY && c.y <= maxY)
             selected.push({ id: rc.id, type: "revcloud" });
         });
-        flowPaths.forEach(fp => {
+        if (!layerLocked("flowPaths")) flowPaths.forEach(fp => {
           if (!phaseVisible(fp.phase)) return;
           const cx = fp.points.reduce((s,p)=>s+p.x,0)/fp.points.length, cy = fp.points.reduce((s,p)=>s+p.y,0)/fp.points.length;
           if (cx >= minX && cx <= maxX && cy >= minY && cy <= maxY)
             selected.push({ id: fp.id, type: "flowPath" });
         });
-        floorRegions.forEach(fr => {
+        if (!layerLocked("floorRegions")) floorRegions.forEach(fr => {
           if (!phaseVisible(fr.phase)) return;
           const c = polyCentroid(fr.points);
           if (c.x >= minX && c.x <= maxX && c.y >= minY && c.y <= maxY)
             selected.push({ id: fr.id, type: "floorRegion" });
         });
       } else if (mode === "zone") {
-        zones.forEach(z => {
+        if (!layerLocked("zones")) zones.forEach(z => {
           if (!phaseVisible(z.phase)) return;
           const rpts = resolvePoints(z);
           const zx = z.points ? polyCentroid(rpts).x : z.x + z.w / 2;
@@ -3032,7 +3034,7 @@ export default function TestfitTool() {
         });
       } else if (mode === "itmep") {
         markers.forEach(m => {
-          if (!markerVisible(m)) return;
+          if (!markerVisible(m) || markerLocked(m)) return;
           const rp = resolvePos(m);
           if (rp.x >= minX && rp.x <= maxX && rp.y >= minY && rp.y <= maxY) {
             selected.push({ id: m.id, type: "marker" });
@@ -3092,7 +3094,7 @@ export default function TestfitTool() {
     }
     // No re-clipping on zone drag/vertex drag end — user controls shape manually
     setDrag(null); setResize(null); setPanning(false); setPanSt(null); setHoverNid(null); setProxHover(null); setRotatingMarker(null); setSmartGuides([]);
-  }, [drag, resize, hoverNid, marquee, selectedIds, selectedId, mode, nodes, walls, doors, windows, zones, markers, columns, labels, revClouds, flowPaths, floorRegions, phaseVisible, resolvePos, resolvePoints, wc, lastCopyInfo, s2c, themeMode, activePhase, snapLabelAnchor]);
+  }, [drag, resize, hoverNid, marquee, selectedIds, selectedId, mode, nodes, walls, doors, windows, zones, markers, columns, labels, revClouds, flowPaths, floorRegions, phaseVisible, resolvePos, resolvePoints, wc, lastCopyInfo, s2c, themeMode, activePhase, snapLabelAnchor, layerLocked, markerLocked]);
 
   // Smooth zoom centered on cursor
   const onWheel = useCallback((e) => {
@@ -3994,17 +3996,19 @@ export default function TestfitTool() {
       transition: "all 0.12s ease"
     }),
     det: {
-      position: "absolute",
-      top: "12px",
+      // Fixed to the viewport's top-right (under the 44px top bar) so the option panel
+      // is always in the screen corner, not trapped in the (small, in split/quad) plan pane.
+      position: "fixed",
+      top: "52px",
       right: "12px",
       width: "clamp(190px, 20vw, 230px)",
-      maxHeight: "calc(100vh - 120px)",
+      maxHeight: "calc(100vh - 64px)",
       overflow: "auto",
       background: T.panelBg,
       border: "1px solid " + T.border,
       borderRadius: "8px",
       padding: "12px",
-      zIndex: 10,
+      zIndex: 50,
       backdropFilter: "blur(12px)",
       boxShadow: T.panelShadow
     },
@@ -4017,22 +4021,20 @@ export default function TestfitTool() {
     sh: { fontSize: "10px", color: T.textMuted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: "8px", fontWeight: 600 },
     smBtn: { padding: "5px 9px", background: "transparent", color: T.accent, border: "1.5px solid " + T.bg3, borderRadius: "5px", cursor: "pointer", fontSize: "10px", fontFamily: "inherit", transition: "all 0.15s ease", fontWeight: 500 },
     bg: { position: "absolute", bottom: "92px", left: "16px", display: "flex", gap: "8px", alignItems: "center", background: T.panelBg, border: "1px solid " + T.border, borderRadius: "6px", padding: "6px 12px", zIndex: 10, fontSize: "10px", backdropFilter: "blur(12px)", boxShadow: T.panelShadow },
-    floatingToolbar: {
-      position: "absolute",
-      left: "50%",
-      bottom: "36px",
-      transform: "translateX(-50%)",
+    toolRail: {
+      width: 52,
+      flexShrink: 0,
+      background: T.bg1,
+      borderRight: "1px solid " + T.bg3,
       display: "flex",
-      flexDirection: "row",
-      gap: "6px",
-      background: T.toolbarBg,
-      border: "1px solid " + T.border,
-      borderRadius: "12px",
-      padding: "10px 14px",
-      zIndex: 100,
-      backdropFilter: "blur(16px)",
-      boxShadow: T.toolbarShadow
+      flexDirection: "column",
+      alignItems: "center",
+      gap: 4,
+      padding: "8px 0",
+      overflowY: "auto",
+      overflowX: "hidden",
     },
+    toolSepH: { height: 1, width: 28, background: T.border, margin: "4px 0", flexShrink: 0 },
     toolBtn: (a, c) => ({
       width: "44px",
       height: "44px",
@@ -4277,6 +4279,15 @@ export default function TestfitTool() {
         <button style={S.smBtn} onClick={() => loadRef.current?.click()}>Load</button>
         <button style={S.smBtn} onClick={() => { if (walls.length || zones.length || markers.length) { if (confirm("New project?")) newProject(); } else newProject(); }}>New</button>
         <input ref={loadRef} type="file" accept=".json" style={{ display: "none" }} onChange={e => { const f = e.target.files?.[0]; if (f) importProject(f); e.target.value = ""; }} />
+        <div style={{ width: 1, height: 20, background: T.border, margin: "0 3px" }} />
+        {/* Layout switcher (single / split / quad) — always visible in the top bar */}
+        <div style={{ display: "flex", gap: 2, alignItems: "center" }}>
+          {[[1, "▢", "Single"], [2, "◫", "Split"], [4, "⊞", "Quad"]].map(([n, g, label]) => (
+            <Tooltip key={n}><TooltipTrigger asChild>
+              <button onClick={() => setLayout(n)} style={{ padding: "4px 9px", borderRadius: 5, border: "none", cursor: "pointer", background: panes.length === n ? T.accent : "transparent", color: panes.length === n ? "#fff" : T.textMuted, fontSize: 13, fontWeight: 600, fontFamily: "inherit", lineHeight: 1 }}>{g}</button>
+            </TooltipTrigger><TooltipContent>{label} layout</TooltipContent></Tooltip>
+          ))}
+        </div>
         <div style={{ width: 1, height: 20, background: T.border, margin: "0 3px" }} />
         <Tooltip>
           <TooltipTrigger asChild>
@@ -4633,7 +4644,13 @@ export default function TestfitTool() {
                 count: markers.filter(m => m.layer === k).length, lockable: true,
               })) : []),
             ];
-            const toggleLock = (key) => setLockedLayers(v => ({ ...v, [key]: !v[key] }));
+            const toggleLock = (key) => {
+              const locking = !lockedLayers[key];
+              setLockedLayers(v => ({ ...v, [key]: !v[key] }));
+              // Locking drops the current selection so a pre-selected item on a now-locked
+              // layer can't still be nudged / deleted / edited via the inspector.
+              if (locking) { setSelectedId(null); setSelType(null); setSelectedIds([]); }
+            };
             return (
               <div style={{ borderTop: "1px solid " + T.bg3, padding: "10px 12px", background: T.bg1, flexShrink: 0 }}>
                 <div style={{ fontSize: 9, color: T.textDim, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6, fontWeight: 600 }}>Layers</div>
@@ -4653,6 +4670,281 @@ export default function TestfitTool() {
             );
           })()}
         </div>
+
+        {/* ── Left tool rail (all modes) ── */}
+          <div style={S.toolRail}>
+
+            {/* ── Universal tools (Select · Dim · Label · RevCloud) ── */}
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button style={S.toolBtn(tool === "select")} onClick={() => setT("select")}>
+                  <MousePointer2 size={20} />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="right" sideOffset={8}>Select (V)</TooltipContent>
+            </Tooltip>
+
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button style={S.toolBtn(tool === "dim", T.dimText)} onClick={() => setT("dim")}>
+                  <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                    <line x1="3" y1="10" x2="17" y2="10" stroke={T.dimText} strokeWidth="1" />
+                    <line x1="3" y1="6" x2="3" y2="14" stroke={T.dimText} strokeWidth="1.5" />
+                    <line x1="17" y1="6" x2="17" y2="14" stroke={T.dimText} strokeWidth="1.5" />
+                    <line x1="3" y1="7" x2="5.5" y2="10" stroke={T.dimText} strokeWidth="1" />
+                    <line x1="3" y1="13" x2="5.5" y2="10" stroke={T.dimText} strokeWidth="1" />
+                    <line x1="17" y1="7" x2="14.5" y2="10" stroke={T.dimText} strokeWidth="1" />
+                    <line x1="17" y1="13" x2="14.5" y2="10" stroke={T.dimText} strokeWidth="1" />
+                  </svg>
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="right" sideOffset={8}>Dimension (M)</TooltipContent>
+            </Tooltip>
+
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button style={S.toolBtn(tool === "label", T.textBright)} onClick={() => setT("label")}>
+                  <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                    <text x="10" y="15" textAnchor="middle" fontSize="15" fontWeight="700"
+                      fill={tool === "label" ? T.textBright : T.textMuted} fontFamily="sans-serif">T</text>
+                  </svg>
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="right" sideOffset={8}>Label / Callout (T)</TooltipContent>
+            </Tooltip>
+
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button style={S.toolBtn(tool === "revcloud", "#E05252")} onClick={() => setT("revcloud")}>
+                  <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                    <path d="M10 16 A3 3 0 0 1 4 16 A3 3 0 0 1 2 11 A3 3 0 0 1 5 6 A3 3 0 0 1 10 5 A3 3 0 0 1 15 6 A3 3 0 0 1 18 11 A3 3 0 0 1 16 16 Z"
+                      stroke={tool === "revcloud" ? "#E05252" : T.textMuted} strokeWidth="1.5" strokeLinejoin="round" />
+                  </svg>
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="right" sideOffset={8}>Revision Cloud (N)</TooltipContent>
+            </Tooltip>
+
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button style={S.toolBtn(tool === "flowPath", "#4A90D9")} onClick={() => setT("flowPath")}>
+                  <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                    <path d="M3 15 L8 7 L13 12 L17 5" stroke={tool === "flowPath" ? "#4A90D9" : T.textMuted} strokeWidth="3.5" strokeOpacity="0.3" strokeLinecap="round" strokeLinejoin="round" />
+                    <path d="M3 15 L8 7 L13 12 L17 5" stroke={tool === "flowPath" ? "#4A90D9" : T.textMuted} strokeWidth="1" strokeDasharray="2 2" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="right" sideOffset={8}>Flow Path (K)</TooltipContent>
+            </Tooltip>
+
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button style={S.toolBtn(tool === "floorRegion", "#7A9E5A")} onClick={() => setT("floorRegion")}>
+                  <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                    <rect x="3" y="3" width="14" height="14" rx="1.5" stroke={tool === "floorRegion" ? "#7A9E5A" : T.textMuted} strokeWidth="1.5" />
+                    <line x1="3" y1="8"  x2="17" y2="8"  stroke={tool === "floorRegion" ? "#7A9E5A" : T.textMuted} strokeWidth="0.8" opacity="0.6" />
+                    <line x1="3" y1="12" x2="17" y2="12" stroke={tool === "floorRegion" ? "#7A9E5A" : T.textMuted} strokeWidth="0.8" opacity="0.6" />
+                  </svg>
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="right" sideOffset={8}>Floor Region (A)</TooltipContent>
+            </Tooltip>
+
+            {/* ── Build-mode tools ───────────────────────────────────── */}
+            {mode === "build" && <>
+              <div style={S.toolSepH} />
+
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button style={S.toolBtn(tool === "wall", wallKinds[wallKind].color)} onClick={() => setT("wall")}>
+                    <WallIcon />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="right" sideOffset={8}>Wall <kbd style={{ background:"#333", border:"1px solid #555", borderRadius:3, padding:"1px 4px", fontSize:10 }}>W</kbd></TooltipContent>
+              </Tooltip>
+
+              <div style={S.toolSepH} />
+
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button style={S.toolBtn(tool === "door")} onClick={() => setT("door")}>
+                    <DoorOpen size={20} />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="right" sideOffset={8}>Door</TooltipContent>
+              </Tooltip>
+
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button style={S.toolBtn(tool === "window")} onClick={() => setT("window")}>
+                    <WindowIcon />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="right" sideOffset={8}>Window</TooltipContent>
+              </Tooltip>
+
+              <div style={S.toolSepH} />
+
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button style={S.toolBtn(tool === "column")} onClick={() => setT("column")}>
+                    <ColumnIcon />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="right" sideOffset={8}>Column (C)</TooltipContent>
+              </Tooltip>
+
+              {bgImage && <>
+                <div style={S.toolSepH} />
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button style={S.toolBtn(tool === "calibrate", T.uiConduit)} onClick={() => setT("calibrate")}>
+                      <Ruler size={20} />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="right" sideOffset={8}>Calibrate Scale</TooltipContent>
+                </Tooltip>
+              </>}
+            </>}
+
+            {/* ── ITMEP-mode tools ── */}
+            {mode === "itmep" && <>
+              <div style={S.toolSepH} />
+
+              {/* Power layer: Outlet + Lighting */}
+              {activeSpecLayer === "power" && <>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button style={S.toolBtn(tool === "outlet", T.uiElec)} onClick={() => setT("outlet")}>
+                      <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                        <circle cx="10" cy="10" r="7" stroke="#50C878" strokeWidth="1.5" />
+                        <line x1="3" y1="10" x2="17" y2="10" stroke="#50C878" strokeWidth="2" />
+                        <text x="10" y="9" textAnchor="middle" fontSize="5.5" fill="#50C878" fontWeight="bold">D</text>
+                      </svg>
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="right" sideOffset={8}>Outlet (E)</TooltipContent>
+                </Tooltip>
+
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button style={S.toolBtn(tool === "lighting", T.uiLighting)} onClick={() => setT("lighting")}>
+                      <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                        <circle cx="10" cy="10" r="5" stroke={T.uiLighting} strokeWidth="1.5" />
+                        <circle cx="10" cy="10" r="2" fill={T.uiLighting} />
+                        <line x1="10" y1="1" x2="10" y2="4" stroke={T.uiLighting} strokeWidth="1.5" />
+                        <line x1="10" y1="16" x2="10" y2="19" stroke={T.uiLighting} strokeWidth="1.5" />
+                        <line x1="1" y1="10" x2="4" y2="10" stroke={T.uiLighting} strokeWidth="1.5" />
+                        <line x1="16" y1="10" x2="19" y2="10" stroke={T.uiLighting} strokeWidth="1.5" />
+                      </svg>
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="right" sideOffset={8}>Lighting (L)</TooltipContent>
+                </Tooltip>
+              </>}
+
+              {activeSpecLayer === "av" && <>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button style={S.toolBtn(tool === "marker" && activeComponentType === "wall_speaker", SPEC_LAYERS.av.color)} onClick={() => { setActiveComponentType("wall_speaker"); setT("marker"); }}>
+                      <span style={{ fontSize: 16 }}>🔊</span>
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="right" sideOffset={8}>Wall Speaker</TooltipContent>
+                </Tooltip>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button style={S.toolBtn(tool === "marker" && activeComponentType === "subwoofer", SPEC_LAYERS.av.color)} onClick={() => { setActiveComponentType("subwoofer"); setT("marker"); }}>
+                      <span style={{ fontSize: 16 }}>📻</span>
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="right" sideOffset={8}>Subwoofer</TooltipContent>
+                </Tooltip>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button style={S.toolBtn(tool === "marker" && activeComponentType === "pendant_speaker", SPEC_LAYERS.av.color)} onClick={() => { setActiveComponentType("pendant_speaker"); setT("marker"); }}>
+                      <span style={{ fontSize: 16 }}>🔈</span>
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="right" sideOffset={8}>Pendant Speaker</TooltipContent>
+                </Tooltip>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button style={S.toolBtn(tool === "marker" && activeComponentType === "speaker_line", SPEC_LAYERS.av.color)} onClick={() => { setActiveComponentType("speaker_line"); setT("marker"); }}>
+                      <span style={{ fontSize: 16 }}>📡</span>
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="right" sideOffset={8}>Speaker Line</TooltipContent>
+                </Tooltip>
+              </>}
+
+              {activeSpecLayer === "it" && <>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button style={S.toolBtn(tool === "marker" && activeComponentType === "router", SPEC_LAYERS.it.color)} onClick={() => { setActiveComponentType("router"); setT("marker"); }}>
+                      <span style={{ fontSize: 16 }}>📶</span>
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="right" sideOffset={8}>Router</TooltipContent>
+                </Tooltip>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button style={S.toolBtn(tool === "marker" && activeComponentType === "access_point", SPEC_LAYERS.it.color)} onClick={() => { setActiveComponentType("access_point"); setT("marker"); }}>
+                      <span style={{ fontSize: 16 }}>📡</span>
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="right" sideOffset={8}>Access Point</TooltipContent>
+                </Tooltip>
+              </>}
+
+              {activeSpecLayer === "mep" && <>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button style={S.toolBtn(tool === "marker" && activeComponentType === "drain_line", SPEC_LAYERS.mep.color)} onClick={() => { setActiveComponentType("drain_line"); setT("marker"); }}>
+                      <svg width="20" height="20" viewBox="0 0 20 20"><circle cx="10" cy="10" r="7" fill="none" stroke="#50A070" strokeWidth="2" /><text x="10" y="13" textAnchor="middle" fontSize="10" fill="#50A070" fontWeight="bold">D</text></svg>
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="right" sideOffset={8}>Drain Line</TooltipContent>
+                </Tooltip>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button style={S.toolBtn(tool === "marker" && activeComponentType === "water_line", SPEC_LAYERS.mep.color)} onClick={() => { setActiveComponentType("water_line"); setT("marker"); }}>
+                      <svg width="20" height="20" viewBox="0 0 20 20"><circle cx="10" cy="10" r="7" fill="none" stroke="#5050A0" strokeWidth="2" /><text x="10" y="13" textAnchor="middle" fontSize="10" fill="#5050A0" fontWeight="bold">W</text></svg>
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="right" sideOffset={8}>Water Line</TooltipContent>
+                </Tooltip>
+              </>}
+
+              {activeSpecLayer === "security" && <>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button style={S.toolBtn(tool === "marker" && activeComponentType === "white_camera", SPEC_LAYERS.security.color)} onClick={() => { setActiveComponentType("white_camera"); setT("marker"); }}>
+                      <svg width="20" height="20" viewBox="0 0 20 20"><circle cx="10" cy="10" r="7" fill="none" stroke="#E8E0D0" strokeWidth="2" /><text x="10" y="13" textAnchor="middle" fontSize="10" fill="#E8E0D0" fontWeight="bold">C</text></svg>
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="right" sideOffset={8}>White Camera</TooltipContent>
+                </Tooltip>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button style={S.toolBtn(tool === "marker" && activeComponentType === "black_camera", SPEC_LAYERS.security.color)} onClick={() => { setActiveComponentType("black_camera"); setT("marker"); }}>
+                      <svg width="20" height="20" viewBox="0 0 20 20"><circle cx="10" cy="10" r="7" fill="none" stroke="#2A2A26" strokeWidth="2" /><text x="10" y="13" textAnchor="middle" fontSize="10" fill="#2A2A26" fontWeight="bold">C</text></svg>
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="right" sideOffset={8}>Black Camera</TooltipContent>
+                </Tooltip>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button style={S.toolBtn(tool === "marker" && activeComponentType === "outdoor_camera", SPEC_LAYERS.security.color)} onClick={() => { setActiveComponentType("outdoor_camera"); setT("marker"); }}>
+                      <svg width="20" height="20" viewBox="0 0 20 20"><circle cx="10" cy="10" r="7" fill="none" stroke="#556B2F" strokeWidth="2" /><text x="10" y="13" textAnchor="middle" fontSize="10" fill="#556B2F" fontWeight="bold">O</text></svg>
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="right" sideOffset={8}>Outdoor Camera</TooltipContent>
+                </Tooltip>
+              </>}
+            </>}
+
+          </div>
 
         {/* ── Canvas area — configurable panes (plan + elevations + 3D) ── */}
         <div ref={splitContainerRef} style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", position: "relative" }}>
@@ -6589,280 +6881,6 @@ export default function TestfitTool() {
 
           {bgImage && <div style={S.bg}><span style={{ color: T.textMuted, fontSize: 10, fontWeight: 500 }}>Underlay</span><input type="range" min="0" max="100" value={bgOpacity * 100} onChange={e => setBgOpacity(e.target.value / 100)} style={{ width: 70, accentColor: "#9A9488", height: 4 }} /><span style={{ fontSize: 10, fontWeight: 500 }}>{Math.round(bgOpacity * 100)}%</span></div>}
 
-          {/* ── Floating Toolbar (all modes) ────────────────────────── */}
-          <div style={S.floatingToolbar}>
-
-            {/* ── Universal tools (Select · Dim · Label · RevCloud) ── */}
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <button style={S.toolBtn(tool === "select")} onClick={() => setT("select")}>
-                  <MousePointer2 size={20} />
-                </button>
-              </TooltipTrigger>
-              <TooltipContent side="top" sideOffset={8}>Select (V)</TooltipContent>
-            </Tooltip>
-
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <button style={S.toolBtn(tool === "dim", T.dimText)} onClick={() => setT("dim")}>
-                  <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-                    <line x1="3" y1="10" x2="17" y2="10" stroke={T.dimText} strokeWidth="1" />
-                    <line x1="3" y1="6" x2="3" y2="14" stroke={T.dimText} strokeWidth="1.5" />
-                    <line x1="17" y1="6" x2="17" y2="14" stroke={T.dimText} strokeWidth="1.5" />
-                    <line x1="3" y1="7" x2="5.5" y2="10" stroke={T.dimText} strokeWidth="1" />
-                    <line x1="3" y1="13" x2="5.5" y2="10" stroke={T.dimText} strokeWidth="1" />
-                    <line x1="17" y1="7" x2="14.5" y2="10" stroke={T.dimText} strokeWidth="1" />
-                    <line x1="17" y1="13" x2="14.5" y2="10" stroke={T.dimText} strokeWidth="1" />
-                  </svg>
-                </button>
-              </TooltipTrigger>
-              <TooltipContent side="top" sideOffset={8}>Dimension (M)</TooltipContent>
-            </Tooltip>
-
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <button style={S.toolBtn(tool === "label", T.textBright)} onClick={() => setT("label")}>
-                  <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-                    <text x="10" y="15" textAnchor="middle" fontSize="15" fontWeight="700"
-                      fill={tool === "label" ? T.textBright : T.textMuted} fontFamily="sans-serif">T</text>
-                  </svg>
-                </button>
-              </TooltipTrigger>
-              <TooltipContent side="top" sideOffset={8}>Label / Callout (T)</TooltipContent>
-            </Tooltip>
-
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <button style={S.toolBtn(tool === "revcloud", "#E05252")} onClick={() => setT("revcloud")}>
-                  <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-                    <path d="M10 16 A3 3 0 0 1 4 16 A3 3 0 0 1 2 11 A3 3 0 0 1 5 6 A3 3 0 0 1 10 5 A3 3 0 0 1 15 6 A3 3 0 0 1 18 11 A3 3 0 0 1 16 16 Z"
-                      stroke={tool === "revcloud" ? "#E05252" : T.textMuted} strokeWidth="1.5" strokeLinejoin="round" />
-                  </svg>
-                </button>
-              </TooltipTrigger>
-              <TooltipContent side="top" sideOffset={8}>Revision Cloud (N)</TooltipContent>
-            </Tooltip>
-
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <button style={S.toolBtn(tool === "flowPath", "#4A90D9")} onClick={() => setT("flowPath")}>
-                  <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-                    <path d="M3 15 L8 7 L13 12 L17 5" stroke={tool === "flowPath" ? "#4A90D9" : T.textMuted} strokeWidth="3.5" strokeOpacity="0.3" strokeLinecap="round" strokeLinejoin="round" />
-                    <path d="M3 15 L8 7 L13 12 L17 5" stroke={tool === "flowPath" ? "#4A90D9" : T.textMuted} strokeWidth="1" strokeDasharray="2 2" strokeLinecap="round" strokeLinejoin="round" />
-                  </svg>
-                </button>
-              </TooltipTrigger>
-              <TooltipContent side="top" sideOffset={8}>Flow Path (K)</TooltipContent>
-            </Tooltip>
-
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <button style={S.toolBtn(tool === "floorRegion", "#7A9E5A")} onClick={() => setT("floorRegion")}>
-                  <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-                    <rect x="3" y="3" width="14" height="14" rx="1.5" stroke={tool === "floorRegion" ? "#7A9E5A" : T.textMuted} strokeWidth="1.5" />
-                    <line x1="3" y1="8"  x2="17" y2="8"  stroke={tool === "floorRegion" ? "#7A9E5A" : T.textMuted} strokeWidth="0.8" opacity="0.6" />
-                    <line x1="3" y1="12" x2="17" y2="12" stroke={tool === "floorRegion" ? "#7A9E5A" : T.textMuted} strokeWidth="0.8" opacity="0.6" />
-                  </svg>
-                </button>
-              </TooltipTrigger>
-              <TooltipContent side="top" sideOffset={8}>Floor Region (A)</TooltipContent>
-            </Tooltip>
-
-            {/* ── Build-mode tools ───────────────────────────────────── */}
-            {mode === "build" && <>
-              <div style={S.toolSep} />
-
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button style={S.toolBtn(tool === "wall", wallKinds[wallKind].color)} onClick={() => setT("wall")}>
-                    <WallIcon />
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent side="top" sideOffset={8}>Wall <kbd style={{ background:"#333", border:"1px solid #555", borderRadius:3, padding:"1px 4px", fontSize:10 }}>W</kbd></TooltipContent>
-              </Tooltip>
-
-              <div style={S.toolSep} />
-
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button style={S.toolBtn(tool === "door")} onClick={() => setT("door")}>
-                    <DoorOpen size={20} />
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent side="top" sideOffset={8}>Door</TooltipContent>
-              </Tooltip>
-
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button style={S.toolBtn(tool === "window")} onClick={() => setT("window")}>
-                    <WindowIcon />
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent side="top" sideOffset={8}>Window</TooltipContent>
-              </Tooltip>
-
-              <div style={S.toolSep} />
-
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button style={S.toolBtn(tool === "column")} onClick={() => setT("column")}>
-                    <ColumnIcon />
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent side="top" sideOffset={8}>Column (C)</TooltipContent>
-              </Tooltip>
-
-              {bgImage && <>
-                <div style={S.toolSep} />
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button style={S.toolBtn(tool === "calibrate", T.uiConduit)} onClick={() => setT("calibrate")}>
-                      <Ruler size={20} />
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent side="top" sideOffset={8}>Calibrate Scale</TooltipContent>
-                </Tooltip>
-              </>}
-            </>}
-
-            {/* ── ITMEP-mode tools ── */}
-            {mode === "itmep" && <>
-              <div style={S.toolSep} />
-
-              {/* Power layer: Outlet + Lighting */}
-              {activeSpecLayer === "power" && <>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button style={S.toolBtn(tool === "outlet", T.uiElec)} onClick={() => setT("outlet")}>
-                      <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-                        <circle cx="10" cy="10" r="7" stroke="#50C878" strokeWidth="1.5" />
-                        <line x1="3" y1="10" x2="17" y2="10" stroke="#50C878" strokeWidth="2" />
-                        <text x="10" y="9" textAnchor="middle" fontSize="5.5" fill="#50C878" fontWeight="bold">D</text>
-                      </svg>
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent side="top" sideOffset={8}>Outlet (E)</TooltipContent>
-                </Tooltip>
-
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button style={S.toolBtn(tool === "lighting", T.uiLighting)} onClick={() => setT("lighting")}>
-                      <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-                        <circle cx="10" cy="10" r="5" stroke={T.uiLighting} strokeWidth="1.5" />
-                        <circle cx="10" cy="10" r="2" fill={T.uiLighting} />
-                        <line x1="10" y1="1" x2="10" y2="4" stroke={T.uiLighting} strokeWidth="1.5" />
-                        <line x1="10" y1="16" x2="10" y2="19" stroke={T.uiLighting} strokeWidth="1.5" />
-                        <line x1="1" y1="10" x2="4" y2="10" stroke={T.uiLighting} strokeWidth="1.5" />
-                        <line x1="16" y1="10" x2="19" y2="10" stroke={T.uiLighting} strokeWidth="1.5" />
-                      </svg>
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent side="top" sideOffset={8}>Lighting (L)</TooltipContent>
-                </Tooltip>
-              </>}
-
-              {activeSpecLayer === "av" && <>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button style={S.toolBtn(tool === "marker" && activeComponentType === "wall_speaker", SPEC_LAYERS.av.color)} onClick={() => { setActiveComponentType("wall_speaker"); setT("marker"); }}>
-                      <span style={{ fontSize: 16 }}>🔊</span>
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent side="top" sideOffset={8}>Wall Speaker</TooltipContent>
-                </Tooltip>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button style={S.toolBtn(tool === "marker" && activeComponentType === "subwoofer", SPEC_LAYERS.av.color)} onClick={() => { setActiveComponentType("subwoofer"); setT("marker"); }}>
-                      <span style={{ fontSize: 16 }}>📻</span>
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent side="top" sideOffset={8}>Subwoofer</TooltipContent>
-                </Tooltip>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button style={S.toolBtn(tool === "marker" && activeComponentType === "pendant_speaker", SPEC_LAYERS.av.color)} onClick={() => { setActiveComponentType("pendant_speaker"); setT("marker"); }}>
-                      <span style={{ fontSize: 16 }}>🔈</span>
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent side="top" sideOffset={8}>Pendant Speaker</TooltipContent>
-                </Tooltip>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button style={S.toolBtn(tool === "marker" && activeComponentType === "speaker_line", SPEC_LAYERS.av.color)} onClick={() => { setActiveComponentType("speaker_line"); setT("marker"); }}>
-                      <span style={{ fontSize: 16 }}>📡</span>
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent side="top" sideOffset={8}>Speaker Line</TooltipContent>
-                </Tooltip>
-              </>}
-
-              {activeSpecLayer === "it" && <>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button style={S.toolBtn(tool === "marker" && activeComponentType === "router", SPEC_LAYERS.it.color)} onClick={() => { setActiveComponentType("router"); setT("marker"); }}>
-                      <span style={{ fontSize: 16 }}>📶</span>
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent side="top" sideOffset={8}>Router</TooltipContent>
-                </Tooltip>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button style={S.toolBtn(tool === "marker" && activeComponentType === "access_point", SPEC_LAYERS.it.color)} onClick={() => { setActiveComponentType("access_point"); setT("marker"); }}>
-                      <span style={{ fontSize: 16 }}>📡</span>
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent side="top" sideOffset={8}>Access Point</TooltipContent>
-                </Tooltip>
-              </>}
-
-              {activeSpecLayer === "mep" && <>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button style={S.toolBtn(tool === "marker" && activeComponentType === "drain_line", SPEC_LAYERS.mep.color)} onClick={() => { setActiveComponentType("drain_line"); setT("marker"); }}>
-                      <svg width="20" height="20" viewBox="0 0 20 20"><circle cx="10" cy="10" r="7" fill="none" stroke="#50A070" strokeWidth="2" /><text x="10" y="13" textAnchor="middle" fontSize="10" fill="#50A070" fontWeight="bold">D</text></svg>
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent side="top" sideOffset={8}>Drain Line</TooltipContent>
-                </Tooltip>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button style={S.toolBtn(tool === "marker" && activeComponentType === "water_line", SPEC_LAYERS.mep.color)} onClick={() => { setActiveComponentType("water_line"); setT("marker"); }}>
-                      <svg width="20" height="20" viewBox="0 0 20 20"><circle cx="10" cy="10" r="7" fill="none" stroke="#5050A0" strokeWidth="2" /><text x="10" y="13" textAnchor="middle" fontSize="10" fill="#5050A0" fontWeight="bold">W</text></svg>
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent side="top" sideOffset={8}>Water Line</TooltipContent>
-                </Tooltip>
-              </>}
-
-              {activeSpecLayer === "security" && <>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button style={S.toolBtn(tool === "marker" && activeComponentType === "white_camera", SPEC_LAYERS.security.color)} onClick={() => { setActiveComponentType("white_camera"); setT("marker"); }}>
-                      <svg width="20" height="20" viewBox="0 0 20 20"><circle cx="10" cy="10" r="7" fill="none" stroke="#E8E0D0" strokeWidth="2" /><text x="10" y="13" textAnchor="middle" fontSize="10" fill="#E8E0D0" fontWeight="bold">C</text></svg>
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent side="top" sideOffset={8}>White Camera</TooltipContent>
-                </Tooltip>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button style={S.toolBtn(tool === "marker" && activeComponentType === "black_camera", SPEC_LAYERS.security.color)} onClick={() => { setActiveComponentType("black_camera"); setT("marker"); }}>
-                      <svg width="20" height="20" viewBox="0 0 20 20"><circle cx="10" cy="10" r="7" fill="none" stroke="#2A2A26" strokeWidth="2" /><text x="10" y="13" textAnchor="middle" fontSize="10" fill="#2A2A26" fontWeight="bold">C</text></svg>
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent side="top" sideOffset={8}>Black Camera</TooltipContent>
-                </Tooltip>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button style={S.toolBtn(tool === "marker" && activeComponentType === "outdoor_camera", SPEC_LAYERS.security.color)} onClick={() => { setActiveComponentType("outdoor_camera"); setT("marker"); }}>
-                      <svg width="20" height="20" viewBox="0 0 20 20"><circle cx="10" cy="10" r="7" fill="none" stroke="#556B2F" strokeWidth="2" /><text x="10" y="13" textAnchor="middle" fontSize="10" fill="#556B2F" fontWeight="bold">O</text></svg>
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent side="top" sideOffset={8}>Outdoor Camera</TooltipContent>
-                </Tooltip>
-              </>}
-            </>}
-
-          </div>
 
           {/* ── Bottom Status Bar ────────────────────────────────────── */}
           <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, background: T.bg2, borderTop: "1px solid " + T.border, padding: "6px 16px", display: "flex", alignItems: "center", gap: 12, fontSize: 10, color: T.textDim, zIndex: 10 }}>
@@ -6896,15 +6914,6 @@ export default function TestfitTool() {
             <div style={{ flex: 1, position: "relative", minWidth: 0, overflow: "hidden" }}><PaneChip i={3} />{renderAuxPane(3)}</div>
           </div>
         )}
-        {/* Layout switcher (single / split / quad) */}
-        <div style={{ position: "absolute", bottom: 12, right: 12, zIndex: 30, display: "flex", gap: 2, background: T.panelBg, border: "1px solid " + T.border, borderRadius: 8, padding: 3, backdropFilter: "blur(12px)", boxShadow: T.panelShadow }}>
-          {[[1, "▢", "Single"], [2, "◫", "Split"], [4, "⊞", "Quad"]].map(([n, g, label]) => (
-            <Tooltip key={n}><TooltipTrigger asChild>
-              <button onClick={() => setLayout(n)} style={{ padding: "4px 9px", borderRadius: 5, border: "none", cursor: "pointer", background: panes.length === n ? T.accent : "transparent", color: panes.length === n ? "#fff" : T.textMuted, fontSize: 13, fontWeight: 600, fontFamily: "inherit", lineHeight: 1 }}>{g}</button>
-            </TooltipTrigger><TooltipContent side="top" sideOffset={8}>{label}</TooltipContent></Tooltip>
-          ))}
-        </div>
-
         </div>{/* end splitContainerRef */}
       </div>
     </div>
