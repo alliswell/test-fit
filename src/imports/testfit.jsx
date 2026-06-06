@@ -1,8 +1,13 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from "react";
-import { MousePointer2, X, Plus, DoorOpen, Ruler, Box, LayoutDashboard, RotateCcw, RotateCw, Undo2, Redo2, Tag, Settings, ChevronDown, ChevronRight, Trash2, GitBranch, Columns2, PanelLeft, PanelLeftClose } from "lucide-react";
+import { MousePointer2, X, Plus, DoorOpen, Ruler, Box, LayoutDashboard, RotateCcw, RotateCw, Undo2, Redo2, Tag, Settings, ChevronDown, ChevronRight, ChevronLeft, Trash2, GitBranch, Columns2, PanelLeft, PanelLeftClose } from "lucide-react";
 import ZONE_LIBRARY_DEFAULTS from "../data/zone-library.json";
 import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "../app/components/ui/tooltip";
 import TestFit3D from "./testfit3d";
+import { uid, sn, dst, ptSeg, polyArea, polyCentroid, pointInPoly, orthoSnap, isLightComponent, parseDimInput, migrateProjectData, PROJECT_VERSION, AUTOSAVE_KEY } from "./model";
+import { wallResizeCursor, applySmartGuides, lineInt, wallMiterPt, revCloudPath } from "./geometry";
+import { useViewStore } from "../store/viewStore";
+import { useLayersStore } from "../store/layersStore";
+import { useSelectionStore } from "../store/selectionStore";
 
 // Custom wall and window icons
 const WallIcon = () => (
@@ -122,15 +127,6 @@ const SPEC_LAYERS = {
   security: { name: "Security", color: "#9A4A9A" } 
 };
 
-// Pick bidirectional resize cursor based on wall angle
-const wallResizeCursor = (x1, y1, x2, y2) => {
-  const a = (Math.atan2(y2 - y1, x2 - x1) * 180 / Math.PI % 180 + 180) % 180;
-  if (a < 22.5 || a >= 157.5) return "ns-resize";
-  if (a < 67.5)  return "nesw-resize";
-  if (a < 112.5) return "ew-resize";
-  return "nwse-resize";
-};
-
 // CAD-style crosshair cursor (data URI)
 const cadCrosshair = (color) => `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32'%3E%3Cline x1='16' y1='0' x2='16' y2='14' stroke='${color}' stroke-width='1'/%3E%3Cline x1='16' y1='18' x2='16' y2='32' stroke='${color}' stroke-width='1'/%3E%3Cline x1='0' y1='16' x2='14' y2='16' stroke='${color}' stroke-width='1'/%3E%3Cline x1='18' y1='16' x2='32' y2='16' stroke='${color}' stroke-width='1'/%3E%3C/svg%3E") 16 16, crosshair`;
 
@@ -185,10 +181,6 @@ const DOOR_WIDTHS = [36, 48, 60];
 const DOOR_TYPES = ["Wood", "Glass", "Metal", "Case Opening"];
 const DOOR_HEIGHT_IN = 84; // 7'-0" standard door height (matches 3D DOOR_HEIGHT_FT)
 // Power-layer markers split into Lighting vs Electrical by component type.
-const isLightComponent = (ct) => ct?.startsWith("light_") || ct?.startsWith("htrack_") || ct === "sconce_prewire" || ct === "pendent_prewire";
-// Shift-ortho: snap point B to a 90° (horizontal or vertical) line from anchor A,
-// choosing the axis the segment is mostly drawn along.
-const orthoSnap = (ax, ay, bx, by) => Math.abs(bx - ax) >= Math.abs(by - ay) ? { x: bx, y: ay } : { x: ax, y: by };
 const WINDOW_WIDTHS = [24, 36, 48, 60];
 const WINDOW_TYPES = ["Window", "Cut Opening"];
 
@@ -214,103 +206,7 @@ const WALL_MATERIAL_HATCHES = {
   "Other":       "mat-other",
 };
 
-const uid = () => Math.random().toString(36).slice(2, 10);
-const sn = (v, g) => Math.round(v / g) * g;
-
-// Smart guide snapping — returns snapped {x,y} and guide lines to draw
-const GUIDE_THRESH = 7; // canvas px; ~4" at default scale
-function applySmartGuides(x, y, targets) {
-  let sx = x, sy = y;
-  const guides = [];
-  let bestDX = GUIDE_THRESH + 1, bestDY = GUIDE_THRESH + 1;
-  let vSnapX = null, hSnapY = null;
-
-  // Find the closest snap on each axis
-  for (const t of targets) {
-    const dx = Math.abs(t.x - x), dy = Math.abs(t.y - y);
-    if (dx < bestDX) { bestDX = dx; vSnapX = t.x; sx = t.x; }
-    if (dy < bestDY) { bestDY = dy; hSnapY = t.y; sy = t.y; }
-  }
-
-  // Vertical guide (shared x): only when within snap threshold
-  if (vSnapX !== null && bestDX <= GUIDE_THRESH) {
-    const aligned = targets.filter(t => Math.abs(t.x - vSnapX) <= GUIDE_THRESH);
-    const pts = [...new Set([...aligned.map(t => t.y), y])].sort((a, b) => a - b);
-    guides.push({ axis: 'v', pos: vSnapX, points: pts });
-  }
-
-  // Horizontal guide (shared y): only when within snap threshold
-  if (hSnapY !== null && bestDY <= GUIDE_THRESH) {
-    const aligned = targets.filter(t => Math.abs(t.y - hSnapY) <= GUIDE_THRESH);
-    const pts = [...new Set([...aligned.map(t => t.x), x])].sort((a, b) => a - b);
-    guides.push({ axis: 'h', pos: hSnapY, points: pts });
-  }
-
-  return { x: sx, y: sy, guides };
-}
-const parseDimInput = (str, ppf) => {
-  if (!str) return null;
-  const s = str.trim();
-  let m = s.match(/^(\d+(?:\.\d+)?)'(\d+(?:\.\d+)?)\"?$/);
-  if (m) { const px = (parseFloat(m[1]) + parseFloat(m[2]) / 12) * ppf; return px > 0 ? px : null; }
-  m = s.match(/^(\d+(?:\.\d+)?)\"$/);
-  if (m) { const px = parseFloat(m[1]) / 12 * ppf; return px > 0 ? px : null; }
-  m = s.match(/^(\d+(?:\.\d+)?)$/);
-  if (m) { const px = parseFloat(m[1]) * ppf; return px > 0 ? px : null; }
-  return null;
-};
-
-// Compute a miter join corner point for two walls meeting at a junction (jx, jy).
-// d1/n1/h1 = direction, left-normal, half-thickness for wall 1 (direction pointing away from junction)
-// d2/n2/h2 = same for wall 2
-// side = +1 for left edge, -1 for right edge
-// 2D line–line intersection: point P moving in direction pd meets point Q moving in direction qd.
-// Returns the intersection, falling back to P when parallel or |t| exceeds cap.
-const lineInt = (px, py, pdx, pdy, qx, qy, qdx, qdy, cap) => {
-  const den = pdx * qdy - pdy * qdx;
-  if (Math.abs(den) < 0.001) return { x: px, y: py };
-  const t = ((qx - px) * qdy - (qy - py) * qdx) / den;
-  if (cap != null && Math.abs(t) > cap) return { x: px, y: py };
-  return { x: px + pdx * t, y: py + pdy * t };
-};
-const wallMiterPt = (jx, jy, d1x, d1y, n1x, n1y, h1, d2x, d2y, n2x, n2y, h2, side) => {
-  const Px = jx + n1x * h1 * side, Py = jy + n1y * h1 * side;
-  const Qx = jx + n2x * h2 * side, Qy = jy + n2y * h2 * side;
-  return lineInt(Px, Py, d1x, d1y, Qx, Qy, d2x, d2y, Math.max(h1, h2) * 6);
-};
-const dst = (ax, ay, bx, by) => Math.sqrt((bx - ax) ** 2 + (by - ay) ** 2);
-const ptSeg = (px, py, x1, y1, x2, y2) => {
-  const dx = x2 - x1, dy = y2 - y1, ls = dx * dx + dy * dy;
-  if (ls === 0) return dst(px, py, x1, y1);
-  const t = Math.max(0, Math.min(1, ((px - x1) * dx + (py - y1) * dy) / ls));
-  return dst(px, py, x1 + t * dx, y1 + t * dy);
-};
 const SNAP_R = 12;
-
-// Shoelace formula for polygon area (in px²)
-const polyArea = (pts) => {
-  let a = 0;
-  for (let i = 0; i < pts.length; i++) {
-    const j = (i + 1) % pts.length;
-    a += pts[i].x * pts[j].y - pts[j].x * pts[i].y;
-  }
-  return Math.abs(a / 2);
-};
-// Centroid of polygon
-const polyCentroid = (pts) => {
-  let cx = 0, cy = 0;
-  pts.forEach(p => { cx += p.x; cy += p.y; });
-  return { x: cx / pts.length, y: cy / pts.length };
-};
-// Point in polygon (ray casting)
-const pointInPoly = (px, py, pts) => {
-  let inside = false;
-  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
-    const xi = pts[i].x, yi = pts[i].y, xj = pts[j].x, yj = pts[j].y;
-    if ((yi > py) !== (yj > py) && px < (xj - xi) * (py - yi) / (yj - yi) + xi) inside = !inside;
-  }
-  return inside;
-};
 
 
 // ── Theme palettes ─────────────────────────────────────────────────
@@ -426,29 +322,6 @@ function AlignBtn({ action, label, tip, onAction, border, accent, textMuted, tex
       {label}
     </button>
   );
-}
-
-function revCloudPath(points, arcR) {
-  if (points.length < 3) return "";
-  let signed = 0;
-  for (let i = 0; i < points.length; i++) {
-    const j = (i + 1) % points.length;
-    signed += (points[j].x - points[i].x) * (points[j].y + points[i].y);
-  }
-  const sweep = signed < 0 ? 1 : 0;
-  let d = `M ${points[0].x} ${points[0].y}`;
-  for (let i = 0; i < points.length; i++) {
-    const a = points[i], b = points[(i + 1) % points.length];
-    const len = Math.hypot(b.x - a.x, b.y - a.y);
-    if (len < 0.001) continue;
-    const count = Math.max(1, Math.round(len / (arcR * 2)));
-    const sx = (b.x - a.x) / count, sy = (b.y - a.y) / count;
-    for (let j = 0; j < count; j++) {
-      const ex = a.x + sx * (j + 1), ey = a.y + sy * (j + 1);
-      d += ` A ${arcR} ${arcR} 0 0 ${sweep} ${ex} ${ey}`;
-    }
-  }
-  return d + " Z";
 }
 
 // ─── 2D Elevation view ──────────────────────────────────────────────────────
@@ -837,28 +710,30 @@ export default function TestfitTool() {
   const [activeZoneType, setActiveZoneType] = useState("entry");
   const [activeSpecLayer, setActiveSpecLayer] = useState("power");
   const [activeComponentType, setActiveComponentType] = useState("duplex_outlet");
-  const [visibleLayers, setVisibleLayers] = useState({ power: true, av: true, it: true, mep: true, security: true });
-  const [visibleBuildElectrical, setVisibleBuildElectrical] = useState(true);
-  const [visibleBuildLighting, setVisibleBuildLighting] = useState(true);
-  const [visibleZones, setVisibleZones] = useState(true);
-  const [visibleDims, setVisibleDims] = useState(true);
-  const [visibleLabels, setVisibleLabels] = useState(true);
-  const [visibleRevClouds, setVisibleRevClouds] = useState(true);
-  const [visibleFlowPaths, setVisibleFlowPaths] = useState(true);
-  const [visibleFloorRegions, setVisibleFloorRegions] = useState(true);
-  const [visibleITMEP, setVisibleITMEP] = useState(true); // master IT/MEP marker visibility (all modes)
-  // Locked layers — keyed by layer id (zones/dims/labels/revClouds/flowPaths/floorRegions/itmep
-  // + spec layers). Locked items render but can't be hovered, selected, or edited.
-  const [lockedLayers, setLockedLayers] = useState({});
-  const layerLocked = useCallback((key) => !!lockedLayers[key], [lockedLayers]);
+  // Layer visibility + lock state lives in a Zustand store (destructured to the same local
+  // names, so every read/write site below is unchanged). `lockedLayers` is the only
+  // persisted field; locked items render but can't be hovered, selected, or edited.
+  const {
+    visibleLayers, setVisibleLayers, visibleBuildElectrical, setVisibleBuildElectrical,
+    visibleBuildLighting, setVisibleBuildLighting, visibleZones, setVisibleZones,
+    visibleDims, setVisibleDims, visibleLabels, setVisibleLabels,
+    visibleRevClouds, setVisibleRevClouds, visibleFlowPaths, setVisibleFlowPaths,
+    visibleFloorRegions, setVisibleFloorRegions, visibleITMEP, setVisibleITMEP,
+    lockedLayers, setLockedLayers,
+  } = useLayersStore();
+  const [inspectorOpen, setInspectorOpen] = useState(true); // option panel collapsed/expanded
+  // Read locks from the store at call time (getState) so these stay referentially stable
+  // (empty deps) — they're invoked inside event handlers / render, always with fresh state,
+  // and their stability lets the big event callbacks drop them from their dependency arrays.
+  const layerLocked = useCallback((key) => !!useLayersStore.getState().lockedLayers[key], []);
   const markerLocked = useCallback((m) => {
-    if (lockedLayers.itmep) return true;
-    if (m.layer === "power") return isLightComponent(m.componentType) ? !!lockedLayers.light : !!lockedLayers.elec;
-    return !!lockedLayers[m.layer];
-  }, [lockedLayers]);
-  const [selectedIds, setSelectedIds] = useState([]);
-  const [selectedId, setSelectedId] = useState(null);
-  const [selType, setSelType] = useState(null);
+    const ll = useLayersStore.getState().lockedLayers;
+    if (ll.itmep) return true;
+    if (m.layer === "power") return isLightComponent(m.componentType) ? !!ll.light : !!ll.elec;
+    return !!ll[m.layer];
+  }, []);
+  // Selection state lives in a Zustand store (same local names; reads/writes unchanged).
+  const { selectedId, setSelectedId, selType, setSelType, selectedIds, setSelectedIds } = useSelectionStore();
   const [marquee, setMarquee] = useState(null); // { startX, startY, endX, endY }
   const [calibrationLine, setCalibrationLine] = useState(null); // { p1: {x, y}, p2: {x, y} }
   const [calibrationFeet, setCalibrationFeet] = useState("10");
@@ -870,9 +745,10 @@ export default function TestfitTool() {
   // panes[0] is always the interactive Plan canvas; aux panes (1..3) each pick
   // a view among 3d / front / back / left / right. 1 / 2 / 4 panes = single /
   // split / quad layout.
-  const [panes, setPanes] = useState([{ view: "plan" }]);
-  const [splitPos, setSplitPos] = useState(0.5);   // vertical divider (left column fraction)
-  const [splitPosV, setSplitPosV] = useState(0.5); // horizontal divider (top row fraction, quad)
+  // View/layout state lives in a Zustand store (first slice of the state extraction).
+  // Destructured to the same local names the component already uses, so every read/write
+  // site below is unchanged; the store setters accept a value-or-updater like useState.
+  const { panes, splitPos, splitPosV, setPanes, setSplitPos, setSplitPosV, setLayout, setPaneView } = useViewStore();
   const splitDragRef = useRef(null); // { axis, startPos, containerPx }
   const splitContainerRef = useRef(null); // ref for the flex container holding the panes
   const ELEV_DIRS = ["front", "back", "left", "right"];
@@ -882,13 +758,6 @@ export default function TestfitTool() {
   const view3d = false;
   const splitView = panes.length > 1;
   const show3d = panes.some(p => p.view === "3d");
-  const setLayout = (n) => setPanes(prev => {
-    const aux = prev.slice(1);
-    if (n <= 1) return [{ view: "plan" }];
-    if (n === 2) return [{ view: "plan" }, aux[0] || { view: "3d" }];
-    return [{ view: "plan" }, aux[0] || { view: "3d" }, aux[1] || { view: "front" }, aux[2] || { view: "left" }];
-  });
-  const setPaneView = (i, view) => setPanes(prev => prev.map((p, idx) => idx === i ? { ...p, view } : p));
   const [ceilingHeight, setCeilingHeight] = useState(108); // 9'-0" in inches
   const controls3dRef = useRef(null);
   const [show3dLabels, setShow3dLabels] = useState(false);
@@ -978,7 +847,7 @@ export default function TestfitTool() {
     projectName, nodes, walls, zones, markers, doors, windows, columns, dims, labels, revClouds, flowPaths, floorRegions, floorMaterial,
     elevAnnotations,
     bgOpacity, bgScale, bgOffset, pxPerFoot, showDims, zoneLibrary,
-    version: "testfit-v8",
+    version: PROJECT_VERSION,
   }), [projectName, nodes, walls, zones, markers, doors, windows, columns, dims, labels, revClouds, flowPaths, floorRegions, floorMaterial, elevAnnotations, bgOpacity, bgScale, bgOffset, pxPerFoot, showDims, zoneLibrary]);
 
   // getProjectData: full file payload — model + snapshot library + view layout.
@@ -997,23 +866,56 @@ export default function TestfitTool() {
     URL.revokeObjectURL(url);
   }, [getProjectData, projectName]);
 
-  // loadModel: replace the live working state from a captured model blob.
-  const loadModel = useCallback((d) => {
-    if (!d) return;
-    const arr = (x) => Array.isArray(x) ? x : [];
-    setProjectName(d.projectName || "Untitled");
-    setNodes(arr(d.nodes)); setWalls(arr(d.walls)); setZones(arr(d.zones));
-    setMarkers(arr(d.markers)); setDoors(arr(d.doors)); setWindows(arr(d.windows));
-    setColumns(arr(d.columns)); setDims(arr(d.dims)); setLabels(arr(d.labels)); setRevClouds(arr(d.revClouds)); setFlowPaths(arr(d.flowPaths)); setFloorRegions(arr(d.floorRegions)); if (d.floorMaterial) setFloorMaterial(d.floorMaterial);
-    setElevAnnotations(d.elevAnnotations && typeof d.elevAnnotations === "object" ? d.elevAnnotations : {});
-    setBgOpacity(d.bgOpacity ?? 0.35); setBgScale(d.bgScale ?? 1);
-    setBgOffset(d.bgOffset ?? { x: 0, y: 0 });
-    if (d.pxPerFoot) setPxPerFoot(d.pxPerFoot);
-    if (d.showDims !== undefined) setShowDims(d.showDims);
-    if (d.zoneLibrary) setZoneLibrary(d.zoneLibrary);
+  // applyProjectData: the single hydrator. `m` must already be normalized by
+  // migrateProjectData(). full=true also restores the snapshot library + view layout
+  // (file import / autosave restore); full=false is model-only (snapshot switching).
+  const applyProjectData = useCallback((m, full) => {
+    setProjectName(m.projectName);
+    setNodes(m.nodes); setWalls(m.walls); setZones(m.zones); setMarkers(m.markers);
+    setDoors(m.doors); setWindows(m.windows); setColumns(m.columns); setDims(m.dims);
+    setLabels(m.labels); setRevClouds(m.revClouds); setFlowPaths(m.flowPaths); setFloorRegions(m.floorRegions);
+    setFloorMaterial(m.floorMaterial); setElevAnnotations(m.elevAnnotations);
+    setBgOpacity(m.bgOpacity); setBgScale(m.bgScale); setBgOffset(m.bgOffset);
+    setPxPerFoot(m.pxPerFoot); setShowDims(m.showDims);
+    if (m.zoneLibrary) setZoneLibrary(m.zoneLibrary);
+    if (full) {
+      setSnapshots(m.snapshots); setActiveSnapshotId(m.activeSnapshotId);
+      setPanes(m.panes); setSplitPos(m.splitPos); setSplitPosV(m.splitPosV);
+      setLockedLayers(m.lockedLayers);
+      setBgImage(null); setSelectedId(null); setSelType(null);
+    }
     historyRef.current = []; historyIdxRef.current = -1;
     setCanUndo(false); setCanRedo(false);
   }, []);
+
+  // loadModel: restore the live model from a snapshot blob (model fields only).
+  const loadModel = useCallback((d) => { if (d) applyProjectData(migrateProjectData(d), false); }, [applyProjectData]);
+
+  // ── Crash-safe autosave (localStorage) ───────────────────────────────
+  // Restore the last working session on mount, then persist (debounced) on every
+  // change. hydratedRef gates the first write so we never overwrite saved work with
+  // the initial empty defaults before the restore runs.
+  const hydratedRef = useRef(false);
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(AUTOSAVE_KEY);
+      if (saved) {
+        const m = migrateProjectData(JSON.parse(saved));
+        if (m.nodes.length || m.walls.length || m.zones.length || m.markers.length || m.snapshots.length) {
+          applyProjectData(m, true);
+        }
+      }
+    } catch (e) { console.warn("Autosave restore failed:", e); }
+    hydratedRef.current = true;
+  }, [applyProjectData]);
+  useEffect(() => {
+    if (!hydratedRef.current) return;
+    const t = setTimeout(() => {
+      try { localStorage.setItem(AUTOSAVE_KEY, JSON.stringify(getProjectData())); }
+      catch (e) { /* quota exceeded or non-serializable — autosave is best-effort */ }
+    }, 800);
+    return () => clearTimeout(t);
+  }, [getProjectData]);
 
   // ── Snapshot operations ──────────────────────────────────────────────
   // Has the live model diverged from the active snapshot's stored data?
@@ -1124,42 +1026,13 @@ export default function TestfitTool() {
       try {
         const d = JSON.parse(ev.target.result);
         if (typeof d !== "object" || d === null) throw new Error("Invalid project file");
-        const arr = (v) => Array.isArray(v) ? v : [];
-        setProjectName(d.projectName || "Imported");
-        setNodes(arr(d.nodes)); setWalls(arr(d.walls)); setZones(arr(d.zones));
-        setMarkers(arr(d.markers)); setDoors(arr(d.doors));
-        const migratedCutouts = arr(d.cutouts).map(c => ({ ...c, type: "Cut Opening" }));
-        setWindows([...arr(d.windows), ...migratedCutouts]);
-        setColumns(arr(d.columns)); setDims(arr(d.dims)); setLabels(arr(d.labels)); setRevClouds(arr(d.revClouds)); setFlowPaths(arr(d.flowPaths)); setFloorRegions(arr(d.floorRegions)); if (d.floorMaterial) setFloorMaterial(d.floorMaterial);
-        setElevAnnotations(d.elevAnnotations && typeof d.elevAnnotations === "object" ? d.elevAnnotations : {});
-        if (Array.isArray(d.panes) && d.panes.length) setPanes(d.panes); else setPanes([{ view: "plan" }]);
-        setLockedLayers(d.lockedLayers && typeof d.lockedLayers === "object" ? d.lockedLayers : {});
-        if (typeof d.splitPos === "number") setSplitPos(d.splitPos);
-        if (typeof d.splitPosV === "number") setSplitPosV(d.splitPosV);
-        setBgOpacity(d.bgOpacity ?? 0.35); setBgScale(d.bgScale ?? 1);
-        setBgOffset(d.bgOffset ?? { x: 0, y: 0 });
-        if (d.pxPerFoot) setPxPerFoot(d.pxPerFoot);
-        if (d.showDims !== undefined) setShowDims(d.showDims);
-        if (d.zoneLibrary && typeof d.zoneLibrary === "object") setZoneLibrary(d.zoneLibrary);
-        // Snapshots: prefer the new field; migrate legacy `versions` (named full-state
-        // snapshots) into the new library when present.
-        if (Array.isArray(d.snapshots)) {
-          setSnapshots(d.snapshots);
-          setActiveSnapshotId(d.activeSnapshotId ?? null);
-        } else if (Array.isArray(d.versions) && d.versions.length) {
-          setSnapshots(d.versions.map(v => ({ id: v.id || uid(), name: v.name || "Snapshot", ts: v.ts || Date.now(), data: v.data })));
-          setActiveSnapshotId(null);
-        } else {
-          setSnapshots([]); setActiveSnapshotId(null);
-        }
-        setBgImage(null);
-        setSelectedId(null); setSelType(null);
-        historyRef.current = []; historyIdxRef.current = -1;
-        setCanUndo(false); setCanRedo(false);
+        const m = migrateProjectData(d);
+        if (!d.projectName) m.projectName = "Imported";
+        applyProjectData(m, true);
       } catch (e) { console.error("Import failed:", e); alert("Failed to import project: " + e.message); }
     };
     reader.readAsText(file);
-  }, []);
+  }, [applyProjectData]);
 
   const newProject = useCallback(() => {
     setProjectName("New Club"); setNodes([]); setWalls([]); setZones([]);
@@ -1173,6 +1046,7 @@ export default function TestfitTool() {
     setCanUndo(false); setCanRedo(false);
     setZoneLibrary(ZONE_LIBRARY_DEFAULTS);
     localStorage.removeItem("testfit-zone-library");
+    localStorage.removeItem(AUTOSAVE_KEY);
     setPhases(DEFAULT_PHASES); setActivePhase("existing"); setSnapshots([]); setActiveSnapshotId(null);
   }, []);
 
@@ -1217,6 +1091,7 @@ export default function TestfitTool() {
   // Walks wall nodes, markers, columns, doors, windows, dim endpoints, label anchors,
   // and (when their parent is selected) zone / floor region / revcloud / flow path vertices.
   const findProxHover = useCallback((x, y) => {
+    const { selType, selectedId } = useSelectionStore.getState(); // event-only fn → not a dep
     const PROX_R = 32;
     let best = null, bd = PROX_R;
     const add = (type, id, px, py, sub) => { const d = dst(x, y, px, py); if (d < bd) { bd = d; best = { type, id, x: px, y: py, dist: d, sub }; } };
@@ -1258,7 +1133,7 @@ export default function TestfitTool() {
       if (fp?.points) fp.points.forEach((p, i) => add("flowPath-vertex", fp.id, p.x, p.y, i));
     }
     return best;
-  }, [mode, nodes, markers, columns, doors, windows, labels, zones, floorRegions, revClouds, flowPaths, selType, selectedId, markerVisible, phaseVisible, resolvePos, resolvePoints, layerLocked, markerLocked]);
+  }, [mode, nodes, markers, columns, doors, windows, labels, zones, floorRegions, revClouds, flowPaths, markerVisible, phaseVisible, resolvePos, resolvePoints, layerLocked, markerLocked]);
   const wallsAt = useCallback((nid) => walls.filter(w => w.n1 === nid || w.n2 === nid), [walls]);
 
   // Snap for dimension tool: snaps to any significant point on canvas
@@ -1477,6 +1352,8 @@ export default function TestfitTool() {
   }, [findNear, findDimSnap, snapToWall, columns, markers, resolvePos, revClouds]);
 
   const hitTest = useCallback((pos) => {
+    // Selection read from the store at call time (event-only fn), so it's not a dependency.
+    const { selectedId, selType, selectedIds } = useSelectionStore.getState();
     // Dim strings are always selectable in any mode
     for (let i = dims.length - 1; i >= 0 && !layerLocked("dims"); i--) {
       const d = dims[i];
@@ -1622,9 +1499,13 @@ export default function TestfitTool() {
         return { type: "floorRegion", id: fr.id };
     }
     return null;
-  }, [mode, nodes, walls, zones, markers, doors, windows, columns, dims, labels, revClouds, flowPaths, floorRegions, pxPerFoot, wc, inToPx, selectedId, selectedIds, selType, resolvePos, resolvePoints, phaseVisible, resolveLeaderTip, layerLocked, markerLocked]);
+  }, [mode, nodes, walls, zones, markers, doors, windows, columns, dims, labels, revClouds, flowPaths, floorRegions, pxPerFoot, wc, inToPx, resolvePos, resolvePoints, phaseVisible, resolveLeaderTip, layerLocked, markerLocked]);
 
   const onDown = useCallback((e) => {
+    // Selection is read fresh at event time (never during render) so it stays out of the
+    // dep array — avoids re-creating this large handler on every selection change, and
+    // fixes a latent stale-closure read of selectedId.
+    const { selectedId, selectedIds } = useSelectionStore.getState();
     // Pan with middle click or spacebar held
     if (e.button === 1 || (e.button === 0 && (tool === "pan" || spaceHeld))) {
       setPanning(true); setPanSt({ sx: e.clientX, sy: e.clientY, ox: viewOff.x, oy: viewOff.y }); return;
@@ -2338,7 +2219,7 @@ export default function TestfitTool() {
         }
       }
     }
-  }, [tool, activeZoneType, activeSpecLayer, s2c, findNear, findDimSnap, hitTest, walls, wc, zones, markers, doors, windows, columns, labels, revClouds, flowPaths, viewOff, drawChain, commitWallSegment, spaceHeld, doorWidth, windowWidth, columnSize, columnShape, snapToWall, snapGrid, activeComponentType, selectedIds, bgImage, bgOffset, gn, calibrationLine, drawDim, dims, nodes, pxPerFoot, zoneEdge, resolvePos, resolvePoints, activePhase, addingLeaderToId, snapLabelAnchor, drawRevCloud, drawFlowPath, floorRegions, drawFloorRegion, polyCentroid]);
+  }, [tool, activeZoneType, activeSpecLayer, s2c, findNear, findDimSnap, hitTest, walls, wc, zones, markers, doors, windows, columns, labels, revClouds, flowPaths, viewOff, drawChain, commitWallSegment, spaceHeld, doorWidth, windowWidth, columnSize, columnShape, snapToWall, snapGrid, activeComponentType, bgImage, bgOffset, gn, calibrationLine, drawDim, dims, nodes, pxPerFoot, zoneEdge, resolvePos, resolvePoints, activePhase, addingLeaderToId, snapLabelAnchor, drawRevCloud, drawFlowPath, floorRegions, drawFloorRegion, polyCentroid]);
 
   const onMove = useCallback((e) => {
     if (panning && panSt) {
@@ -2907,6 +2788,8 @@ export default function TestfitTool() {
   }, [panning, panSt, canvasRotation, drawChain, drag, resize, s2c, findNear, findDimSnap, walls, wc, tool, snapToWall, snapGrid, marquee, calibrationLine, dims, drawDim, zones, zoom, rotatingMarker, outletType, lightingType, htrackAngle, nodes, doors, windows, columns, markers, activePhase, snapLabelAnchor, revClouds, drawRevCloud, flowPaths, drawFlowPath, floorRegions, drawFloorRegion, resolveDimEndpoints, findProxHover, proxHover]);
 
   const onUp = useCallback((e) => {
+    // Selection read fresh at event time → kept out of the dep array (event-only handler).
+    const { selectedId, selectedIds } = useSelectionStore.getState();
     // Commit label placement
     if (drag?.type === "label-tip") {
       const pos = s2c(e.clientX, e.clientY);
@@ -3094,7 +2977,7 @@ export default function TestfitTool() {
     }
     // No re-clipping on zone drag/vertex drag end — user controls shape manually
     setDrag(null); setResize(null); setPanning(false); setPanSt(null); setHoverNid(null); setProxHover(null); setRotatingMarker(null); setSmartGuides([]);
-  }, [drag, resize, hoverNid, marquee, selectedIds, selectedId, mode, nodes, walls, doors, windows, zones, markers, columns, labels, revClouds, flowPaths, floorRegions, phaseVisible, resolvePos, resolvePoints, wc, lastCopyInfo, s2c, themeMode, activePhase, snapLabelAnchor, layerLocked, markerLocked]);
+  }, [drag, resize, hoverNid, marquee, mode, nodes, walls, doors, windows, zones, markers, columns, labels, revClouds, flowPaths, floorRegions, phaseVisible, resolvePos, resolvePoints, wc, lastCopyInfo, s2c, themeMode, activePhase, snapLabelAnchor, layerLocked, markerLocked]);
 
   // Smooth zoom centered on cursor
   const onWheel = useCallback((e) => {
@@ -3200,6 +3083,9 @@ export default function TestfitTool() {
   };
 
   const delSel = useCallback(() => {
+    // Selection read fresh at event time (delSel is only invoked from the Delete key and
+    // the inspector's delete buttons) → kept out of the dep array.
+    const { selectedId, selType, selectedIds } = useSelectionStore.getState();
     const pIdx = (id) => phases.findIndex(p => p.id === (id ?? activePhase));
     const activeIdx = pIdx(activePhase);
     const phaseDeleteMarkers = (p, matchFn) => p.reduce((acc, m) => {
@@ -3267,7 +3153,7 @@ export default function TestfitTool() {
       else { setZones(p => p.filter(z => z.id !== selectedId)); setMarkers(p => phaseDeleteMarkers(p, m => m.id === selectedId)); }
       setSelectedId(null); setSelType(null); setSelectedIds([]);
     }
-  }, [selectedId, selectedIds, selType, walls, nodes, wallsAt, phases, activePhase]);
+  }, [walls, nodes, wallsAt, phases, activePhase]);
 
   const _ids = () => new Set(selectedIds.length > 1 ? selectedIds : [selectedId].filter(Boolean));
   const updZone = (u) => { const ids = _ids(); setZones(p => p.map(z => ids.has(z.id) ? { ...z, ...u } : z)); };
@@ -4069,6 +3955,18 @@ export default function TestfitTool() {
 
   const isDrawing = drawChain || drawPolyZone || drawRevCloud || drawFlowPath || drawFloorRegion;
 
+  // Option panel (inspector) — selected-element block vs no-selection tool-settings block.
+  const inspSel = !!(selZone || selMarker || selWall || selNode || selDoor || selWindow || selColumn || selLabel || selRevCloud || selFlowPath || selFloorRegion || selType === "floor" || (selectedIds.length > 1 && multiSelType));
+  const inspTool = !selectedId && ((mode === "build" && (isWallTool(tool) || tool === "door" || tool === "window" || tool === "column")) || (mode === "itmep" && (tool === "marker" || tool === "outlet" || tool === "lighting")) || (mode === "zone" && tool === "zone"));
+  const inspectorToggle = (
+    <div style={{ position: "sticky", top: -12, zIndex: 2, display: "flex", justifyContent: "flex-end", marginTop: -12, marginBottom: 2, paddingTop: 8, background: T.panelBg }}>
+      <button onClick={() => setInspectorOpen(false)} title="Collapse panel"
+        style={{ width: 20, height: 20, display: "flex", alignItems: "center", justifyContent: "center", border: "none", background: "transparent", cursor: "pointer", color: T.textMuted, padding: 0 }}>
+        <ChevronRight size={15} />
+      </button>
+    </div>
+  );
+
   // ── Pane rendering ───────────────────────────────────────────────────
   const render3dPane = () => (
     <div style={{ width: "100%", height: "100%", position: "relative", background: T.canvas }}>
@@ -4118,9 +4016,11 @@ export default function TestfitTool() {
   // Per-pane view selector chip (top-left of each pane). Plan pane is fixed.
   const PaneChip = ({ i }) => {
     const view = panes[i]?.view;
-    if (i === 0) return <div style={{ position: "absolute", top: 8, left: 8, zIndex: 12, padding: "3px 9px", borderRadius: 6, background: T.panelBg, border: "1px solid " + T.border, color: T.textMuted, fontSize: 10, fontWeight: 600, fontFamily: "inherit", backdropFilter: "blur(8px)", pointerEvents: "none" }}>Plan</div>;
+    // Multi-pane: pane 0 is locked to Plan so there's always a drawable canvas.
+    if (i === 0 && panes.length > 1) return <div style={{ position: "absolute", top: 8, left: 8, zIndex: 50, padding: "3px 9px", borderRadius: 6, background: T.panelBg, border: "1px solid " + T.border, color: T.textMuted, fontSize: 10, fontWeight: 600, fontFamily: "inherit", backdropFilter: "blur(8px)", pointerEvents: "none" }}>Plan</div>;
     return <select value={view} onChange={e => setPaneView(i, e.target.value)}
-      style={{ position: "absolute", top: 8, left: 8, zIndex: 12, padding: "3px 6px", borderRadius: 6, background: T.panelBg, border: "1px solid " + T.border, color: T.textBright, fontSize: 10, fontWeight: 600, fontFamily: "inherit", backdropFilter: "blur(8px)", cursor: "pointer", outline: "none" }}>
+      style={{ position: "absolute", top: 8, left: 8, zIndex: 50, padding: "3px 6px", borderRadius: 6, background: T.panelBg, border: "1px solid " + T.border, color: T.textBright, fontSize: 10, fontWeight: 600, fontFamily: "inherit", backdropFilter: "blur(8px)", cursor: "pointer", outline: "none" }}>
+      {i === 0 && <option value="plan">Plan</option>}
       <option value="3d">3D</option>
       {ELEV_DIRS.map(d => <option key={d} value={d}>{PANE_VIEW_LABEL[d]}</option>)}
     </select>;
@@ -4302,7 +4202,7 @@ export default function TestfitTool() {
         <div style={S.side}>
           <div style={{ padding: "14px 16px", borderBottom: "1px solid " + T.bg3, background: T.bg0 }}>
             <div style={{ fontSize: 9, color: T.textDim, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 4, fontWeight: 600 }}>Project</div>
-            <input style={{ background: "none", border: "none", color: T.textBright, fontSize: 14, fontFamily: "inherit", fontWeight: 600, width: "100%", outline: "none" }} value={projectName} onChange={e => setProjectName(e.target.value)} />
+            <input data-testid="project-name" style={{ background: "none", border: "none", color: T.textBright, fontSize: 14, fontFamily: "inherit", fontWeight: 600, width: "100%", outline: "none" }} value={projectName} onChange={e => setProjectName(e.target.value)} />
           </div>
           <div style={S.body}>
 
@@ -4954,6 +4854,13 @@ export default function TestfitTool() {
           ? { ...S.cv, flex: "none", width: `${splitPos * 100}%` }
           : S.cv}>
           <PaneChip i={0} />
+          {/* Single-pane non-plan view: overlay the aux view on top of the dormant plan canvas.
+              The chip stays clickable (zIndex 50 > 40) so the user can swap back. */}
+          {panes.length === 1 && panes[0].view !== "plan" && (
+            <div style={{ position: "absolute", inset: 0, zIndex: 40, background: T.canvas }}>
+              {renderAuxPane(0)}
+            </div>
+          )}
           {/* 2D plan controls — bottom-right */}
           <div style={{ position: "absolute", bottom: 40, right: 12, zIndex: 20, display: "flex", alignItems: "center", justifyContent: "flex-end", flexWrap: "wrap", gap: 4, maxWidth: "calc(100vw - 24px)" }}>
             {view3d && (<>
@@ -5177,7 +5084,7 @@ export default function TestfitTool() {
             />;
           })()}
 
-          <svg ref={cvs} width="100%" height="100%"
+          <svg ref={cvs} data-testid="plan-canvas" width="100%" height="100%"
             style={{ cursor: (panning || spaceHeld) ? "grabbing" : resize ? ({ n:"ns-resize",s:"ns-resize",e:"ew-resize",w:"ew-resize",ne:"nesw-resize",sw:"nesw-resize",nw:"nwse-resize",se:"nwse-resize" }[resize.edge] || "nwse-resize") : (drag?.type === "zone-edge" && drag.cursor) ? drag.cursor : (drag?.type === "revcloud-edge" && drag.cursor) ? drag.cursor : (drag?.type === "floorRegion-edge" && drag.cursor) ? drag.cursor : zoneEdge ? zoneEdge.cursor : cadCrosshair(T.crosshairColor), userSelect: "none", display: (view3d && !splitView) ? "none" : undefined, transform: canvasRotation ? `rotate(${canvasRotation}deg)` : undefined, transformOrigin: "center", transition: canvasRotNoTransition ? "none" : "transform 0.25s cubic-bezier(0.4,0,0.2,1)" }}
             onMouseDown={onDown} onMouseMove={onMove} onMouseUp={onUp} onMouseLeave={onUp} onWheel={onWheel}>
             <defs>
@@ -6049,8 +5956,17 @@ export default function TestfitTool() {
             </g>
           </svg>
 
+          {/* Collapsed option-panel handle — re-expands the panel */}
+          {(inspSel || inspTool) && !inspectorOpen && (
+            <button onClick={() => setInspectorOpen(true)} title="Show options panel"
+              style={{ position: "fixed", top: 52, right: 12, zIndex: 50, width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center", background: T.panelBg, border: "1px solid " + T.border, borderRadius: 8, cursor: "pointer", color: T.textMuted, backdropFilter: "blur(12px)", boxShadow: T.panelShadow }}>
+              <ChevronLeft size={16} />
+            </button>
+          )}
+
           {/* Detail panel */}
-          {(selZone || selMarker || selWall || selNode || selDoor || selWindow || selColumn || selLabel || selRevCloud || selFlowPath || selFloorRegion || selType === "floor" || (selectedIds.length > 1 && multiSelType)) && <div style={S.det}>
+          {inspSel && inspectorOpen && <div style={S.det}>
+            {inspectorToggle}
             {selectedIds.length <= 1 && selNode && <><div style={{ fontSize: 11, color: T.textBright, marginBottom: 6, fontWeight: 600 }}>Node · {wallsAt(selNode.id).length} walls</div><button style={S.del} onClick={delSel}>Delete Node + Walls</button></>}
             {selectedIds.length <= 1 && selWall && (() => { const wk = wallKinds[selWall.kind || "existing"]; return <>
               <div style={{ fontSize: 12, color: wk.color, marginBottom: 10, fontWeight: 600 }}>{wk.label} Wall · {ft(wl(selWall))}</div>
@@ -6534,8 +6450,8 @@ export default function TestfitTool() {
           </div>}
 
           {/* Tool options panel — shown when a placement tool is active */}
-          {!selectedId && ((mode === "build" && (isWallTool(tool) || tool === "door" || tool === "window" || tool === "column")) || (mode === "itmep" && (tool === "marker" || tool === "outlet" || tool === "lighting")) || (mode === "zone" && tool === "zone")) && <div style={S.det}>
-
+          {inspTool && inspectorOpen && <div style={S.det}>
+            {inspectorToggle}
             {mode === "build" && isWallTool(tool) && (() => { const wk = wallKinds[wallKind]; return <>
               {/* Header */}
               <div style={{ fontSize: 12, color: wk.color, marginBottom: 10, fontWeight: 600 }}>{wk.label} Wall</div>

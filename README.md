@@ -332,16 +332,34 @@ src/
   `<g transform>`
 - **Tailwind** for chrome/layout; most canvas styling is inline for precision
 
-**State model (single top-level component)**
+**State model (single top-level component, incrementally being extracted)**
 
-Each entity type is a `useState` array. Positions are canvas pixels. Named snapshots
-are stored as full model blobs in a `snapshots` array. Key derived helpers:
+Most entity state still lives as `useState` arrays in the top-level component (positions
+in canvas pixels; named snapshots as full model blobs in a `snapshots` array). State is
+being migrated slice-by-slice into **Zustand stores** under `src/store/`: `viewStore.js` (the pane layout — `panes` /
+`splitPos` / `splitPosV` + `setLayout` / `setPaneView`), `layersStore.js` (per-layer
+visibility flags + `lockedLayers`), and `selectionStore.js` (`selectedId` / `selType` /
+`selectedIds`). The stores expose value-or-updater setters that mimic the `useState`
+contract, so migrations are low-churn (existing call sites stay unchanged) and verifiable
+against the unit + E2E suites (which drive the layout switcher, autosave reload, layers
+panel, and click-to-select/deselect directly).
+
+Because the stores expose `getState()`, **event-only** callbacks (`onDown` / `onUp` /
+`delSel`, plus `hitTest` / `findProxHover` / `layerLocked` / `markerLocked`) read selection
+and lock state at event time instead of closing over it — so those values drop out of the
+`useCallback` dependency arrays. This shrinks the churn of these large handlers (they no
+longer re-create on every selection change) and removed a latent stale-closure read of
+`selectedId` in `onDown`. The reads are safe precisely because these callbacks never run
+during render; the broadened E2E suite guards the behavior.
+
+Key derived helpers:
 
 - `captureModel` / `loadModel` — serialize / restore the full working state
+- `migrateProjectData` (`model.js`) — normalize/upgrade any project blob
 - `hitTest` — mode-aware pointer hit detection
 - `findNear` — node snapping for drawing
 - `findProxHover` — mode-gated proximity hover
-- `traceOuterBoundary` (3D) — planar face-trace for the auto-fit floor
+- `traceOuterBoundary` (`geometry.js`) — planar face-trace for the auto-fit floor
 
 ---
 
@@ -351,7 +369,37 @@ are stored as full model blobs in a `snapshots` array. Key derived helpers:
 npm i          # install dependencies
 npm run dev    # start the Vite dev server
 npm run build  # production build
+npm test       # unit tests (Vitest, watch mode)
+npm run test:run  # unit tests once
+npm run e2e    # end-to-end tests (Playwright; starts/reuses the dev server)
 ```
+
+Pure logic is being extracted out of the two big component files into small, dependency-free,
+unit-tested modules (no React/three/DOM):
+
+- **`src/imports/model.js`** — persistence + geometry primitives: `migrateProjectData`
+  (the persistence seam — defaults, type coercion, legacy `cutouts → windows` /
+  `versions → snapshots` migrations), `dst`, `ptSeg`, `polyArea`, `polyCentroid`,
+  `pointInPoly`, `orthoSnap`, `parseDimInput`, `isLightComponent`.
+- **`src/imports/geometry.js`** — drawing geometry: `wallMiterPt`/`lineInt` (wall corner
+  mitering), `applySmartGuides` (alignment snapping), `revCloudPath`, `wallResizeCursor`,
+  and `traceOuterBoundary` (the room-perimeter face trace used by the 3D auto-fit floor,
+  shared by both the 2D and 3D files).
+
+Tests live alongside each module (`model.test.js`, `geometry.test.js`) — 30 unit tests
+covering the subtle, regression-prone bits. This is the ongoing extraction of logic out of
+the ~7,000-line main component.
+
+**End-to-end tests** (`e2e/`, Playwright — 10 tests) cover the integration seams unit
+tests can't reach: the app shell renders, the layout switcher cycles single ↔ quad, the
+single-pane view dropdown swaps Plan / 3D / elevation, the **crash-safe autosave
+round-trips across a reload**, the core **draw-a-wall** flow, click-to-select/deselect, the
+layers panel, **dragging a wall body** (translates its nodes), **marquee multi-select +
+group nudge**, and placing an **elevation dimension annotation** — all via real canvas
+interactions. Canvas-mutating tests assert against the autosaved model blob in
+`localStorage` (read with a `readModel` helper) rather than fragile DOM, and stable
+`data-testid`s (`plan-canvas`, `project-name`) anchor the rest. This suite is the safety
+net behind the handler-dep reductions described below.
 
 Open the dev URL Vite prints (typically `http://localhost:5173`).
 
@@ -363,9 +411,24 @@ A project serializes to a single JSON object containing every entity array
 (`nodes`, `walls`, `zones`, `markers`, `doors`, `windows`, `columns`, `dims`,
 `labels`, `revClouds`, `flowPaths`, `floorRegions`), plus `floorMaterial`,
 `elevAnnotations` (per-direction elevation dimensions/labels), the reference-image
-settings, scale, the `snapshots` library, and the `panes`/`splitPos` view layout. The
-same payload backs Save/Load, undo/redo history, snapshots, and import/export — and is
-forward-compatible: missing fields default (no elevation annotations, single Plan
-pane), and older files that used the retired *phase* layering load cleanly (their
-per-entity `phase` tags are ignored, and any legacy named *versions* are migrated into
-snapshots on import).
+settings, scale, the `snapshots` library, and the `panes`/`splitPos` view layout.
+
+**Single serialization seam.** Three functions own all persistence and are the boundary
+a future backend plugs into:
+
+- `captureModel()` / `getProjectData()` — produce the JSON payload (stamped with
+  `version: "testfit-v8"`).
+- `migrateProjectData(d)` — a **pure** normalizer that upgrades any older/partial blob
+  to the current shape (defaults missing arrays, folds legacy `cutouts` into windows,
+  maps the retired named *versions* → `snapshots`, ignores retired *phase* tags).
+- `applyProjectData(m, full)` — the **single hydrator**; `full` also restores the
+  snapshot library + view layout (file import / autosave), `false` is model-only
+  (snapshot switching).
+
+Every load path — **file import, snapshot restore, and crash-safe autosave** — flows
+through `migrate → apply`, so the field list can't drift between them. The same payload
+backs Save/Load, undo/redo history, snapshots, and import/export.
+
+**Crash-safe autosave.** The working session is debounced to `localStorage`
+(`testfit-autosave`) on every change and restored on load, so a refresh or crash never
+loses work. (Save-to-JSON remains the durable, portable backup.)

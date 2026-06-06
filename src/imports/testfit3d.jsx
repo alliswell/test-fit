@@ -1,4 +1,5 @@
 import { useState, useMemo, useRef, useEffect } from "react";
+import { traceOuterBoundary } from "./geometry";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { OrbitControls, Grid, Text, Billboard, Environment, ContactShadows } from "@react-three/drei";
 import * as THREE from "three";
@@ -204,47 +205,6 @@ function getFloorTexture(material) {
   else if (material === "Carpet") t = _makeNoiseTex("#786758", 42, false);
   _floorTexCache[material] = t;
   return t;
-}
-
-// Trace the outer perimeter of the wall graph ("always turn most CCW" face
-// trace from the leftmost node) → ordered polygon, or null if no closed loop.
-function traceOuterBoundary(nodes, walls) {
-  if (!walls?.length || !nodes?.length) return null;
-  const nodeMap = new Map(nodes.map(n => [n.id, n]));
-  const adj = new Map();
-  for (const w of walls) {
-    if (!nodeMap.has(w.n1) || !nodeMap.has(w.n2) || w.n1 === w.n2) continue;
-    if (!adj.has(w.n1)) adj.set(w.n1, []);
-    if (!adj.has(w.n2)) adj.set(w.n2, []);
-    adj.get(w.n1).push(w.n2); adj.get(w.n2).push(w.n1);
-  }
-  if (!adj.size) return null;
-  let startId = null, startNode = null;
-  for (const id of adj.keys()) { const n = nodeMap.get(id);
-    if (!startNode || n.x < startNode.x || (n.x === startNode.x && n.y < startNode.y)) { startId = id; startNode = n; } }
-  if (!startId) return null;
-  const path = [startId]; let prevId = null, currId = startId, inAngle = Math.PI;
-  const maxSteps = walls.length * 2 + 8;
-  for (let step = 0; step < maxSteps; step++) {
-    const curr = nodeMap.get(currId);
-    const candidates = (adj.get(currId) || []).filter(id => id !== prevId);
-    if (!candidates.length) return null;
-    let bestId = null, bestTurn = -Infinity;
-    for (const cid of candidates) {
-      const c = nodeMap.get(cid);
-      const outAngle = Math.atan2(c.y - curr.y, c.x - curr.x);
-      let turn = outAngle - inAngle; while (turn <= 0) turn += 2 * Math.PI; while (turn > 2 * Math.PI) turn -= 2 * Math.PI;
-      if (turn > bestTurn) { bestTurn = turn; bestId = cid; }
-    }
-    if (!bestId) return null;
-    if (bestId === startId) return path.length >= 3 ? path.map(id => nodeMap.get(id)) : null;
-    if (path.includes(bestId)) return null;
-    path.push(bestId);
-    const best = nodeMap.get(bestId);
-    inAngle = Math.atan2(curr.y - best.y, curr.x - best.x);
-    prevId = currId; currId = bestId;
-  }
-  return null;
 }
 
 // Zone colors come from the editable zoneLibrary prop passed by TestFit3D.
