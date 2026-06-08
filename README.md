@@ -149,7 +149,9 @@ only surfaces the tools relevant to it.
 - **IT / MEP markers** across five layers, rotatable, with schematic symbols.
 
 **Annotation**
-- **Dimensions** — click two snap points for a feet-inch dimension line.
+- **Dimensions** — click two snap points for a feet-inch dimension line. Select a
+  dimension to expose draggable endpoint handles; grab one to resize/move the measured
+  span, re-snapping to nearby nodes / wall midpoints / columns / markers (or freeing it).
 - **Labels / Callouts** — free text, optionally with a leader line; inline editing,
   font / weight / color controls.
 - **Revision Clouds** — closed polygons rendered as arc "bumps," closeable by
@@ -212,7 +214,12 @@ to ceiling height, openings are cut for doors and windows, and three render styl
 available:
 
 - **Clay** — matte Lambert materials with a soft ambient + key light (default).
-- **X-Ray** — transparent ghost walls with crisp edge lines and a prominent grid.
+- **X-Ray** — transparent ghost walls with crisp edge lines and a prominent grid. Each
+  wall reads as a **single outlined volume**: openings are modeled by splitting the wall
+  into sill/header/solid sub-meshes, but the edge outlines are drawn once per wall (plus
+  one outline per door/window/cut-opening) rather than per sub-mesh — so a wall with a
+  window shows just the wall rectangle and the window rectangle, not every internal
+  section boundary.
 - **Detailed** — architectural-visualization quality:
   - ACES Filmic tone mapping, soft shadows, image-based lighting via a drei
     `<Environment>` plus a warm directional "sun" and a cool fill light.
@@ -244,22 +251,70 @@ Each elevation renders:
   override; pony walls are shorter), colored by kind, demo walls dashed, depth-sorted.
 - **Windows** at their real sill height and height; **doors** as openings to a standard
   7'-0" head; **columns** full-height.
+- **IT/MEP markers** (outlets, switches, lights, AV, cameras, …) at their real **mounting
+  height** above finished floor — outlets at 18", switches at 48", ceiling fixtures at the
+  ceiling line, etc. Heights come from `markerMountYFt()` in `testfit3d.jsx` (resolving the
+  `M3D` table's `"ceil"` / `"hangN"` forms), the **same source the 3D scene uses**, so 2D
+  and 3D stay in sync. Markers are depth-culled like everything else (only the near face's
+  items show) and are click-selectable from the elevation.
 - A **finished-floor datum** (0'-0") and **ceiling line** with height labels.
 
 Openings stay on the plane of the wall they belong to: an opening foreshortens to
-edge-on (and is omitted) when its wall is perpendicular to the view. A near-face
-hidden-surface rule means each elevation shows only the openings on the building face
-it looks at — so Front and Back (and Left and Right) read as distinct faces rather than
-mirror images of each other.
+edge-on (and is omitted) when its wall is perpendicular to the view. A proper
+hidden-surface rule makes each elevation a straight-on view of a single face: a wall,
+opening, or column is hidden when the union of **strictly nearer, at-least-as-tall**
+walls fully spans its width. That occludes the back wall, interior partitions, a **pony
+wall behind the front wall**, and columns tucked behind the near face — so Front and
+Back (and Left and Right) read as distinct, non-x-ray faces rather than seeing through
+to whatever stands behind. (The union test handles a near wall built from several
+collinear segments.)
+
+**Elevation guides (section cuts).** Pull a guide from any edge of the plan canvas
+(Figma-style: the thin edge rails) to set where an elevation is taken — **Bottom = Front,
+Top = Back, Left = Left, Right = Right**, the view looking inward from that edge. A guide
+is a **section cut line**: its elevation renders only the geometry on the cut's far side
+(everything between the viewer and the cut is removed), so the wall *at* the cut becomes
+the visible face — letting you elevation an **interior** wall, not just the building's
+outer face. Cropping reduces to "keep depth `d ≤ d(cut)`", which composes with the
+hidden-surface rule above. Guides snap to wall coordinates, are draggable/selectable
+(Delete to remove, or drag back onto the source edge), reframe their elevation live, and
+persist with the project. One guide per direction; with none, the elevation shows the
+whole building as before.
+
+Placed guides **fade out** so they don't clutter the plan; they fade back in when you
+**hover the matching edge rail** (revealing all of them), when the cursor nears a guide
+line, or while a guide is selected or being dragged — and they remain hit-testable while
+faded, so the cut is still grabbable.
+
+While you **drag a guide**, the cursor drives that elevation's camera: the elevation pans
+so the point under the cursor stays centered (a live scrub along the wall, keeping the
+current zoom), then re-fits to the final cut on release.
+
+Each open elevation also draws a **visible ruler along its edge** with a **camera indicator
+on it** — a camera glyph centered on the ruler line plus a brighter bracket marking the
+visible horizontal span — so you can see, on the plan, where each elevation is currently
+looking. It slides along the ruler live as you scrub a guide or pan/zoom the elevation. You
+can also **drag the camera marker along the ruler to pan that elevation** (cursor reflects
+the axis: `ew-resize` on a horizontal front/back ruler, `ns-resize` on a vertical left/right
+ruler); the pan sticks until the cut changes. (The elevation reports its visible extent up via an
+`onView` callback; markers map plan coords → screen and assume `canvasRotation` 0, like the rails.)
+
+The whole system is an **"Elevation Rulers" layer** in the Layers panel: **hide** it to clear
+the guide lines, edge rails, and on-ruler camera markers from the plan (the elevations stay
+cut — visibility is plan-side only), or **lock** it to keep them visible but non-interactive
+(no selecting/dragging/creating guides, no camera-pan). Lock state persists with the project.
 
 Each elevation pane has an **independent camera** (scroll to zoom, drag to pan;
-auto-fits on open). 
+auto-fits on open, and re-fits when its section cut changes). 
 
 **View + annotate (v1):** click a wall / door / window / column to select it — the
 right-hand inspector opens and edits round-trip into the model (e.g. changing ceiling
 height instantly reshapes the elevation). With an elevation pane focused, the
 **Dimension** and **Label** tools place annotations directly in that elevation's own
-coordinate space (stored per direction). Editing geometry *within* an elevation
+coordinate space (stored per direction). Like the plan dimension tool, they **snap to
+object nodes** — the corners and edge-midpoints of every wall / window / door / column,
+marker centers, and the floor/ceiling datum lines — with a live snap ring at the target and
+a running measurement preview as you draw. Editing geometry *within* an elevation
 (dragging a window's sill, etc.) is planned for a later version.
 
 ---
@@ -409,7 +464,7 @@ Open the dev URL Vite prints (typically `http://localhost:5173`).
 
 A project serializes to a single JSON object containing every entity array
 (`nodes`, `walls`, `zones`, `markers`, `doors`, `windows`, `columns`, `dims`,
-`labels`, `revClouds`, `flowPaths`, `floorRegions`), plus `floorMaterial`,
+`labels`, `revClouds`, `flowPaths`, `floorRegions`, `guides`), plus `floorMaterial`,
 `elevAnnotations` (per-direction elevation dimensions/labels), the reference-image
 settings, scale, the `snapshots` library, and the `panes`/`splitPos` view layout.
 
@@ -417,7 +472,7 @@ settings, scale, the `snapshots` library, and the `panes`/`splitPos` view layout
 a future backend plugs into:
 
 - `captureModel()` / `getProjectData()` — produce the JSON payload (stamped with
-  `version: "testfit-v8"`).
+  `version: "testfit-v9"`).
 - `migrateProjectData(d)` — a **pure** normalizer that upgrades any older/partial blob
   to the current shape (defaults missing arrays, folds legacy `cutouts` into windows,
   maps the retired named *versions* → `snapshots`, ignores retired *phase* tags).

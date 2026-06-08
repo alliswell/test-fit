@@ -92,6 +92,13 @@ describe("migrateProjectData — the persistence seam", () => {
     expect(m.elevAnnotations).toEqual({});
     expect(m.lockedLayers).toEqual({});
     expect(m.snapshots).toEqual([]);
+    expect(m.guides).toEqual([]);
+  });
+
+  it("defaults missing guides to [] and round-trips elevation cut guides", () => {
+    expect(migrateProjectData({ nodes: [] }).guides).toEqual([]); // pre-v9 blob
+    const guides = [{ id: "g1", dir: "front", pos: 120 }, { id: "g2", dir: "left", pos: -40 }];
+    expect(migrateProjectData({ guides }).guides).toEqual(guides);
   });
 
   it("preserves a current-version payload round-trip", () => {

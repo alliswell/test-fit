@@ -1,8 +1,8 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from "react";
-import { MousePointer2, X, Plus, DoorOpen, Ruler, Box, LayoutDashboard, RotateCcw, RotateCw, Undo2, Redo2, Tag, Settings, ChevronDown, ChevronRight, ChevronLeft, Trash2, GitBranch, Columns2, PanelLeft, PanelLeftClose } from "lucide-react";
+import { MousePointer2, X, Plus, DoorOpen, Ruler, Box, LayoutDashboard, RotateCcw, RotateCw, Undo2, Redo2, Tag, Settings, ChevronDown, ChevronRight, ChevronLeft, Trash2, GitBranch, Columns2, PanelLeft, PanelLeftClose, Camera } from "lucide-react";
 import ZONE_LIBRARY_DEFAULTS from "../data/zone-library.json";
 import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "../app/components/ui/tooltip";
-import TestFit3D from "./testfit3d";
+import TestFit3D, { markerMountYFt } from "./testfit3d";
 import { uid, sn, dst, ptSeg, polyArea, polyCentroid, pointInPoly, orthoSnap, isLightComponent, parseDimInput, migrateProjectData, PROJECT_VERSION, AUTOSAVE_KEY } from "./model";
 import { wallResizeCursor, applySmartGuides, lineInt, wallMiterPt, revCloudPath } from "./geometry";
 import { useViewStore } from "../store/viewStore";
@@ -328,14 +328,15 @@ function AlignBtn({ action, label, tip, onAction, border, accent, textMuted, tex
 // Orthographic side projection of the model along one cardinal axis. Read-only
 // (view + annotate); geometry editing stays in plan/3D. Each instance owns its
 // own pan/zoom camera.
-function ElevationView({ dir, nodes, walls, doors, windows, columns, ceilingHeight, pxPerFoot, T,
-  selectedId, selType, onSelect, ft, tool, anno, onPlaceDim, onPlaceLabel, onUpdateDim, onUpdateLabel }) {
+function ElevationView({ dir, nodes, walls, doors, windows, columns, markers = [], ceilingHeight, pxPerFoot, T,
+  selectedId, selType, onSelect, ft, tool, cut, scrub, onView, panU, anno, onPlaceDim, onPlaceLabel, onUpdateDim, onUpdateLabel }) {
   const svgRef = useRef(null);
   const [cam, setCam] = useState(null); // { tx, ty, z } — null until first auto-fit
   const panRef = useRef(null);
   const dimDraftRef = useRef(null);
   const fittedRef = useRef(null); // last direction we auto-fit, so edits don't reset the camera
   const [dimDraft, setDimDraft] = useState(null); // elevation-space {x1,y1,x2,y2?}
+  const [hoverSnap, setHoverSnap] = useState(null); // {x,y,snapped} live snap preview for the dim/label tools
 
   // Project a plan point (x,y) to elevation horizontal u + depth d (for painter sort).
   const proj = useCallback((x, y) => {
@@ -354,23 +355,45 @@ function ElevationView({ dir, nodes, walls, doors, windows, columns, ceilingHeig
   // Build projected, depth-sorted draw list.
   const items = useMemo(() => {
     const out = [];
-    let dMin = Infinity, dMax = -Infinity; // building front-to-back depth extent (this view)
+    const wallProj = []; // projected walls, gathered first so we can occlusion-test against them
+    // Section cut from an elevation guide: keep only geometry at or beyond the cut depth
+    // (d ≤ cutD), removing everything between the viewer (max d) and the cut so the wall at
+    // the cut becomes the visible near face. Plan pos → projected depth via a point on the line.
+    const cutPt = cut != null ? ((dir === "left" || dir === "right") ? proj(cut, 0) : proj(0, cut)) : null;
+    const cutD = cutPt ? cutPt.d : null;
+    const beyondCut = (d) => cutD != null && d > cutD + 1; // d in front of the cut → cropped
     for (const w of walls) {
       const a = nodeMap.get(w.n1), b = nodeMap.get(w.n2); if (!a || !b) continue;
       const pa = proj(a.x, a.y), pb = proj(b.x, b.y);
-      dMin = Math.min(dMin, pa.d, pb.d); dMax = Math.max(dMax, pa.d, pb.d);
       const u1 = Math.min(pa.u, pb.u), u2 = Math.max(pa.u, pb.u);
       if (u2 - u1 < 0.5) continue; // wall is edge-on to this elevation — skip sliver
+      const d = (pa.d + pb.d) / 2;
+      if (beyondCut(d)) continue; // in front of the section cut — cropped away
       const wk = WALL_KINDS[w.kind || "existing"];
       const topIn = w.kind === "pony" ? (w.ponyHeight || 42) : (w.ceilingHeight ?? ceilingHeight);
-      out.push({ kind: "wall", id: w.id, u1, u2, top: vAt(topIn), d: (pa.d + pb.d) / 2,
+      wallProj.push({ kind: "wall", id: w.id, u1, u2, top: vAt(topIn), d,
         color: wk.color, dash: wk.dash, demo: w.kind === "demo" });
     }
-    // Hidden-surface rule: an elevation only shows openings on the near half of the
-    // building (the face the viewer sees). Far-wall openings are hidden behind the
-    // near wall, so Front and Back (and Left/Right) show distinct, non-mirrored faces.
-    const midD = (dMin + dMax) / 2;
-    const cull = (dMax - dMin) > pxPerFoot; // only when there's real depth between faces
+    // Hidden-surface rule: a true elevation is a straight-on view of a single face. A
+    // surface at [u1,u2] reaching up to `top` (negative = up; everything rises from the
+    // floor) is hidden when the union of *strictly nearer*, at-least-as-tall opaque walls
+    // fully spans its width. This occludes the back wall, interior partitions, a pony wall
+    // behind the front wall, and columns/openings tucked behind the near face — so each
+    // direction reads as a distinct, non-x-ray face. Walls are gathered first; the union
+    // handles a near wall built from several collinear segments.
+    const occluded = (u1, u2, top, d) => {
+      const ivs = wallProj
+        .filter(f => !f.demo && f.d > d + 0.5 && f.top <= top + 0.5)
+        .map(f => [f.u1, f.u2]).sort((p, q) => p[0] - q[0]);
+      let cursor = u1;
+      for (const [a, b] of ivs) {
+        if (a > cursor + 0.5) break;        // gap in coverage → visible through it
+        cursor = Math.max(cursor, b);
+        if (cursor >= u2 - 0.5) return true;
+      }
+      return cursor >= u2 - 0.5;
+    };
+    for (const wp of wallProj) { if (!occluded(wp.u1, wp.u2, wp.top, wp.d)) out.push(wp); }
     const opening = (arr, type) => {
       for (const it of arr) {
         // Project the opening's two ends ALONG its host wall (angle in degrees) so it
@@ -381,34 +404,58 @@ function ElevationView({ dir, nodes, walls, doors, windows, columns, ceilingHeig
         const e1 = proj(it.x - Math.cos(rad) * half, it.y - Math.sin(rad) * half);
         const e2 = proj(it.x + Math.cos(rad) * half, it.y + Math.sin(rad) * half);
         if (Math.abs(e2.u - e1.u) < 1) continue; // edge-on to this elevation — its wall isn't shown here
-        const d = (e1.d + e2.d) / 2;
-        if (cull && d < midD - 0.5) continue; // on the far face — hidden behind the near wall
-        out.push({ kind: type, id: it.id, u1: Math.min(e1.u, e2.u), u2: Math.max(e1.u, e2.u), d, item: it });
+        const d = (e1.d + e2.d) / 2, u1 = Math.min(e1.u, e2.u), u2 = Math.max(e1.u, e2.u);
+        if (beyondCut(d)) continue; // in front of the section cut — cropped away
+        const top = type === "window" ? vAt((it.sill ?? 30) + (it.height ?? 48)) : vAt(DOOR_HEIGHT_IN);
+        if (occluded(u1, u2, top, d)) continue; // behind a nearer wall — hidden
+        out.push({ kind: type, id: it.id, u1, u2, d, item: it });
       }
     };
     opening(doors, "door");
     opening(windows, "window");
     for (const c of columns) {
       const p = proj(c.x, c.y);
+      if (beyondCut(p.d)) continue; // in front of the section cut — cropped away
       const halfW = ((c.size || 12) / 12) * pxPerFoot / 2;
+      if (occluded(p.u - halfW, p.u + halfW, ceilV, p.d)) continue; // behind the near face — hidden
       out.push({ kind: "column", id: c.id, u1: p.u - halfW, u2: p.u + halfW, d: p.d, top: ceilV });
     }
+    // IT/MEP markers, placed at their mounting height (AFF). Pushed last so they draw on top
+    // of the wall they're mounted on; same cut + occlusion rules as everything else.
+    const ceilFt = ceilingHeight / 12;
+    const mHalf = 0.35 * pxPerFoot;        // symbol footprint for occlusion
+    const mDepthTol = 0.5 * pxPerFoot;     // treat a marker as "on" the nearest wall within ~½'
+    for (const m of markers) {
+      const p = proj(m.x, m.y);
+      if (beyondCut(p.d)) continue; // in front of the section cut — cropped away
+      const v = vAt(markerMountYFt(m.componentType, ceilFt) * 12); // center height (elevation up)
+      // Hidden only if a wall is nearer by more than the tolerance (so a marker mounted on
+      // the near face isn't culled by its own wall, but far-wall items stay hidden).
+      if (occluded(p.u - mHalf, p.u + mHalf, v, p.d + mDepthTol)) continue;
+      out.push({ kind: "marker", id: m.id, u: p.u, v, d: p.d, item: m });
+    }
     return out.sort((m, n) => m.d - n.d); // far → near
-  }, [walls, doors, windows, columns, nodeMap, proj, vAt, ceilingHeight, ceilV, pxPerFoot]);
+  }, [walls, doors, windows, columns, markers, nodeMap, proj, vAt, ceilingHeight, ceilV, pxPerFoot, cut, dir]);
 
   // Content bounds (pre-camera) for auto-fit.
   const bounds = useMemo(() => {
     let uMin = Infinity, uMax = -Infinity;
-    for (const it of items) { uMin = Math.min(uMin, it.u1); uMax = Math.max(uMax, it.u2); }
+    for (const it of items) {
+      const a = it.u1 ?? it.u, b = it.u2 ?? it.u; // markers carry `u` (point), others u1/u2
+      if (a == null) continue;
+      uMin = Math.min(uMin, a); uMax = Math.max(uMax, b);
+    }
     if (!isFinite(uMin)) { uMin = -100; uMax = 100; }
     return { uMin, uMax, vTop: ceilV, vBot: 0 };
   }, [items, ceilV]);
 
-  // Auto-fit the camera once per direction (on mount / when the direction changes).
-  // Guarded by fittedRef so editing geometry doesn't reset the user's pan/zoom; retries
-  // across bounds changes only until the first successful fit for this direction.
+  // Auto-fit the camera once per (direction + cut) — so editing geometry doesn't reset the
+  // user's pan/zoom, but changing the elevation's section cut reframes to the cropped face.
+  // Retries across bounds changes only until the first successful fit for this key.
+  const fitKey = `${dir}:${cut ?? ""}`;
   useEffect(() => {
-    if (fittedRef.current === dir) return;
+    if (scrub) return; // suspended while scrubbing — the cursor drives the camera (below)
+    if (fittedRef.current === fitKey) return;
     const el = svgRef.current; if (!el) return;
     const r = el.getBoundingClientRect(); if (!r.width || !r.height) return;
     const m = 48;
@@ -416,8 +463,41 @@ function ElevationView({ dir, nodes, walls, doors, windows, columns, ceilingHeig
     const z = Math.min((r.width - 2 * m) / cw, (r.height - 2 * m) / ch, 4);
     const cx = (bounds.uMin + bounds.uMax) / 2, cy = (bounds.vTop + bounds.vBot) / 2;
     setCam({ z, tx: r.width / 2 - cx * z, ty: r.height / 2 - cy * z });
-    fittedRef.current = dir;
-  }, [dir, bounds.uMin, bounds.uMax, bounds.vTop, bounds.vBot]);
+    fittedRef.current = fitKey;
+  }, [fitKey, scrub, bounds.uMin, bounds.uMax, bounds.vTop, bounds.vBot]);
+
+  // While a section guide is being dragged, the cursor's position along the plan is the
+  // elevation's camera: pan horizontally so the point under the cursor is centered (keeping
+  // the current zoom). Lets you scrub along the wall as you place/move the cut.
+  useEffect(() => {
+    if (!scrub) return;
+    const el = svgRef.current; if (!el) return;
+    const r = el.getBoundingClientRect(); if (!r.width) return;
+    const u = proj(scrub.x, scrub.y).u;
+    setCam(c => { const cc = c || { z: 1, tx: 0, ty: 0 }; return { ...cc, tx: r.width / 2 - u * cc.z }; });
+    // On scrub end, force a re-fit so releasing always reframes the final cut (even after a
+    // horizontal drag where the cut depth — and thus fitKey — didn't change).
+    return () => { fittedRef.current = null; };
+  }, [scrub, proj]);
+
+  // Pan to a target u when the camera marker is dragged along the ruler. Doesn't touch the
+  // fit guard, so the pan persists (no snap-back) until the cut changes.
+  useEffect(() => {
+    if (panU == null) return;
+    const el = svgRef.current; if (!el) return;
+    const r = el.getBoundingClientRect(); if (!r.width) return;
+    setCam(c => { const cc = c || { z: 1, tx: 0, ty: 0 }; return { ...cc, tx: r.width / 2 - panU * cc.z }; });
+  }, [panU]);
+
+  // Report the camera's visible horizontal extent (in projected-u units) up to the plan so
+  // it can draw a "camera" marker on the matching edge ruler.
+  useEffect(() => {
+    if (!onView) return;
+    const el = svgRef.current; if (!el) return;
+    const r = el.getBoundingClientRect(); if (!r.width) return;
+    const c = cam || { tx: 0, z: 1 };
+    onView(dir, { uMin: (0 - c.tx) / c.z, uMax: (r.width - c.tx) / c.z, uCenter: (r.width / 2 - c.tx) / c.z });
+  }, [cam, dir, onView]);
 
   const cm = cam || { tx: 0, ty: 0, z: 1 };
   // screen <-> elevation conversions
@@ -425,10 +505,46 @@ function ElevationView({ dir, nodes, walls, doors, windows, columns, ceilingHeig
   const toElev = (sx, sy) => ({ x: (sx - cm.tx) / cm.z, y: (sy - cm.ty) / cm.z });
   const svgPt = (e) => { const r = svgRef.current.getBoundingClientRect(); return { sx: e.clientX - r.left, sy: e.clientY - r.top }; };
 
+  // Object nodes the dim/label tools snap to — corners + edge-midpoints of every drawn item,
+  // plus marker centers, in elevation (u,v) space. Mirrors the plan dim tool's node snapping.
+  const snapPts = useMemo(() => {
+    const pts = [];
+    for (const it of items) {
+      if (it.kind === "marker") { pts.push({ u: it.u, v: it.v }); continue; }
+      let vb, vt;
+      if (it.kind === "wall" || it.kind === "column") { vb = 0; vt = it.top; }
+      else if (it.kind === "window") { const s = it.item.sill ?? 30, h = it.item.height ?? 48; vb = vAt(s); vt = vAt(s + h); }
+      else if (it.kind === "door") { vb = 0; vt = vAt(DOOR_HEIGHT_IN); }
+      else continue;
+      const um = (it.u1 + it.u2) / 2, vm = (vb + vt) / 2;
+      pts.push({ u: it.u1, v: vb }, { u: it.u2, v: vb }, { u: it.u1, v: vt }, { u: it.u2, v: vt },
+               { u: um, v: vb }, { u: um, v: vt }, { u: it.u1, v: vm }, { u: it.u2, v: vm });
+    }
+    return pts;
+  }, [items, vAt]);
+
+  // Snap an elevation point to the nearest item node within ~SNAP_R screen px, else to the
+  // floor/ceiling datum line (height only). Returns { x, y, snapped }.
+  const snapElev = (p) => {
+    const thresh = SNAP_R / cm.z;
+    let best = null, bd = thresh;
+    for (const s of snapPts) { const d = Math.hypot(p.x - s.u, p.y - s.v); if (d < bd) { best = s; bd = d; } }
+    if (best) return { x: best.u, y: best.v, snapped: true };
+    if (Math.abs(p.y) < thresh) return { x: p.x, y: 0, snapped: true };          // finished floor
+    if (Math.abs(p.y - ceilV) < thresh) return { x: p.x, y: ceilV, snapped: true }; // ceiling
+    return { x: p.x, y: p.y, snapped: false };
+  };
+
+  const onBgMove = (e) => {
+    if (tool !== "dim" && tool !== "label") { if (hoverSnap) setHoverSnap(null); return; }
+    const { sx, sy } = svgPt(e);
+    setHoverSnap(snapElev(toElev(sx, sy)));
+  };
+
   const onWheel = (e) => {
     e.preventDefault();
     const { sx, sy } = svgPt(e);
-    const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1;
+    const factor = 1 - e.deltaY * 0.001; // match the plan canvas's delta-proportional zoom speed
     setCam(c => { const cc = c || cm; const z2 = Math.min(10, Math.max(0.05, cc.z * factor));
       const ux = (sx - cc.tx) / cc.z, uy = (sy - cc.ty) / cc.z;
       return { z: z2, tx: sx - ux * z2, ty: sy - uy * z2 }; });
@@ -437,8 +553,8 @@ function ElevationView({ dir, nodes, walls, doors, windows, columns, ceilingHeig
   const onBgDown = (e) => {
     const { sx, sy } = svgPt(e);
     if (tool === "dim" || tool === "label") {
-      const p = toElev(sx, sy);
-      if (tool === "label") { onPlaceLabel?.(p); return; }
+      const p = snapElev(toElev(sx, sy)); // snap to object nodes, like the 2D dim tool
+      if (tool === "label") { onPlaceLabel?.({ x: p.x, y: p.y }); return; }
       // dim: 2-click
       if (!dimDraftRef.current) { dimDraftRef.current = { x1: p.x, y1: p.y }; setDimDraft({ x1: p.x, y1: p.y }); }
       else { const d = { ...dimDraftRef.current, x2: p.x, y2: p.y }; dimDraftRef.current = null; setDimDraft(null); onPlaceDim?.(d); }
@@ -451,7 +567,7 @@ function ElevationView({ dir, nodes, walls, doors, windows, columns, ceilingHeig
     window.addEventListener("mousemove", move); window.addEventListener("mouseup", up);
   };
 
-  const sel = (id, type) => (e) => { e.stopPropagation(); onSelect?.(id, type); };
+  const sel = (id, type) => (e) => { if (tool !== "select") return; e.stopPropagation(); onSelect?.(id, type); };
   const isSel = (id, type) => selectedId === id && selType === type;
 
   // Drag an existing annotation (elevation space). part: "p1"/"p2"/"line" for dims, "move" for labels.
@@ -479,7 +595,7 @@ function ElevationView({ dir, nodes, walls, doors, windows, columns, ceilingHeig
   const annoDims = anno?.dims || [], annoLabels = anno?.labels || [];
 
   return (
-    <svg ref={svgRef} width="100%" height="100%" onMouseDown={onBgDown} onWheel={onWheel}
+    <svg ref={svgRef} width="100%" height="100%" onMouseDown={onBgDown} onMouseMove={onBgMove} onMouseLeave={() => hoverSnap && setHoverSnap(null)} onWheel={onWheel}
       style={{ display: "block", background: T.canvas, cursor: (tool === "dim" || tool === "label") ? "crosshair" : "grab" }}>
       {/* Floor + ceiling datum lines */}
       <line x1={0} y1={floorY} x2="100%" y2={floorY} stroke={T.textMuted} strokeWidth={1} opacity={0.6} />
@@ -514,6 +630,19 @@ function ElevationView({ dir, nodes, walls, doors, windows, columns, ceilingHeig
           return <rect key={"d" + it.id + i} x={x} y={y} width={w} height={h}
             fill={"#A9885F" + "33"} stroke={on ? T.accent : "#A9885F"} strokeWidth={on ? 2 : 1.2}
             onClick={sel(it.id, "door")} style={{ cursor: "pointer" }} />;
+        }
+        if (it.kind === "marker") {
+          const m = it.item;
+          const spec = SPEC_COMPONENTS[m.layer]?.[m.componentType];
+          const color = spec?.color || "#9A9488", letter = spec?.letter;
+          const a = toScreen(it.u, it.v);
+          const r = Math.max(3, 0.35 * pxPerFoot * cm.z); // ~0.7' symbol, min 3px
+          const on = isSel(it.id, "marker");
+          return <g key={"mk" + it.id + i} onClick={sel(it.id, "marker")} style={{ cursor: "pointer" }}>
+            <circle cx={a.x} cy={a.y} r={r} fill={color + "cc"} stroke={on ? T.accent : color} strokeWidth={on ? 2 : 1} />
+            {letter && <text x={a.x} y={a.y} textAnchor="middle" dominantBaseline="central" fontSize={r}
+              fill="#fff" fontFamily="inherit" fontWeight={700} style={{ pointerEvents: "none" }}>{letter}</text>}
+          </g>;
         }
         // column
         const a = toScreen(it.u1, 0), b = toScreen(it.u2, it.top);
@@ -554,7 +683,27 @@ function ElevationView({ dir, nodes, walls, doors, windows, columns, ceilingHeig
       })}
       {dimDraft && (() => { const p = toScreen(dimDraft.x1, dimDraft.y1); return <circle cx={p.x} cy={p.y} r={3} fill={T.accent} />; })()}
 
-      <text x={6} y={16} fontSize={10} fontWeight={700} fill={T.textMuted} fontFamily="inherit" style={{ letterSpacing: "0.08em" }}>{dir.toUpperCase()} ELEVATION</text>
+      {/* Snap preview for the dim/label tools: live measure line + a ring at the snapped node */}
+      {(tool === "dim" || tool === "label") && hoverSnap && (() => {
+        const s = toScreen(hoverSnap.x, hoverSnap.y);
+        return <g style={{ pointerEvents: "none" }}>
+          {dimDraft && (() => {
+            const a = toScreen(dimDraft.x1, dimDraft.y1);
+            const lenIn = Math.hypot(hoverSnap.x - dimDraft.x1, hoverSnap.y - dimDraft.y1) / pxPerFoot * 12;
+            const mid = { x: (a.x + s.x) / 2, y: (a.y + s.y) / 2 };
+            return <>
+              <line x1={a.x} y1={a.y} x2={s.x} y2={s.y} stroke={T.accent} strokeWidth={1} strokeDasharray="4 3" opacity={0.8} />
+              {lenIn > 0.5 && <text x={mid.x} y={mid.y - 4} textAnchor="middle" fontSize={10} fill={T.accent} fontFamily="inherit" fontWeight={600}>{ft((lenIn / 12) * pxPerFoot)}</text>}
+            </>;
+          })()}
+          {hoverSnap.snapped
+            ? <><circle cx={s.x} cy={s.y} r={5} fill="none" stroke={T.accent} strokeWidth={2} /><circle cx={s.x} cy={s.y} r={1.5} fill={T.accent} /></>
+            : <circle cx={s.x} cy={s.y} r={3} fill={T.accent} opacity={0.6} />}
+        </g>;
+      })()}
+
+      {/* Offset past the pane's view-selector chip (absolute, left:8, ~80px wide) so it isn't covered */}
+      <text x={100} y={22} fontSize={10} fontWeight={700} fill={T.textMuted} fontFamily="inherit" style={{ letterSpacing: "0.08em" }}>{dir.toUpperCase()} ELEVATION</text>
     </svg>
   );
 }
@@ -579,6 +728,13 @@ export default function TestfitTool() {
   const [drawFlowPath, setDrawFlowPath] = useState(null); // null | { points:[{x,y}] }
   const [floorMaterial, setFloorMaterial] = useState("Wood"); // project default floor: Wood | Concrete | Vinyl | Carpet
   const [floorRegions, setFloorRegions] = useState([]); // [{id, points:[{x,y}], material, phase, label?}]
+  const [guides, setGuides] = useState([]); // elevation cut-line guides: [{id, dir:"front"|"back"|"left"|"right", pos}]
+  const [guideDraft, setGuideDraft] = useState(null); // {dir, pos} while pulling a new guide from an edge
+  const [peekGuides, setPeekGuides] = useState(false); // true while hovering an edge rail → reveal placed guides
+  const [hoverGuideId, setHoverGuideId] = useState(null); // guide the cursor is near (reveal it so it's grabbable)
+  const [guideScrub, setGuideScrub] = useState(null); // {dir, x, y} cursor plan pos while dragging a guide → drives that elevation's camera
+  const [elevViews, setElevViews] = useState({}); // {dir: {uMin,uMax,uCenter}} each elevation's visible extent → drawn as a camera marker on the ruler
+  const [cameraPan, setCameraPan] = useState(null); // {dir, u} while dragging the camera marker along a ruler → pans that elevation
   // Per-direction elevation annotations (separate coord space from plan dims/labels).
   // Declared here (before `snapshot`) so it's initialized when snapshot's deps evaluate.
   const [elevAnnotations, setElevAnnotations] = useState({});
@@ -719,6 +875,7 @@ export default function TestfitTool() {
     visibleDims, setVisibleDims, visibleLabels, setVisibleLabels,
     visibleRevClouds, setVisibleRevClouds, visibleFlowPaths, setVisibleFlowPaths,
     visibleFloorRegions, setVisibleFloorRegions, visibleITMEP, setVisibleITMEP,
+    visibleGuides, setVisibleGuides,
     lockedLayers, setLockedLayers,
   } = useLayersStore();
   const [inspectorOpen, setInspectorOpen] = useState(true); // option panel collapsed/expanded
@@ -844,11 +1001,11 @@ export default function TestfitTool() {
   // ── Project management ─────────────────────────────────────────────
   // captureModel: the full live model WITHOUT snapshot meta (used as a snapshot's data).
   const captureModel = useCallback(() => ({
-    projectName, nodes, walls, zones, markers, doors, windows, columns, dims, labels, revClouds, flowPaths, floorRegions, floorMaterial,
+    projectName, nodes, walls, zones, markers, doors, windows, columns, dims, labels, revClouds, flowPaths, floorRegions, guides, floorMaterial,
     elevAnnotations,
     bgOpacity, bgScale, bgOffset, pxPerFoot, showDims, zoneLibrary,
     version: PROJECT_VERSION,
-  }), [projectName, nodes, walls, zones, markers, doors, windows, columns, dims, labels, revClouds, flowPaths, floorRegions, floorMaterial, elevAnnotations, bgOpacity, bgScale, bgOffset, pxPerFoot, showDims, zoneLibrary]);
+  }), [projectName, nodes, walls, zones, markers, doors, windows, columns, dims, labels, revClouds, flowPaths, floorRegions, guides, floorMaterial, elevAnnotations, bgOpacity, bgScale, bgOffset, pxPerFoot, showDims, zoneLibrary]);
 
   // getProjectData: full file payload — model + snapshot library + view layout.
   const getProjectData = useCallback(() => ({
@@ -874,6 +1031,7 @@ export default function TestfitTool() {
     setNodes(m.nodes); setWalls(m.walls); setZones(m.zones); setMarkers(m.markers);
     setDoors(m.doors); setWindows(m.windows); setColumns(m.columns); setDims(m.dims);
     setLabels(m.labels); setRevClouds(m.revClouds); setFlowPaths(m.flowPaths); setFloorRegions(m.floorRegions);
+    setGuides(m.guides || []);
     setFloorMaterial(m.floorMaterial); setElevAnnotations(m.elevAnnotations);
     setBgOpacity(m.bgOpacity); setBgScale(m.bgScale); setBgOffset(m.bgOffset);
     setPxPerFoot(m.pxPerFoot); setShowDims(m.showDims);
@@ -1136,6 +1294,20 @@ export default function TestfitTool() {
   }, [mode, nodes, markers, columns, doors, windows, labels, zones, floorRegions, revClouds, flowPaths, markerVisible, phaseVisible, resolvePos, resolvePoints, layerLocked, markerLocked]);
   const wallsAt = useCallback((nid) => walls.filter(w => w.n1 === nid || w.n2 === nid), [walls]);
 
+  // Snap an elevation guide's position to the nearest wall node coordinate on its axis
+  // ("x" for left/right guides, "y" for front/back) so it lands cleanly on a wall face;
+  // else fall back to grid snap.
+  const snapGuide = useCallback((pos, axis) => {
+    const thresh = SNAP_R * 1.5;
+    let best = null, bd = thresh;
+    for (const n of nodes) {
+      const c = axis === "x" ? n.x : n.y;
+      const dd = Math.abs(pos - c);
+      if (dd < bd) { best = c; bd = dd; }
+    }
+    return best != null ? best : sn(pos, snapGrid);
+  }, [nodes, snapGrid]);
+
   // Snap for dimension tool: snaps to any significant point on canvas
   const findDimSnap = useCallback((x, y) => {
     let best = null, bd = SNAP_R * 1.5;
@@ -1354,6 +1526,26 @@ export default function TestfitTool() {
   const hitTest = useCallback((pos) => {
     // Selection read from the store at call time (event-only fn), so it's not a dependency.
     const { selectedId, selType, selectedIds } = useSelectionStore.getState();
+    // When a dim is selected, its two measured endpoints are draggable handles — check
+    // them before anything else so grabbing a handle takes priority over re-selecting.
+    if (selType === "dim" && selectedId && !layerLocked("dims")) {
+      const d = dims.find(dd => dd.id === selectedId);
+      if (d) {
+        const r = resolveDimEndpoints(d);
+        if (dst(pos.x, pos.y, r.x1, r.y1) < 10) return { type: "dim-endpoint", id: d.id, ep: 0 };
+        if (dst(pos.x, pos.y, r.x2, r.y2) < 10) return { type: "dim-endpoint", id: d.id, ep: 1 };
+      }
+    }
+    // Elevation cut guides — selectable/draggable lines spanning the canvas (any mode),
+    // unless the Elevation Rulers layer is hidden or locked.
+    if (useLayersStore.getState().visibleGuides && !layerLocked("guides")) {
+      const tol = 6 / zoom;
+      for (let i = guides.length - 1; i >= 0; i--) {
+        const g = guides[i];
+        const horiz = g.dir === "front" || g.dir === "back"; // horizontal line at y = pos
+        if (Math.abs((horiz ? pos.y : pos.x) - g.pos) < tol) return { type: "guide", id: g.id };
+      }
+    }
     // Dim strings are always selectable in any mode
     for (let i = dims.length - 1; i >= 0 && !layerLocked("dims"); i--) {
       const d = dims[i];
@@ -1499,7 +1691,7 @@ export default function TestfitTool() {
         return { type: "floorRegion", id: fr.id };
     }
     return null;
-  }, [mode, nodes, walls, zones, markers, doors, windows, columns, dims, labels, revClouds, flowPaths, floorRegions, pxPerFoot, wc, inToPx, resolvePos, resolvePoints, phaseVisible, resolveLeaderTip, layerLocked, markerLocked]);
+  }, [mode, nodes, walls, zones, markers, doors, windows, columns, dims, labels, revClouds, flowPaths, floorRegions, guides, zoom, pxPerFoot, wc, inToPx, resolvePos, resolvePoints, phaseVisible, resolveLeaderTip, resolveDimEndpoints, layerLocked, markerLocked]);
 
   const onDown = useCallback((e) => {
     // Selection is read fresh at event time (never during render) so it stays out of the
@@ -1926,6 +2118,7 @@ export default function TestfitTool() {
             : (hit.type === "zone-vertex" || hit.type === "zone-edge") ? "zone"
             : (hit.type === "flowPath-vertex") ? "flowPath"
             : (hit.type === "floorRegion-vertex" || hit.type === "floorRegion-edge") ? "floorRegion"
+            : hit.type === "dim-endpoint" ? "dim"
             : hit.type;
           setSelectedId(hit.id); setSelType(resolvedSelType);
           if (hit.type === "node") {
@@ -2025,6 +2218,17 @@ export default function TestfitTool() {
               }
             }
           }
+        }
+        else if (hit.type === "dim-endpoint") {
+          const d = dims.find(dd => dd.id === hit.id);
+          if (d) {
+            const r = resolveDimEndpoints(d);
+            const pt = hit.ep === 0 ? { x: r.x1, y: r.y1 } : { x: r.x2, y: r.y2 };
+            setDrag({ type: "dim-endpoint", id: hit.id, ep: hit.ep, ox: pos.x - pt.x, oy: pos.y - pt.y });
+          }
+        }
+        else if (hit.type === "guide") {
+          setDrag({ type: "guide", id: hit.id, downX: e.clientX, downY: e.clientY });
         }
         else if (hit.type === "zone-vertex") {
           const z = zones.find(zz => zz.id === hit.id);
@@ -2219,7 +2423,7 @@ export default function TestfitTool() {
         }
       }
     }
-  }, [tool, activeZoneType, activeSpecLayer, s2c, findNear, findDimSnap, hitTest, walls, wc, zones, markers, doors, windows, columns, labels, revClouds, flowPaths, viewOff, drawChain, commitWallSegment, spaceHeld, doorWidth, windowWidth, columnSize, columnShape, snapToWall, snapGrid, activeComponentType, bgImage, bgOffset, gn, calibrationLine, drawDim, dims, nodes, pxPerFoot, zoneEdge, resolvePos, resolvePoints, activePhase, addingLeaderToId, snapLabelAnchor, drawRevCloud, drawFlowPath, floorRegions, drawFloorRegion, polyCentroid]);
+  }, [tool, activeZoneType, activeSpecLayer, s2c, findNear, findDimSnap, hitTest, walls, wc, zones, markers, doors, windows, columns, labels, revClouds, flowPaths, viewOff, drawChain, commitWallSegment, spaceHeld, doorWidth, windowWidth, columnSize, columnShape, snapToWall, snapGrid, activeComponentType, bgImage, bgOffset, gn, calibrationLine, drawDim, dims, nodes, pxPerFoot, zoneEdge, resolvePos, resolvePoints, activePhase, addingLeaderToId, snapLabelAnchor, drawRevCloud, drawFlowPath, floorRegions, drawFloorRegion, polyCentroid, resolveDimEndpoints]);
 
   const onMove = useCallback((e) => {
     if (panning && panSt) {
@@ -2283,6 +2487,14 @@ export default function TestfitTool() {
       setHoverNid(near ? near.id : null);
       // Proximity-hover: preview the nearest hoverable as cursor approaches
       setProxHover(findProxHover(pos.x, pos.y));
+      // Reveal a faded elevation guide as the cursor nears its line (so it's grabbable)
+      const gtol = 6 / zoom;
+      let gid = null;
+      for (let i = guides.length - 1; i >= 0; i--) {
+        const g = guides[i], horiz = g.dir === "front" || g.dir === "back";
+        if (Math.abs((horiz ? pos.y : pos.x) - g.pos) < gtol) { gid = g.id; break; }
+      }
+      setHoverGuideId(prev => prev === gid ? prev : gid);
     } else if (drag && PROX_DRAG_TYPES.has(drag.type)) {
       // While dragging a face/edge/vertex/element, keep the proximity preview
       // alive (excluding the dragged item itself) so nearby snap targets glow.
@@ -2591,6 +2803,25 @@ export default function TestfitTool() {
             return pt;
           }) };
         }));
+      } else if (drag.type === "dim-endpoint") {
+        // Re-snap to nodes / wall-mids / columns / markers like creation does, else free grid point.
+        const tx = pos.x - drag.ox, ty = pos.y - drag.oy;
+        const snap = findDimSnap(tx, ty);
+        const nx = snap ? snap.x : sn(tx, snapGrid), ny = snap ? snap.y : sn(ty, snapGrid);
+        setDims(p => p.map(d => {
+          if (d.id !== drag.id) return d;
+          return drag.ep === 0
+            ? { ...d, x1: nx, y1: ny, anchor1Id: snap?.anchorId ?? null, anchor1Type: snap?.anchorType ?? null }
+            : { ...d, x2: nx, y2: ny, anchor2Id: snap?.anchorId ?? null, anchor2Type: snap?.anchorType ?? null };
+        }));
+      } else if (drag.type === "guide") {
+        const g = guides.find(gg => gg.id === drag.id);
+        if (g) {
+          const axis = (g.dir === "front" || g.dir === "back") ? "y" : "x";
+          const np = snapGuide(axis === "y" ? pos.y : pos.x, axis);
+          setGuides(p => p.map(x => x.id === drag.id ? { ...x, pos: np } : x));
+          setGuideScrub({ dir: g.dir, x: pos.x, y: pos.y }); // cursor drives the elevation camera
+        }
       } else if (drag.type === "zone-vertex") {
         const newX = sn(pos.x - drag.ox, snapGrid), newY = sn(pos.y - drag.oy, snapGrid);
         setZones(p => p.map(zz => zz.id === drag.id ? { ...zz, points: zz.points.map((pt, i) => i === drag.vertexIndex ? { x: newX, y: newY } : pt) } : zz));
@@ -2785,11 +3016,30 @@ export default function TestfitTool() {
         return { ...z, x, y, w, h };
       }));
     }
-  }, [panning, panSt, canvasRotation, drawChain, drag, resize, s2c, findNear, findDimSnap, walls, wc, tool, snapToWall, snapGrid, marquee, calibrationLine, dims, drawDim, zones, zoom, rotatingMarker, outletType, lightingType, htrackAngle, nodes, doors, windows, columns, markers, activePhase, snapLabelAnchor, revClouds, drawRevCloud, flowPaths, drawFlowPath, floorRegions, drawFloorRegion, resolveDimEndpoints, findProxHover, proxHover]);
+  }, [panning, panSt, canvasRotation, drawChain, drag, resize, s2c, findNear, findDimSnap, walls, wc, tool, snapToWall, snapGrid, marquee, calibrationLine, dims, drawDim, zones, zoom, rotatingMarker, outletType, lightingType, htrackAngle, nodes, doors, windows, columns, markers, activePhase, snapLabelAnchor, revClouds, drawRevCloud, flowPaths, drawFlowPath, floorRegions, drawFloorRegion, resolveDimEndpoints, snapGuide, guides, findProxHover, proxHover]);
 
   const onUp = useCallback((e) => {
     // Selection read fresh at event time → kept out of the dep array (event-only handler).
     const { selectedId, selectedIds } = useSelectionStore.getState();
+    // Guide drag: dropping back onto its source edge removes it (Figma behavior).
+    if (drag?.type === "guide") {
+      const g = guides.find(gg => gg.id === drag.id);
+      const r = (cvsContainer.current ?? cvs.current)?.getBoundingClientRect();
+      // Only delete if the user actually dragged it back to the source edge — a plain
+      // click on a guide that already sits near an edge must select, not delete.
+      const moved = Math.hypot(e.clientX - (drag.downX ?? e.clientX), e.clientY - (drag.downY ?? e.clientY)) > 4;
+      if (g && r && moved) {
+        const RAIL = 16;
+        const onEdge =
+          (g.dir === "back"  && e.clientY - r.top    < RAIL) ||
+          (g.dir === "front" && r.bottom - e.clientY < RAIL) ||
+          (g.dir === "left"  && e.clientX - r.left   < RAIL) ||
+          (g.dir === "right" && r.right - e.clientX  < RAIL);
+        if (onEdge) { setGuides(p => p.filter(gg => gg.id !== drag.id)); setSelectedId(null); setSelType(null); }
+      }
+      setDrag(null); setGuideScrub(null);
+      return;
+    }
     // Commit label placement
     if (drag?.type === "label-tip") {
       const pos = s2c(e.clientX, e.clientY);
@@ -2977,7 +3227,7 @@ export default function TestfitTool() {
     }
     // No re-clipping on zone drag/vertex drag end — user controls shape manually
     setDrag(null); setResize(null); setPanning(false); setPanSt(null); setHoverNid(null); setProxHover(null); setRotatingMarker(null); setSmartGuides([]);
-  }, [drag, resize, hoverNid, marquee, mode, nodes, walls, doors, windows, zones, markers, columns, labels, revClouds, flowPaths, floorRegions, phaseVisible, resolvePos, resolvePoints, wc, lastCopyInfo, s2c, themeMode, activePhase, snapLabelAnchor, layerLocked, markerLocked]);
+  }, [drag, resize, hoverNid, marquee, mode, nodes, walls, doors, windows, zones, markers, columns, labels, revClouds, flowPaths, floorRegions, guides, phaseVisible, resolvePos, resolvePoints, wc, lastCopyInfo, s2c, themeMode, activePhase, snapLabelAnchor, layerLocked, markerLocked]);
 
   // Smooth zoom centered on cursor
   const onWheel = useCallback((e) => {
@@ -3142,6 +3392,7 @@ export default function TestfitTool() {
       else if (selType === "window") setWindows(p => p.filter(w => w.id !== selectedId));
       else if (selType === "column") setColumns(p => p.filter(c => c.id !== selectedId));
       else if (selType === "dim") setDims(p => p.filter(d => d.id !== selectedId));
+      else if (selType === "guide") setGuides(p => p.filter(g => g.id !== selectedId));
       else if (selType === "label" || selType === "label-tip") setLabels(p => p.filter(l => l.id !== selectedId));
       else if (selType === "revcloud") setRevClouds(p => p.filter(r => r.id !== selectedId));
       else if (selType === "flowPath") setFlowPaths(p => p.filter(r => r.id !== selectedId));
@@ -3574,8 +3825,11 @@ export default function TestfitTool() {
         fill={color} fontFamily={font} fontWeight={600}
         transform={`rotate(${ang},${mid.x},${mid.y})`} style={{ pointerEvents: "none" }}>{label}</text>
       {sel && <>
-        <circle cx={d.x1} cy={d.y1} r={3} fill={color} style={{ pointerEvents: "none" }} />
-        <circle cx={d.x2} cy={d.y2} r={3} fill={color} style={{ pointerEvents: "none" }} />
+        {/* Draggable endpoint handles — grab to resize/move the measured span */}
+        <circle cx={d.x1} cy={d.y1} r={7} fill={color} stroke={T.nodeFill} strokeWidth={2} style={{ cursor: "move" }} />
+        <circle cx={d.x1} cy={d.y1} r={3} fill={T.nodeFill} style={{ cursor: "move", pointerEvents: "none" }} />
+        <circle cx={d.x2} cy={d.y2} r={7} fill={color} stroke={T.nodeFill} strokeWidth={2} style={{ cursor: "move" }} />
+        <circle cx={d.x2} cy={d.y2} r={3} fill={T.nodeFill} style={{ cursor: "move", pointerEvents: "none" }} />
       </>}
     </g>;
   };
@@ -3967,6 +4221,136 @@ export default function TestfitTool() {
     </div>
   );
 
+  // Pull a new elevation cut guide from a canvas edge (Figma-style). `dir` is fixed by the
+  // edge: bottom=front, top=back, left=left, right=right. Uses window listeners so the drag
+  // continues once the cursor leaves the thin rail; commits on release (replacing any
+  // existing guide of the same direction), or cancels if released back on the source edge.
+  const GUIDE_RAIL = 14;
+  // Each elevation pane reports its visible horizontal extent here; change-guarded to avoid
+  // redundant re-renders.
+  const onElevView = useCallback((dir, v) => {
+    setElevViews(prev => {
+      const p = prev[dir];
+      if (p && Math.abs(p.uMin - v.uMin) < 0.5 && Math.abs(p.uMax - v.uMax) < 0.5) return prev;
+      return { ...prev, [dir]: v };
+    });
+  }, []);
+
+  // Drag the camera marker along its ruler to pan that elevation. The cursor's position
+  // along the edge → projected-u → the elevation centers there (handled via the panU prop).
+  const startCameraPan = useCallback((dir, e) => {
+    e.preventDefault(); e.stopPropagation();
+    const projU = (p) => dir === "front" ? p.x : dir === "back" ? -p.x : dir === "left" ? p.y : -p.y;
+    const apply = (ev) => { const p = s2c(ev.clientX, ev.clientY); setCameraPan({ dir, u: projU(p) }); };
+    apply(e);
+    const move = (ev) => apply(ev);
+    const up = () => { window.removeEventListener("mousemove", move); window.removeEventListener("mouseup", up); setCameraPan(null); };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+  }, [s2c]);
+
+  // Camera markers on the edge rulers: for each elevation currently shown in a pane, draw a
+  // bracket of its visible span + a camera glyph at its view center, on the matching edge.
+  // Positions map plan coords → screen via viewOff/zoom (assumes canvasRotation 0, like the rails).
+  const cameraIndicators = () => {
+    const dirs = [...new Set(panes.map(p => p.view))].filter(v => ELEV_DIRS.includes(v));
+    const locked = layerLocked("guides"); // locked → markers visible but not draggable
+    const out = [];
+    for (const dir of dirs) {
+      const v = elevViews[dir]; if (!v) continue;
+      const horiz = dir === "front" || dir === "back";
+      const flip = dir === "back" || dir === "right"; // projected u inverts the plan axis
+      const toPlan = (u) => (flip ? -u : u);
+      let a = toPlan(v.uMin), b = toPlan(v.uMax); if (a > b) [a, b] = [b, a];
+      const c = toPlan(v.uCenter);
+      const s = (pc) => (horiz ? viewOff.x : viewOff.y) + pc * zoom; // screen-along-edge in cvsContainer
+      const sMin = s(a), sMax = s(b), sC = s(c);
+      const col = "#2E8BE6";
+      const off = 6;                                  // ruler offset from the edge
+      const T_RULER = 3;                              // ruler / viewport thickness
+      const side = dir === "front" ? "bottom" : dir === "back" ? "top" : dir === "left" ? "left" : "right";
+      // Full-length visible ruler the indicator rides on.
+      const rulerStyle = horiz
+        ? { position: "absolute", left: 0, right: 0, [side]: off, height: T_RULER, borderRadius: T_RULER / 2 }
+        : { position: "absolute", top: 0, bottom: 0, [side]: off, width: T_RULER, borderRadius: T_RULER / 2 };
+      // The viewport: a bright segment at the SAME position/thickness as the ruler line, so it
+      // reads as the highlighted (visible) span of that ruler.
+      const barStyle = horiz
+        ? { position: "absolute", left: sMin, width: Math.max(3, sMax - sMin), [side]: off, height: T_RULER, borderRadius: T_RULER / 2 }
+        : { position: "absolute", top: sMin, height: Math.max(3, sMax - sMin), [side]: off, width: T_RULER, borderRadius: T_RULER / 2 };
+      // Camera glyph centered ON the ruler line (perpendicular center = line center).
+      const perp = off + T_RULER / 2;
+      const camPos = dir === "front" ? { bottom: perp, transform: "translate(-50%,50%)" }
+        : dir === "back" ? { top: perp, transform: "translate(-50%,-50%)" }
+        : dir === "left" ? { left: perp, transform: "translate(-50%,-50%)" }
+        : { right: perp, transform: "translate(50%,-50%)" };
+      const camStyle = horiz ? { position: "absolute", left: sC, ...camPos } : { position: "absolute", top: sC, ...camPos };
+      // Cursor reflects the drag axis: along a horizontal ruler you slide left↔right, along a
+      // vertical ruler you slide up↕down.
+      const moveCursor = horiz ? "ew-resize" : "ns-resize";
+      const grab = locked ? {} : { onMouseDown: (e) => startCameraPan(dir, e) };
+      out.push(<div key={dir + "-ruler"} style={{ ...rulerStyle, background: col, opacity: 0.28, zIndex: 30, pointerEvents: "none" }} />);
+      out.push(<div key={dir + "-bar"} {...grab}
+        style={{ ...barStyle, background: col, opacity: 0.9, zIndex: 31, cursor: locked ? "default" : moveCursor, pointerEvents: locked ? "none" : "auto" }} />);
+      out.push(
+        <div key={dir + "-cam"} title={locked ? `${dir} elevation camera (locked)` : `Drag to pan the ${dir} elevation`} {...grab}
+          style={{ ...camStyle, zIndex: 32, cursor: locked ? "default" : moveCursor, pointerEvents: locked ? "none" : "auto", display: "flex", color: col, background: T.panelBg, borderRadius: 4, padding: 1, boxShadow: T.panelShadow }}>
+          <Camera size={13} />
+        </div>
+      );
+    }
+    return out.length ? <>{out}</> : null;
+  };
+
+  const startGuidePull = useCallback((dir, e) => {
+    e.preventDefault();
+    const axis = (dir === "front" || dir === "back") ? "y" : "x";
+    const apply = (ev) => {
+      const p = s2c(ev.clientX, ev.clientY);
+      setGuideDraft({ dir, pos: snapGuide(axis === "y" ? p.y : p.x, axis) });
+      setGuideScrub({ dir, x: p.x, y: p.y }); // cursor pos drives the elevation camera live
+      return p;
+    };
+    const computePos = (ev) => { const p = s2c(ev.clientX, ev.clientY); return snapGuide(axis === "y" ? p.y : p.x, axis); };
+    apply(e);
+    const move = (ev) => apply(ev);
+    const up = (ev) => {
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+      setGuideDraft(null); setGuideScrub(null);
+      const r = (cvsContainer.current ?? cvs.current)?.getBoundingClientRect();
+      const stillOnEdge = r && (
+        (dir === "back"  && ev.clientY - r.top    < GUIDE_RAIL) ||
+        (dir === "front" && r.bottom - ev.clientY < GUIDE_RAIL) ||
+        (dir === "left"  && ev.clientX - r.left   < GUIDE_RAIL) ||
+        (dir === "right" && r.right - ev.clientX  < GUIDE_RAIL));
+      if (stillOnEdge) return; // never pulled in — no guide created
+      const pos = computePos(ev), id = uid();
+      setGuides(p => [...p.filter(g => g.dir !== dir), { id, dir, pos }]);
+      setSelectedId(id); setSelType("guide");
+    };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+  }, [s2c, snapGuide, setSelectedId, setSelType]);
+
+  // The four edge rails, rendered over the plan pane only. Plain render function (invoked
+  // as guideRails(), not <GuideRails/>) so it doesn't remount on every parent render.
+  const guideRails = () => {
+    const base = { position: "absolute", zIndex: 30, background: "transparent" };
+    const rails = [
+      { dir: "back",  style: { ...base, top: 0, left: 0, right: 0, height: GUIDE_RAIL, cursor: "ns-resize" } },
+      { dir: "front", style: { ...base, bottom: 0, left: 0, right: 0, height: GUIDE_RAIL, cursor: "ns-resize" } },
+      { dir: "left",  style: { ...base, top: 0, bottom: 0, left: 0, width: GUIDE_RAIL, cursor: "ew-resize" } },
+      { dir: "right", style: { ...base, top: 0, bottom: 0, right: 0, width: GUIDE_RAIL, cursor: "ew-resize" } },
+    ];
+    return <>{rails.map(r => (
+      <div key={r.dir} title={`Pull a ${r.dir} elevation guide`} style={r.style}
+        onMouseDown={e => startGuidePull(r.dir, e)}
+        onMouseEnter={e => { e.currentTarget.style.background = T.accent + "22"; setPeekGuides(true); }}
+        onMouseLeave={e => { e.currentTarget.style.background = "transparent"; setPeekGuides(false); }} />
+    ))}</>;
+  };
+
   // ── Pane rendering ───────────────────────────────────────────────────
   const render3dPane = () => (
     <div style={{ width: "100%", height: "100%", position: "relative", background: T.canvas }}>
@@ -4007,8 +4391,12 @@ export default function TestfitTool() {
     const placeLabel = (p) => { const text = window.prompt("Label text:"); if (text == null) return; setElevAnnotations(prev => { const cur = prev[dir] || { dims: [], labels: [] }; const nid = uid(); setSelectedId(nid); setSelType("elevLabel"); return { ...prev, [dir]: { ...cur, labels: [...(cur.labels || []), { id: nid, x: p.x, y: p.y, text }] } }; }); };
     const updateDim = (id, patch) => setElevAnnotations(prev => { const cur = prev[dir] || { dims: [], labels: [] }; return { ...prev, [dir]: { ...cur, dims: (cur.dims || []).map(d => d.id === id ? { ...d, ...patch } : d) } }; });
     const updateLabel = (id, patch) => setElevAnnotations(prev => { const cur = prev[dir] || { dims: [], labels: [] }; return { ...prev, [dir]: { ...cur, labels: (cur.labels || []).map(l => l.id === id ? { ...l, ...patch } : l) } }; });
+    const cut = guides.find(g => g.dir === dir);
+    const scrub = guideScrub && guideScrub.dir === dir ? { x: guideScrub.x, y: guideScrub.y } : null;
     return <ElevationView dir={dir} nodes={nodes} walls={walls} doors={doors} windows={windows} columns={columns}
-      ceilingHeight={ceilingHeight} pxPerFoot={pxPerFoot} T={T} ft={ft} tool={tool}
+      markers={visibleITMEP ? markers : []}
+      ceilingHeight={ceilingHeight} pxPerFoot={pxPerFoot} T={T} ft={ft} tool={tool} cut={cut ? cut.pos : null} scrub={scrub}
+      onView={onElevView} panU={cameraPan && cameraPan.dir === dir ? cameraPan.u : null}
       selectedId={selectedId} selType={selType}
       onSelect={(id, type) => { setSelectedId(id); setSelType(type); setSelectedIds(id ? [id] : []); }}
       anno={anno} onPlaceDim={placeDim} onPlaceLabel={placeLabel} onUpdateDim={updateDim} onUpdateLabel={updateLabel} />;
@@ -4531,6 +4919,7 @@ export default function TestfitTool() {
               { key: "revClouds",  label: "Rev Clouds",     color: "#E05252",              visible: visibleRevClouds,      toggle: () => setVisibleRevClouds(v => !v),      count: revClouds.length, lockable: true },
               { key: "flowPaths",  label: "Flow Paths",     color: "#4A90D9",              visible: visibleFlowPaths,      toggle: () => setVisibleFlowPaths(v => !v),      count: flowPaths.length, lockable: true },
               { key: "floorRegions", label: "Floors",       color: "#7A9E5A",              visible: visibleFloorRegions,   toggle: () => setVisibleFloorRegions(v => !v),   count: floorRegions.length, lockable: true },
+              { key: "guides",     label: "Elevation Rulers", color: "#2E8BE6",            visible: visibleGuides,         toggle: () => setVisibleGuides(v => !v),         count: guides.length, lockable: true },
               { key: "itmep",      label: "IT / MEP",       color: T.uiElec ?? "#E0A030",  visible: visibleITMEP,          toggle: () => setVisibleITMEP(v => !v),          count: markers.length, lockable: true },
               // ITMEP-specific per-layer toggles (only inside IT/MEP mode, and only when the master is on)
               ...(mode === "itmep" && visibleITMEP ? [
@@ -4854,6 +5243,11 @@ export default function TestfitTool() {
           ? { ...S.cv, flex: "none", width: `${splitPos * 100}%` }
           : S.cv}>
           <PaneChip i={0} />
+          {/* Elevation guide edge rails — plan canvas active + Select tool, so they don't
+              intercept drawing near the canvas edges */}
+          {(panes.length > 1 || panes[0].view === "plan") && tool === "select" && visibleGuides && !layerLocked("guides") && guideRails()}
+          {/* Camera markers on the edge rulers — where each open elevation is currently looking */}
+          {(panes.length > 1 || panes[0].view === "plan") && visibleGuides && cameraIndicators()}
           {/* Single-pane non-plan view: overlay the aux view on top of the dormant plan canvas.
               The chip stays clickable (zIndex 50 > 40) so the user can swap back. */}
           {panes.length === 1 && panes[0].view !== "plan" && (
@@ -5789,6 +6183,47 @@ export default function TestfitTool() {
                     }
                   })}
                 </g>;
+              })()}
+
+              {/* Elevation cut guides (+ live draft while pulling from an edge) */}
+              {visibleGuides && (guides.length > 0 || guideDraft) && (() => {
+                const rect = cvs.current?.getBoundingClientRect();
+                const vw = rect?.width || 2000, vh = rect?.height || 1200;
+                const minX = -viewOff.x / zoom, maxX = (-viewOff.x + vw) / zoom;
+                const minY = -viewOff.y / zoom, maxY = (-viewOff.y + vh) / zoom;
+                const fs = 9 / zoom, ph = 14 / zoom, pad = 6 / zoom;
+                const renderGuide = (g, draft) => {
+                  const horiz = g.dir === "front" || g.dir === "back";
+                  const on = !draft && selType === "guide" && selectedId === g.id;
+                  // Placed guides fade away when idle; reveal on edge-rail hover, when the
+                  // cursor nears the line, or while selected/dragging. The draft is always shown.
+                  const active = draft || on || peekGuides
+                    || (tool === "select" && hoverGuideId === g.id)
+                    || (drag?.type === "guide" && drag.id === g.id);
+                  const col = draft ? "#2E8BE6" : (on ? T.accent : "#2E8BE6");
+                  const sw = (on ? 1.8 : 1.2) / zoom;
+                  const label = g.dir.toUpperCase();
+                  const pw = (label.length * 6 + 10) / zoom;
+                  const grpStyle = { pointerEvents: "none", opacity: active ? 1 : 0, transition: "opacity 0.18s ease" };
+                  if (horiz) {
+                    const tx = minX + 8 / zoom;
+                    return <g key={draft ? "draft" : g.id} style={grpStyle}>
+                      <line x1={minX} y1={g.pos} x2={maxX} y2={g.pos} stroke={col} strokeWidth={sw} strokeDasharray={`${8 / zoom} ${5 / zoom}`} opacity={draft ? 0.7 : 0.9} />
+                      <rect x={tx} y={g.pos - ph / 2} width={pw} height={ph} rx={pad} fill={col} opacity={0.92} />
+                      <text x={tx + pw / 2} y={g.pos + fs * 0.36} textAnchor="middle" fontSize={fs} fill="#fff" fontWeight={700} fontFamily="inherit" letterSpacing="0.04em">{label}</text>
+                    </g>;
+                  }
+                  const ty = minY + 8 / zoom + ph / 2;
+                  return <g key={draft ? "draft" : g.id} style={grpStyle}>
+                    <line x1={g.pos} y1={minY} x2={g.pos} y2={maxY} stroke={col} strokeWidth={sw} strokeDasharray={`${8 / zoom} ${5 / zoom}`} opacity={draft ? 0.7 : 0.9} />
+                    <rect x={g.pos - pw / 2} y={ty - ph / 2} width={pw} height={ph} rx={pad} fill={col} opacity={0.92} />
+                    <text x={g.pos} y={ty + fs * 0.36} textAnchor="middle" fontSize={fs} fill="#fff" fontWeight={700} fontFamily="inherit" letterSpacing="0.04em">{label}</text>
+                  </g>;
+                };
+                return <>
+                  {guides.map(g => renderGuide(g, false))}
+                  {guideDraft && renderGuide(guideDraft, true)}
+                </>;
               })()}
 
               {/* Ghosts */}

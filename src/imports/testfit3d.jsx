@@ -312,6 +312,16 @@ const M3D = {
   outdoor_camera:        { y: 7.5,      shape: "camera",   color: "#556B2F"                       },
 };
 
+// Mounting height (center, AFF in feet) for a marker component, resolving the M3D table's
+// "ceil" (flush ceiling) and "hangN" (N ft below ceiling) forms. Single source of truth so
+// the 2D elevation view places IT/MEP markers at the same height the 3D scene uses.
+export function markerMountYFt(componentType, ceilingHeightFt) {
+  const y = M3D[componentType]?.y ?? 4.0; // unknown component → mid-wall fallback
+  if (y === "ceil") return ceilingHeightFt;
+  if (typeof y === "string" && y.startsWith("hang")) return Math.max(0, ceilingHeightFt - (parseFloat(y.slice(4)) || 0));
+  return y;
+}
+
 // Resolve y-spec to a world Y coordinate
 const resolveY = (ySpec, ceilH) => {
   if (ySpec === "ceil") return ceilH - 0.04;
@@ -356,7 +366,7 @@ function WallEdges({ w, h, d, color }) {
 }
 
 // ─── Wall box ──────────────────────────────────────────────────────────────────
-function WallBox({ lenFt, heightFt, thickFt, yCenter, offsetFt = 0, color, material, wallId, onSelect, isDemo, isSelected, style3d = "clay", interactive = true }) {
+function WallBox({ lenFt, heightFt, thickFt, yCenter, offsetFt = 0, color, material, wallId, onSelect, isDemo, isSelected, style3d = "clay", interactive = true, edges = true }) {
   const [hov, setHov] = useState(false);
   const c = (interactive && hov) ? "#ffffff" : color;
   // Detailed mode: pull PBR settings from the chosen wall material. Demo walls
@@ -416,7 +426,7 @@ function WallBox({ lenFt, heightFt, thickFt, yCenter, offsetFt = 0, color, mater
         />}
         {style3d === "clay"    && <meshLambertMaterial  color={c} transparent={isDemo || hov} opacity={isDemo ? 0.5 : hov ? 0.85 : 1} />}
       </mesh>
-      {style3d === "xray" && <WallEdges w={lenFt} h={heightFt} d={thickFt} color={color} />}
+      {style3d === "xray" && edges && <WallEdges w={lenFt} h={heightFt} d={thickFt} color={color} />}
       {isSelected && <BoxGlow w={lenFt} h={heightFt} d={thickFt} />}
     </group>
   );
@@ -641,14 +651,15 @@ function Wall3D({ w, nodes, walls = [], doors, windows, cx, cz, pxPerFoot, ceili
         const extEnd    = (seg.solid && seg.t1 === 1)  ? extEndTotal   : 0;
         const segLenFt  = baseLen + extStart + extEnd;
         const offsetFt  = baseOff - extStart / 2 + extEnd / 2;
-        if (seg.solid) return <WallBox key={i} lenFt={segLenFt} heightFt={heightFt} thickFt={thickFt} yCenter={heightFt / 2} offsetFt={offsetFt} color={wk.color} material={w.material} wallId={w.id} onSelect={onSelect} isDemo={w.kind === "demo"} isSelected={wallSel && interactive} style3d={style3d} interactive={interactive} />;
+        if (seg.solid) return <WallBox key={i} lenFt={segLenFt} heightFt={heightFt} thickFt={thickFt} yCenter={heightFt / 2} offsetFt={offsetFt} color={wk.color} material={w.material} wallId={w.id} onSelect={onSelect} isDemo={w.kind === "demo"} isSelected={wallSel && interactive} style3d={style3d} interactive={interactive} edges={false} />;
         if (seg.isDoor) {
           const mhH = heightFt - doorHFt;
           return (
             <group key={i}>
               <DoorSwing3D door={seg.item} segLenFt={segLenFt} heightFt={doorHFt} offsetFt={offsetFt} thickFt={thickFt} onSelect={onSelect} isSelected={selectedId === seg.item.id && selType === "door" && interactive} style3d={style3d} interactive={interactive} />
               <DoorCasing segLenFt={segLenFt} heightFt={doorHFt} thickFt={thickFt} offsetFt={offsetFt} style3d={style3d} />
-              {mhH > 0.01 && <WallBox lenFt={segLenFt} heightFt={mhH} thickFt={thickFt} yCenter={doorHFt + mhH / 2} offsetFt={offsetFt} color={wk.color} material={w.material} wallId={w.id} onSelect={onSelect} isDemo={w.kind === "demo"} isSelected={wallSel && interactive} style3d={style3d} interactive={interactive} />}
+              {mhH > 0.01 && <WallBox lenFt={segLenFt} heightFt={mhH} thickFt={thickFt} yCenter={doorHFt + mhH / 2} offsetFt={offsetFt} color={wk.color} material={w.material} wallId={w.id} onSelect={onSelect} isDemo={w.kind === "demo"} isSelected={wallSel && interactive} style3d={style3d} interactive={interactive} edges={false} />}
+              {style3d === "xray" && <group position={[offsetFt, doorHFt / 2, 0]}><WallEdges w={segLenFt} h={doorHFt} d={thickFt} color={wk.color} /></group>}
             </group>
           );
         }
@@ -658,14 +669,16 @@ function Wall3D({ w, nodes, walls = [], doors, windows, cx, cz, pxPerFoot, ceili
         return (
           <group key={i} position={[offsetFt, 0, 0]} onClick={interactive ? (e => { e.stopPropagation(); onSelect(seg.item.id, "window"); }) : undefined}>
             <mesh position={[0, sillFt + winHFt / 2, 0]}><boxGeometry args={[segLenFt, winHFt, thickFt * 2.5]} /><meshLambertMaterial transparent opacity={0} depthWrite={false} /></mesh>
-            {sillFt > 0.01 && <WallBox lenFt={segLenFt} heightFt={sillFt} thickFt={thickFt} yCenter={sillFt / 2} offsetFt={0} color={wk.color} material={w.material} wallId={w.id} onSelect={onSelect} isDemo={w.kind === "demo"} isSelected={false} style3d={style3d} interactive={interactive} />}
+            {sillFt > 0.01 && <WallBox lenFt={segLenFt} heightFt={sillFt} thickFt={thickFt} yCenter={sillFt / 2} offsetFt={0} color={wk.color} material={w.material} wallId={w.id} onSelect={onSelect} isDemo={w.kind === "demo"} isSelected={false} style3d={style3d} interactive={interactive} edges={false} />}
             {!isCut && <WindowGlass lenFt={segLenFt} winHFt={winHFt} sillFt={sillFt} thickFt={thickFt} style3d={style3d} />}
             <WindowFrame segLenFt={segLenFt} winHFt={winHFt} sillFt={sillFt} thickFt={thickFt} style3d={style3d} />
-            {headerFt > 0.01 && <WallBox lenFt={segLenFt} heightFt={headerFt} thickFt={thickFt} yCenter={sillFt + winHFt + headerFt / 2} offsetFt={0} color={wk.color} material={w.material} wallId={w.id} onSelect={onSelect} isDemo={w.kind === "demo"} isSelected={false} style3d={style3d} interactive={interactive} />}
+            {headerFt > 0.01 && <WallBox lenFt={segLenFt} heightFt={headerFt} thickFt={thickFt} yCenter={sillFt + winHFt + headerFt / 2} offsetFt={0} color={wk.color} material={w.material} wallId={w.id} onSelect={onSelect} isDemo={w.kind === "demo"} isSelected={false} style3d={style3d} interactive={interactive} edges={false} />}
+            {style3d === "xray" && <group position={[0, sillFt + winHFt / 2, 0]}><WallEdges w={segLenFt} h={winHFt} d={thickFt} color={wk.color} /></group>}
             {winSel && <WindowGlow lenFt={segLenFt} winHFt={winHFt} sillFt={sillFt} thickFt={thickFt} />}
           </group>
         );
       })}
+      {style3d === "xray" && <group position={[0, heightFt / 2, 0]}><WallEdges w={wallLenFt} h={heightFt} d={thickFt} color={wk.color} /></group>}
       {showDims && wallLenFt > 0.5 && (
         <Billboard position={[0, heightFt + 0.3, 0]}>
           <Text fontSize={0.28} color="#9A9488" anchorX="center" anchorY="middle" outlineWidth={0.025} outlineColor="#000000">{ftFmtDirect(wallLenFt)}</Text>
