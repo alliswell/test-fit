@@ -224,10 +224,11 @@ test("elevation annotation: a dimension is stored under elevAnnotations[front]",
   await expect(elev).toBeVisible();
   const ebox = await elev.boundingBox();
 
-  // dimension tool → two clicks in the elevation places one elevation dim
+  // dimension tool → 3 clicks (point, point, then pull the dim line away to set its offset)
   await page.keyboard.press("m");
   await page.mouse.click(ebox.x + ebox.width * 0.3, ebox.y + ebox.height * 0.6);
   await page.mouse.click(ebox.x + ebox.width * 0.6, ebox.y + ebox.height * 0.6);
+  await page.mouse.click(ebox.x + ebox.width * 0.45, ebox.y + ebox.height * 0.4); // offset pull
   await page.waitForTimeout(900);
 
   const m = await readModel(page);

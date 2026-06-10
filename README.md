@@ -73,7 +73,10 @@ This means:
 - New endpoints **snap to existing nodes** within a radius (`SNAP_R`), so chains
   close cleanly and junctions stay welded.
 - Walls automatically **miter** at corners and **split** when a new wall lands on an
-  existing wall's body.
+  existing wall's body. Connected walls render **seamlessly**: each junction's inner and
+  outer corners are computed geometrically (inner vs. outer decided by the interior
+  bisector, not a wall's arbitrary node-order normal), so both walls agree on the exact
+  shared corner points — no overshooting edges, crossing lines, or gaps at the joins.
 
 Walls carry a *kind* (Existing / Demo / New / Pony), each with its own color,
 thickness, and 2D hatch, plus a *material* (Drywall, Brick, CMU, Concrete, Plaster)
@@ -311,11 +314,29 @@ auto-fits on open, and re-fits when its section cut changes).
 right-hand inspector opens and edits round-trip into the model (e.g. changing ceiling
 height instantly reshapes the elevation). With an elevation pane focused, the
 **Dimension** and **Label** tools place annotations directly in that elevation's own
-coordinate space (stored per direction). Like the plan dimension tool, they **snap to
-object nodes** — the corners and edge-midpoints of every wall / window / door / column,
-marker centers, and the floor/ceiling datum lines — with a live snap ring at the target and
-a running measurement preview as you draw. Editing geometry *within* an elevation
-(dragging a window's sill, etc.) is planned for a later version.
+coordinate space (stored per direction). The **Dimension** tool behaves like the plan one:
+**3 clicks** — two measured points (which **snap to object nodes**: the corners and
+edge-midpoints of every wall / window / door / column, marker centers, and the
+floor/ceiling datum lines), then a third click to **pull the dim line away** from those
+points (its offset). It renders as a proper dimension string — extension lines, offset dim
+line, diagonal ticks, rotated label — with a live snap ring and measurement preview while
+drawing. Hold **Shift** while placing the second point to **lock the axis** (horizontal or
+vertical from the first point) and snap onto any object edge that locked line crosses —
+wall tops, window sills/heads, door heads, column/wall edges, and the floor/ceiling datums
+— so heights and clear widths land exactly. Once placed, drag an endpoint handle to
+re-measure or drag the dim line to pull the offset; select + Delete removes it.
+
+The **Label** tool works exactly as it does in the plan: click to drop an **in-canvas
+inline editor**, then type the text (Enter commits, Shift+Enter for a new line, Esc
+cancels). The label isn't created until you commit non-empty text, so cancelling or
+clicking away from an empty editor leaves nothing behind — no stray blank labels, and no
+`window.prompt` (which embedded browsers block). **Click + drag** instead of a plain click
+to make a **callout with a leader line**: the press point becomes the leader tip and the
+release point the text box. Double-click an existing elevation label with the Select tool
+to re-edit it; emptying its text and committing deletes it. Drag the text box to move it
+(the leader tip stays anchored where it points), drag the **tip handle** to re-aim the
+leader, select + Delete to remove. Editing geometry *within* an elevation (dragging a
+window's sill, etc.) is planned for a later version.
 
 ---
 
