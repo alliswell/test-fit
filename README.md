@@ -117,7 +117,11 @@ inert while only markers react.
 
 ## The Four Modes
 
-The top bar switches between four task-focused modes (keys `1`–`4`):
+The four task-focused workflow stages are switched from a compact **stage dropdown** in
+the top bar (the tinted button showing the current stage, e.g. "① Build"). The menu lists
+all four stages with a numbered badge, a one-line description, a live content count
+(walls / markers / zones / budget total) so you can see which stages have work in them,
+and its keyboard shortcut — keys `1`–`4` switch stages directly without opening the menu:
 
 1. **Build** — structure: walls, doors, windows, columns. The sidebar carries
    wall-kind and material pickers; the inspector edits the selected element.
@@ -335,8 +339,20 @@ to make a **callout with a leader line**: the press point becomes the leader tip
 release point the text box. Double-click an existing elevation label with the Select tool
 to re-edit it; emptying its text and committing deletes it. Drag the text box to move it
 (the leader tip stays anchored where it points), drag the **tip handle** to re-aim the
-leader, select + Delete to remove. Editing geometry *within* an elevation (dragging a
-window's sill, etc.) is planned for a later version.
+leader, select + Delete to remove. Selecting an elevation label opens an **option panel**
+with the same styling controls as plan labels — font size, bold/italic, color, and Remove
+Leader.
+
+The **Revision Cloud** tool also works in elevations, exactly like the plan: click to
+place the polygon's points (a live scalloped preview follows the cursor), then click back
+on the first point — it highlights with a close ring — to close the cloud (Esc abandons
+the draft). The finished cloud is auto-selected, opening an option panel with **Label**
+(drawn at the centroid), **Arc Size**, **Color**, and Delete. With the Select tool, drag
+a cloud to move it; select + Delete removes it. Clouds are stored per elevation under
+`elevAnnotations[dir].revClouds` and persist with the project.
+
+Editing geometry *within* an elevation (dragging a window's sill, etc.) is planned for a
+later version.
 
 ---
 
@@ -395,9 +411,21 @@ src/
   main.tsx              # app entry
   app/App.tsx           # mounts the Test Fit component
   imports/
-    testfit.jsx         # 2D app: all state, UI, tools, modes, persistence (~6900 lines)
-    testfit3d.jsx       # the React Three Fiber 3D scene (~1400 lines)
+    testfit.jsx         # main editor: state, canvas handlers, plan SVG, panels, layout
+    testfit3d.jsx       # the React Three Fiber 3D scene
+    model.js            # pure model helpers (uid, geometry, migrateProjectData) — tested
+    geometry.js         # pure drawing helpers (miter, smart guides, revCloudPath) — tested
+  constants/            # theme.js (THEMES, wall kinds), specs.js (component catalogs)
+  utils/                # labels.js (label box layout) and other pure helpers
+  components/           # props-only React: ElevationView, ZoneLibraryModal, ui, icons
+  store/                # zustand: viewStore, layersStore, selectionStore
 ```
+
+**Where new code goes** — see [`CLAUDE.md`](CLAUDE.md) for the convention. In short: pure
+logic → `imports/model.js`/`geometry.js` (+ a test); constants → `constants/`; reusable
+pure helpers → `utils/`; new panels/views as **props-only components** → `components/`
+(never importing `testfit.jsx`); shared UI state → `store/`. `testfit.jsx` keeps the
+top-level state, the canvas event handlers, and layout composition.
 
 **Tech stack**
 

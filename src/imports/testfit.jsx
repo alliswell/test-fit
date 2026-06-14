@@ -2,908 +2,20 @@ import { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import { MousePointer2, X, Plus, DoorOpen, Ruler, Box, LayoutDashboard, RotateCcw, RotateCw, Undo2, Redo2, Tag, Settings, ChevronDown, ChevronRight, ChevronLeft, Trash2, GitBranch, Columns2, PanelLeft, PanelLeftClose, Camera } from "lucide-react";
 import ZONE_LIBRARY_DEFAULTS from "../data/zone-library.json";
 import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "../app/components/ui/tooltip";
-import TestFit3D, { markerMountYFt } from "./testfit3d";
+import TestFit3D from "./testfit3d";
 import { uid, sn, dst, ptSeg, polyArea, polyCentroid, pointInPoly, orthoSnap, isLightComponent, parseDimInput, migrateProjectData, PROJECT_VERSION, AUTOSAVE_KEY } from "./model";
 import { wallResizeCursor, applySmartGuides, lineInt, revCloudPath } from "./geometry";
 import { useViewStore } from "../store/viewStore";
 import { useLayersStore } from "../store/layersStore";
 import { useSelectionStore } from "../store/selectionStore";
-
-// Custom wall and window icons
-const WallIcon = () => (
-  <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-    <rect x="3" y="8" width="14" height="4" stroke="currentColor" strokeWidth="1.5" fill="none"/>
-    <line x1="10" y1="8" x2="10" y2="12" stroke="currentColor" strokeWidth="1.5"/>
-  </svg>
-);
-
-const DemoWallIcon = () => (
-  <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-    <rect x="3" y="8" width="14" height="4" stroke="currentColor" strokeWidth="1.5" strokeDasharray="2 2" fill="none"/>
-    <line x1="10" y1="8" x2="10" y2="12" stroke="currentColor" strokeWidth="1.5" strokeDasharray="2 2"/>
-  </svg>
-);
-
-const NewWallIcon = () => (
-  <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-    <rect x="3" y="8" width="14" height="4" stroke="currentColor" strokeWidth="2" fill="none"/>
-    <line x1="10" y1="8" x2="10" y2="12" stroke="currentColor" strokeWidth="2"/>
-  </svg>
-);
-
-const WindowIcon = () => (
-  <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-    <rect x="4" y="4" width="12" height="12" stroke="currentColor" strokeWidth="1.5" fill="none"/>
-    <line x1="10" y1="4" x2="10" y2="16" stroke="currentColor" strokeWidth="1.5"/>
-    <line x1="4" y1="10" x2="16" y2="10" stroke="currentColor" strokeWidth="1.5"/>
-  </svg>
-);
-
-const CutoutIcon = () => (
-  <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-    <line x1="3" y1="10" x2="7" y2="10" stroke="currentColor" strokeWidth="2"/>
-    <line x1="13" y1="10" x2="17" y2="10" stroke="currentColor" strokeWidth="2"/>
-    <line x1="7" y1="7" x2="7" y2="13" stroke="currentColor" strokeWidth="1.5" strokeDasharray="2 1.5"/>
-    <line x1="13" y1="7" x2="13" y2="13" stroke="currentColor" strokeWidth="1.5" strokeDasharray="2 1.5"/>
-  </svg>
-);
-
-const PonyWallIcon = () => (
-  <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-    <rect x="3" y="9" width="14" height="2.5" stroke="currentColor" strokeWidth="1.5" fill="none"/>
-    <line x1="6" y1="12" x2="6" y2="15" stroke="currentColor" strokeWidth="1" strokeDasharray="1.5 1.5"/>
-    <line x1="14" y1="12" x2="14" y2="15" stroke="currentColor" strokeWidth="1" strokeDasharray="1.5 1.5"/>
-  </svg>
-);
-
-const ColumnIcon = () => (
-  <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-    <circle cx="10" cy="10" r="6" stroke="currentColor" strokeWidth="1.5" fill="none"/>
-    <circle cx="10" cy="10" r="3" fill="currentColor"/>
-  </svg>
-);
-
-// Zone library defaults are defined in src/data/zone-library.json.
-// The active library lives in component state (zoneLibrary) so it can be
-// edited at runtime and persisted per-project.
-const ZONE_LIBRARY = ZONE_LIBRARY_DEFAULTS; // legacy alias — component code uses zoneLibrary state
-
-// Component specifications organized by layer category
-const SPEC_COMPONENTS = {
-  power: {
-    duplex_outlet: { name: "Duplex Outlet", symbol: "circle", color: "#50A070", letter: null, unitCost: 350 },
-    quad_outlet: { name: "Quad Outlet", symbol: "circle", color: "#E05050", letter: null, unitCost: 420 },
-    dedicated_quad: { name: "Dedicated Quad Circuit", symbol: "circle", color: "#4080E0", letter: null, unitCost: 850 },
-    ceiling_quad: { name: "Ceiling Quad Outlet", symbol: "crosshair", color: "#E05050", letter: null, unitCost: 380 },
-    tstat: { name: "T-Stat", symbol: "circle", color: "#E05050", letter: "T", unitCost: 450 },
-    sconce_prewire: { name: "Sconce Prewire", symbol: "circle", color: "#E05050", letter: "S", unitCost: 280 },
-    pendent_prewire: { name: "Pendent Prewire", symbol: "circle", color: "#E05050", letter: "P", unitCost: 320 },
-    htrack_4: { name: "H-Track 4'", symbol: "rect", color: "#E05050", letter: "H", unitCost: 520 },
-    htrack_8: { name: "H-Track 8'", symbol: "rect", color: "#E05050", letter: "H", unitCost: 840 },
-    htrack: { name: "H-Track 4'", symbol: "rect", color: "#E05050", letter: "H", unitCost: 520 }, // legacy alias
-    outlet_duplex:         { name: "Duplex Outlet (In-Wall)",         symbol: "outlet",         color: "#50C878", letter: "D", unitCost: 320, outletCount: 2, mount: "inwall"  },
-    outlet_quad:           { name: "Quad Outlet (In-Wall)",           symbol: "outlet",         color: "#50C878", letter: "Q", unitCost: 480, outletCount: 4, mount: "inwall"  },
-    outlet_duplex_surface: { name: "Duplex Outlet (Surface/Conduit)", symbol: "outlet",         color: "#E0A050", letter: "D", unitCost: 420, outletCount: 2, mount: "surface" },
-    outlet_quad_surface:   { name: "Quad Outlet (Surface/Conduit)",   symbol: "outlet",         color: "#E0A050", letter: "Q", unitCost: 580, outletCount: 4, mount: "surface" },
-    outlet_ceiling:        { name: "Ceiling Quad Outlet",             symbol: "outlet_ceiling", color: "#60B0E0", letter: "Q", unitCost: 420, outletCount: 4, mount: "ceiling" },
-    switch_single:         { name: "Single-Pole Switch",              symbol: "switch",         color: "#C8A060", letter: "S", unitCost: 180, mount: "inwall"  },
-    switch_double:         { name: "Double-Pole Switch",              symbol: "switch",         color: "#C8A060", letter: "S2", unitCost: 260, mount: "inwall" },
-    switch_dimmer:         { name: "Dimmer Switch",                   symbol: "switch",         color: "#C8A060", letter: "DM", unitCost: 320, mount: "inwall" },
-    panel_board:           { name: "Electrical Panel",                symbol: "panel",          color: "#E05050", letter: "P", unitCost: 2800, mount: "inwall" },
-    // Lighting
-    light_can_4:    { name: "4\" Recessed Can",    symbol: "recessed",   color: "#E8D070", letter: null, unitCost: 280, size: 4,  mount: "ceiling" },
-    light_can_6:    { name: "6\" Recessed Can",    symbol: "recessed",   color: "#E8D070", letter: null, unitCost: 340, size: 6,  mount: "ceiling" },
-    light_pendant:  { name: "Pendant Light",        symbol: "pendant",    color: "#E8D070", letter: "P",  unitCost: 450,           mount: "ceiling" },
-    light_linear_2: { name: "Linear Fixture 2'",    symbol: "linear_lt",  color: "#E8D070", letter: null, unitCost: 320, ftLen: 2, mount: "ceiling" },
-    light_linear_4: { name: "Linear Fixture 4'",    symbol: "linear_lt",  color: "#E8D070", letter: null, unitCost: 480, ftLen: 4, mount: "ceiling" },
-    light_sconce:   { name: "Wall Sconce",          symbol: "sconce",     color: "#E8D070", letter: "W",  unitCost: 380,           mount: "inwall"  },
-  },
-  av: {
-    wall_speaker: { name: "Wall Speaker", icon: "🔊", unitCost: 480 },
-    subwoofer: { name: "Subwoofer", icon: "📻", unitCost: 650 },
-    pendant_speaker: { name: "Pendant Speaker", icon: "🔈", unitCost: 520 },
-    speaker_line: { name: "Speaker Line", icon: "📡", unitCost: 380 },
-  },
-  it: {
-    router: { name: "Router", icon: "📶", unitCost: 450 },
-    access_point: { name: "Access Point", icon: "📡", unitCost: 380 },
-  },
-  mep: {
-    drain_line: { name: "Drain Line", symbol: "circle", color: "#50A070", letter: "D", unitCost: 380 },
-    water_line: { name: "Water Line", symbol: "circle", color: "#5050A0", letter: "W", unitCost: 380 },
-  },
-  security: {
-    white_camera: { name: "White Camera", symbol: "circle", color: "#E8E0D0", letter: "C", unitCost: 450 },
-    black_camera: { name: "Black Camera", symbol: "circle", color: "#2A2A26", letter: "C", unitCost: 450 },
-    outdoor_camera: { name: "Outdoor Camera", symbol: "circle", color: "#556B2F", letter: "O", unitCost: 650 },
-  },
-};
-
-const SPEC_LAYERS = { 
-  power: { name: "Power / Electrical", color: "#E8C840" }, 
-  av: { name: "Speakers / AV", color: "#E06040" }, 
-  it: { name: "IT / Network", color: "#4080E0" }, 
-  mep: { name: "MEP / Plumbing", color: "#50A070" },
-  security: { name: "Security", color: "#9A4A9A" } 
-};
-
-// CAD-style crosshair cursor (data URI)
-const cadCrosshair = (color) => `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32'%3E%3Cline x1='16' y1='0' x2='16' y2='14' stroke='${color}' stroke-width='1'/%3E%3Cline x1='16' y1='18' x2='16' y2='32' stroke='${color}' stroke-width='1'/%3E%3Cline x1='0' y1='16' x2='14' y2='16' stroke='${color}' stroke-width='1'/%3E%3Cline x1='18' y1='16' x2='32' y2='16' stroke='${color}' stroke-width='1'/%3E%3C/svg%3E") 16 16, crosshair`;
-
-const WALL_KINDS = {
-  existing: { label: "Existing", color: "#9A9488", dash: null,  thickness: 7   },
-  demo:     { label: "Demo",     color: "#E05050", dash: "8 4", thickness: 7   },
-  new:      { label: "New",      color: "#50A0E0", dash: null,  thickness: 7   },
-  pony:     { label: "Pony",     color: "#C8A060", dash: null,  thickness: 4,   thin: true },
-};
-// Darker wall colors for light-mode rendering — high contrast on the pale canvas.
-const WALL_KINDS_LIGHT = {
-  existing: { label: "Existing", color: "#3A352A", dash: null,  thickness: 7   },
-  demo:     { label: "Demo",     color: "#B83838", dash: "8 4", thickness: 7   },
-  new:      { label: "New",      color: "#1F5FA8", dash: null,  thickness: 7   },
-  pony:     { label: "Pony",     color: "#86601E", dash: null,  thickness: 4,   thin: true },
-};
-
-// Slider + inline number input — replaces both button grids and static range+span combos
-function SliderInput({ value, min, max, step = 1, onChange, accent = "#9A9488", textColor = "#E8E0D0", bgColor = "#2A2826", borderColor = "#3A3830", unit = '"', disabled = false }) {
-  const [editing, setEditing] = useState(false);
-  const [raw, setRaw] = useState(String(value ?? ""));
-  useEffect(() => { if (!editing) setRaw(String(value ?? "")); }, [value, editing]);
-  const commit = () => {
-    const v = Math.min(max, Math.max(min, parseInt(raw) || min));
-    onChange(v);
-    setEditing(false);
-  };
-  return (
-    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-      <input type="range" min={min} max={max} step={step} value={value ?? min} disabled={disabled}
-        onChange={e => onChange(parseInt(e.target.value))}
-        style={{ flex: 1, accentColor: accent, height: 4, cursor: "pointer", opacity: disabled ? 0.4 : 1 }} />
-      {editing ? (
-        <input type="number" min={min} max={max} value={raw}
-          onChange={e => setRaw(e.target.value)}
-          onBlur={commit}
-          onKeyDown={e => { if (e.key === "Enter") commit(); if (e.key === "Escape") { setEditing(false); setRaw(String(value ?? "")); } }}
-          autoFocus
-          style={{ width: 44, fontSize: 12, fontWeight: 600, color: textColor, background: bgColor, border: "1px solid " + borderColor, borderRadius: 4, padding: "2px 4px", textAlign: "center", fontFamily: "inherit" }}
-        />
-      ) : (
-        <span onClick={() => { if (!disabled) { setRaw(String(value ?? "")); setEditing(true); } }}
-          title={disabled ? undefined : "Click to type exact value"}
-          style={{ fontSize: 12, fontWeight: 600, color: disabled ? borderColor : textColor, minWidth: "36px", textAlign: "right", cursor: disabled ? "default" : "text", borderBottom: disabled ? "none" : "1px dashed " + borderColor, paddingBottom: 1 }}
-        >{disabled ? "—" : (value ?? "—")}{disabled ? "" : unit}</span>
-      )}
-    </div>
-  );
-}
-
-const DOOR_WIDTHS = [36, 48, 60];
-const DOOR_TYPES = ["Wood", "Glass", "Metal", "Case Opening"];
-const DOOR_HEIGHT_IN = 84; // 7'-0" standard door height (matches 3D DOOR_HEIGHT_FT)
-// Power-layer markers split into Lighting vs Electrical by component type.
-const WINDOW_WIDTHS = [24, 36, 48, 60];
-const WINDOW_TYPES = ["Window", "Cut Opening"];
-
-const FLOW_PATH_COLORS = ["#4A90D9", "#2BB3A3", "#E0A030", "#9B6BD6"]; // blue, teal, amber, violet
-
-// Drag types where proximity-hover preview should stay live (so nearby snap
-// targets light up as the user drags a face/edge/vertex/element near them).
-const PROX_DRAG_TYPES = new Set([
-  "node", "marker", "door", "window", "column",
-  "zone", "zone-vertex", "zone-edge",
-  "revcloud", "revcloud-vertex", "revcloud-edge",
-  "floorRegion", "floorRegion-vertex", "floorRegion-edge",
-  "flowPath", "flowPath-vertex",
-]);
-
-const WALL_MATERIALS = ["Drywall", "Brick", "CMU / Block", "Concrete", "Plaster", "Other"];
-const WALL_MATERIAL_HATCHES = {
-  "Drywall":     "mat-drywall",
-  "Brick":       "mat-brick",
-  "CMU / Block": "mat-cmu",
-  "Concrete":    "mat-concrete",
-  "Plaster":     "mat-plaster",
-  "Other":       "mat-other",
-};
-
-const SNAP_R = 12;
-
-
-// ── Theme palettes ─────────────────────────────────────────────────
-const THEMES = {
-  dark: {
-    bg0: "#1A1A18", bg1: "#1E1E1C", bg2: "#242422", bg3: "#2A2A26", border: "#3A3A32",
-    text: "#C8C0B0", textBright: "#E8E0D0", textMuted: "#7A7468", textDim: "#5A5448", textFaint: "#4A4A40",
-    accent: "#8A8478", accentDim: "#6A6458",
-    canvas: "#1A1A18", gridMajor: "#3A3A3220", gridMinor: "#5A544810", gridSub: "#5A5448",
-    nodeStroke: "#1A1A18", nodeFill: "#E8E0D0",
-    selBg: "#2A2A2660", selBorder: "#3A3A32",
-    panelBg: "#1E1E1CF2", panelShadow: "0 8px 24px rgba(0,0,0,0.4)",
-    toolbarBg: "#1E1E1CEE", toolbarShadow: "0 8px 24px rgba(0,0,0,0.4)",
-    delBg: "#6B2020", delText: "#FFB0B0",
-    dimText: "#E8E0D055", wallNode: "#E8E0D0",
-    crosshairColor: "%23E8E0D0",
-    // UI accent colors (sidebar/panel text — distinct from canvas marker colors)
-    uiLighting: "#E8D070", uiElec: "#50C878", uiDoor: "#C8A060",
-    uiSwitch: "#C8A060", uiBudget: "#E8C840", uiPanel: "#E05050",
-    uiConduit: "#E0A050", uiPrewire: "#C87840",
-  },
-  light: {
-    bg0: "#EEE7DC", bg1: "#E7DFD3", bg2: "#DDD5C8", bg3: "#D3CBBE", border: "#BDB5A5",
-    text: "#3A342C", textBright: "#1C1810", textMuted: "#7A7268", textDim: "#9A9285", textFaint: "#B0A898",
-    accent: "#5A5248", accentDim: "#8A8278",
-    canvas: "#EEE7DC", gridMajor: "#BDB5A520", gridMinor: "#9A928510", gridSub: "#BDB5A5",
-    nodeStroke: "#EEE7DC", nodeFill: "#1C1810",
-    selBg: "#BDB5A540", selBorder: "#A89E8E",
-    panelBg: "#E7DFD3F5", panelShadow: "0 8px 24px rgba(0,0,0,0.10)",
-    toolbarBg: "#E7DFD3F0", toolbarShadow: "0 8px 24px rgba(0,0,0,0.10)",
-    delBg: "#DEB8B8", delText: "#7A1A1A",
-    dimText: "#1C181055", wallNode: "#1C1810",
-    crosshairColor: "%231C1810",
-    // UI accent colors — darkened for legibility on warm light background
-    uiLighting: "#7A6010", uiElec: "#1A6E3A", uiDoor: "#7A5518",
-    uiSwitch: "#7A5518", uiBudget: "#8A6A10", uiPanel: "#B02020",
-    uiConduit: "#8A5A10", uiPrewire: "#7A4818",
-  }
-};
-
-const DEFAULT_PHASES = [
-  { id: "existing", name: "Existing", color: "#9A9488", visible: true },
-  { id: "phase1",   name: "v0",       color: "#4A7EC0", visible: true },
-  { id: "phase2",   name: "v1",       color: "#4A9060", visible: true },
-  { id: "phase3",   name: "v2",       color: "#9060B0", visible: true },
-  { id: "phase4",   name: "v3",       color: "#B06040", visible: true },
-];
-
-// Shared label bounding box — single source of truth for both rendering and hit-testing
-const LABEL_MAX_W = 160;
-function wrapLabelLines(text, fontSize) {
-  const charW = fontSize * 0.6;
-  const maxChars = Math.max(1, Math.floor((LABEL_MAX_W - 16) / charW));
-  const result = [];
-  for (const rawLine of (text || "").split("\n")) {
-    if (!rawLine) { result.push(""); continue; }
-    const words = rawLine.split(" ");
-    let cur = "";
-    for (const word of words) {
-      const next = cur ? cur + " " + word : word;
-      if (next.length <= maxChars || !cur) { cur = next; }
-      else { result.push(cur); cur = word; }
-    }
-    if (cur) result.push(cur);
-  }
-  return result.length ? result : [""];
-}
-function labelBounds(lbl) {
-  const lineH = Math.round(lbl.fontSize * 1.4);
-  const lines = wrapLabelLines(lbl.text, lbl.fontSize);
-  const charW = lbl.fontSize * 0.6;
-  const w = Math.min(Math.max(...lines.map(l => l.length * charW), 20) + 16, LABEL_MAX_W);
-  const h = lines.length * lineH + 8;
-  return { w: Math.max(w, 36), h: Math.max(h, lbl.fontSize + 8), lines, lineH };
-}
-
-// Stable sub-components for the Align & Distribute panel (hoisted to avoid remounting on every render)
-function LabelAnnotation({ lbl, sel, tool, bg }) {
-  const labelFont = "'Inter', 'SF Pro', system-ui, sans-serif";
-  const fontW = lbl.bold ? 700 : 400;
-  const fontStyle = lbl.italic ? "italic" : "normal";
-  const { w: approxW, h: approxH, lines, lineH } = labelBounds(lbl);
-  const color = lbl.color;
-  const firstLineY = lbl.y - ((lines.length - 1) * lineH) / 2;
-  return <g style={{ cursor: tool === "select" ? "pointer" : "inherit" }}>
-    {lbl.lx != null && <>
-      <line x1={lbl.lx} y1={lbl.ly} x2={lbl.x} y2={lbl.y}
-        stroke={color} strokeWidth={sel ? 1.5 : 1} opacity={0.85} style={{ pointerEvents: "none" }} />
-      <circle cx={lbl.lx} cy={lbl.ly} r={3} fill={color} opacity={0.85} style={{ pointerEvents: "none" }} />
-    </>}
-    <rect x={lbl.x - approxW / 2} y={lbl.y - approxH / 2} width={approxW} height={approxH}
-      fill={bg} fillOpacity={0.9} stroke={color} strokeWidth={sel ? 1.5 : 1} strokeOpacity={0.75} rx={3} />
-    {sel && <rect x={lbl.x - approxW / 2 - 4} y={lbl.y - approxH / 2 - 4}
-      width={approxW + 8} height={approxH + 8} fill="none"
-      stroke={color} strokeWidth={1} strokeDasharray="4 3" rx={4} opacity={0.5} style={{ pointerEvents: "none" }} />}
-    {lbl.text
-      ? lines.map((line, i) => (
-          <text key={i} x={lbl.x} y={firstLineY + i * lineH} textAnchor="middle" dominantBaseline="middle"
-            fontSize={lbl.fontSize} fontWeight={fontW} fontStyle={fontStyle}
-            fill={color} fontFamily={labelFont} style={{ pointerEvents: "none" }}>{line || " "}</text>
-        ))
-      : <text x={lbl.x} y={lbl.y} textAnchor="middle" dominantBaseline="middle"
-          fontSize={lbl.fontSize} fill={color} opacity={0.35} fontFamily={labelFont} style={{ pointerEvents: "none" }}>Label…</text>}
-  </g>;
-}
-
-function AlignBtn({ action, label, tip, onAction, border, accent, textMuted, textBright }) {
-  const base = { flex: 1, padding: "5px 0", background: "transparent", border: "1.5px solid " + border, borderRadius: 5, cursor: "pointer", color: textMuted, fontSize: 10, fontFamily: "inherit", display: "flex", alignItems: "center", justifyContent: "center", transition: "all 0.12s ease" };
-  return (
-    <button style={base} title={tip} onClick={() => onAction(action)}
-      onMouseEnter={e => { e.currentTarget.style.borderColor = accent; e.currentTarget.style.color = textBright; }}
-      onMouseLeave={e => { e.currentTarget.style.borderColor = border; e.currentTarget.style.color = textMuted; }}>
-      {label}
-    </button>
-  );
-}
-
-// ─── 2D Elevation view ──────────────────────────────────────────────────────
-// Orthographic side projection of the model along one cardinal axis. Read-only
-// (view + annotate); geometry editing stays in plan/3D. Each instance owns its
-// own pan/zoom camera.
-function ElevationView({ dir, nodes, walls, doors, windows, columns, markers = [], ceilingHeight, pxPerFoot, T,
-  selectedId, selType, onSelect, ft, tool, cut, scrub, onView, panU, anno, onPlaceDim, onPlaceLabel, onUpdateDim, onUpdateLabel, onDeleteLabel }) {
-  const svgRef = useRef(null);
-  const [cam, setCam] = useState(null); // { tx, ty, z } — null until first auto-fit
-  const panRef = useRef(null);
-  const dimDraftRef = useRef(null);
-  const fittedRef = useRef(null); // last direction we auto-fit, so edits don't reset the camera
-  const [dimDraft, setDimDraft] = useState(null); // elevation-space {x1,y1,x2,y2?}
-  const [hoverSnap, setHoverSnap] = useState(null); // {x,y,snapped} live snap preview for the dim/label tools
-  const [editingLbl, setEditingLbl] = useState(null); // {id, x, y, text} inline label editor; id===null means a new (uncommitted) label
-  const [lblDragPrev, setLblDragPrev] = useState(null); // {from, to} screen-space pts while dragging a callout leader
-
-  // Project a plan point (x,y) to elevation horizontal u + depth d (for painter sort).
-  const proj = useCallback((x, y) => {
-    switch (dir) {
-      case "back":  return { u: -x, d: -y };
-      case "left":  return { u: y, d: -x };
-      case "right": return { u: -y, d: x };
-      default:      return { u: x, d: y }; // front
-    }
-  }, [dir]);
-  const vAt = useCallback((heightIn) => -(heightIn / 12) * pxPerFoot, [pxPerFoot]); // up = negative
-  const ceilV = vAt(ceilingHeight);
-
-  const nodeMap = useMemo(() => { const m = new Map(); for (const n of nodes) m.set(n.id, n); return m; }, [nodes]);
-
-  // Build projected, depth-sorted draw list.
-  const items = useMemo(() => {
-    const out = [];
-    const wallProj = []; // projected walls, gathered first so we can occlusion-test against them
-    // Section cut from an elevation guide: keep only geometry at or beyond the cut depth
-    // (d ≤ cutD), removing everything between the viewer (max d) and the cut so the wall at
-    // the cut becomes the visible near face. Plan pos → projected depth via a point on the line.
-    const cutPt = cut != null ? ((dir === "left" || dir === "right") ? proj(cut, 0) : proj(0, cut)) : null;
-    const cutD = cutPt ? cutPt.d : null;
-    const beyondCut = (d) => cutD != null && d > cutD + 1; // d in front of the cut → cropped
-    for (const w of walls) {
-      const a = nodeMap.get(w.n1), b = nodeMap.get(w.n2); if (!a || !b) continue;
-      const pa = proj(a.x, a.y), pb = proj(b.x, b.y);
-      const u1 = Math.min(pa.u, pb.u), u2 = Math.max(pa.u, pb.u);
-      if (u2 - u1 < 0.5) continue; // wall is edge-on to this elevation — skip sliver
-      const d = (pa.d + pb.d) / 2;
-      if (beyondCut(d)) continue; // in front of the section cut — cropped away
-      const wk = WALL_KINDS[w.kind || "existing"];
-      const topIn = w.kind === "pony" ? (w.ponyHeight || 42) : (w.ceilingHeight ?? ceilingHeight);
-      wallProj.push({ kind: "wall", id: w.id, u1, u2, top: vAt(topIn), d,
-        color: wk.color, dash: wk.dash, demo: w.kind === "demo" });
-    }
-    // Hidden-surface rule: a true elevation is a straight-on view of a single face. A
-    // surface at [u1,u2] reaching up to `top` (negative = up; everything rises from the
-    // floor) is hidden when the union of *strictly nearer*, at-least-as-tall opaque walls
-    // fully spans its width. This occludes the back wall, interior partitions, a pony wall
-    // behind the front wall, and columns/openings tucked behind the near face — so each
-    // direction reads as a distinct, non-x-ray face. Walls are gathered first; the union
-    // handles a near wall built from several collinear segments.
-    const occluded = (u1, u2, top, d) => {
-      const ivs = wallProj
-        .filter(f => !f.demo && f.d > d + 0.5 && f.top <= top + 0.5)
-        .map(f => [f.u1, f.u2]).sort((p, q) => p[0] - q[0]);
-      let cursor = u1;
-      for (const [a, b] of ivs) {
-        if (a > cursor + 0.5) break;        // gap in coverage → visible through it
-        cursor = Math.max(cursor, b);
-        if (cursor >= u2 - 0.5) return true;
-      }
-      return cursor >= u2 - 0.5;
-    };
-    for (const wp of wallProj) { if (!occluded(wp.u1, wp.u2, wp.top, wp.d)) out.push(wp); }
-    const opening = (arr, type) => {
-      for (const it of arr) {
-        // Project the opening's two ends ALONG its host wall (angle in degrees) so it
-        // stays on that wall's plane — full width when the wall faces the viewer,
-        // collapsing to edge-on (skipped) when the wall is perpendicular to the view.
-        const rad = ((it.angle || 0) * Math.PI) / 180;
-        const half = ((it.width || 36) / 12) * pxPerFoot / 2;
-        const e1 = proj(it.x - Math.cos(rad) * half, it.y - Math.sin(rad) * half);
-        const e2 = proj(it.x + Math.cos(rad) * half, it.y + Math.sin(rad) * half);
-        if (Math.abs(e2.u - e1.u) < 1) continue; // edge-on to this elevation — its wall isn't shown here
-        const d = (e1.d + e2.d) / 2, u1 = Math.min(e1.u, e2.u), u2 = Math.max(e1.u, e2.u);
-        if (beyondCut(d)) continue; // in front of the section cut — cropped away
-        const top = type === "window" ? vAt((it.sill ?? 30) + (it.height ?? 48)) : vAt(DOOR_HEIGHT_IN);
-        if (occluded(u1, u2, top, d)) continue; // behind a nearer wall — hidden
-        out.push({ kind: type, id: it.id, u1, u2, d, item: it });
-      }
-    };
-    opening(doors, "door");
-    opening(windows, "window");
-    for (const c of columns) {
-      const p = proj(c.x, c.y);
-      if (beyondCut(p.d)) continue; // in front of the section cut — cropped away
-      const halfW = ((c.size || 12) / 12) * pxPerFoot / 2;
-      if (occluded(p.u - halfW, p.u + halfW, ceilV, p.d)) continue; // behind the near face — hidden
-      out.push({ kind: "column", id: c.id, u1: p.u - halfW, u2: p.u + halfW, d: p.d, top: ceilV });
-    }
-    // IT/MEP markers, placed at their mounting height (AFF). Pushed last so they draw on top
-    // of the wall they're mounted on; same cut + occlusion rules as everything else.
-    const ceilFt = ceilingHeight / 12;
-    const mHalf = 0.35 * pxPerFoot;        // symbol footprint for occlusion
-    const mDepthTol = 0.5 * pxPerFoot;     // treat a marker as "on" the nearest wall within ~½'
-    for (const m of markers) {
-      const p = proj(m.x, m.y);
-      if (beyondCut(p.d)) continue; // in front of the section cut — cropped away
-      const v = vAt(markerMountYFt(m.componentType, ceilFt) * 12); // center height (elevation up)
-      // Hidden only if a wall is nearer by more than the tolerance (so a marker mounted on
-      // the near face isn't culled by its own wall, but far-wall items stay hidden).
-      if (occluded(p.u - mHalf, p.u + mHalf, v, p.d + mDepthTol)) continue;
-      out.push({ kind: "marker", id: m.id, u: p.u, v, d: p.d, item: m });
-    }
-    return out.sort((m, n) => m.d - n.d); // far → near
-  }, [walls, doors, windows, columns, markers, nodeMap, proj, vAt, ceilingHeight, ceilV, pxPerFoot, cut, dir]);
-
-  // Content bounds (pre-camera) for auto-fit.
-  const bounds = useMemo(() => {
-    let uMin = Infinity, uMax = -Infinity;
-    for (const it of items) {
-      const a = it.u1 ?? it.u, b = it.u2 ?? it.u; // markers carry `u` (point), others u1/u2
-      if (a == null) continue;
-      uMin = Math.min(uMin, a); uMax = Math.max(uMax, b);
-    }
-    if (!isFinite(uMin)) { uMin = -100; uMax = 100; }
-    return { uMin, uMax, vTop: ceilV, vBot: 0 };
-  }, [items, ceilV]);
-
-  // Auto-fit the camera once per (direction + cut) — so editing geometry doesn't reset the
-  // user's pan/zoom, but changing the elevation's section cut reframes to the cropped face.
-  // Retries across bounds changes only until the first successful fit for this key.
-  const fitKey = `${dir}:${cut ?? ""}`;
-  useEffect(() => {
-    if (scrub) return; // suspended while scrubbing — the cursor drives the camera (below)
-    if (fittedRef.current === fitKey) return;
-    const el = svgRef.current; if (!el) return;
-    const r = el.getBoundingClientRect(); if (!r.width || !r.height) return;
-    const m = 48;
-    const cw = (bounds.uMax - bounds.uMin) || 200, ch = (bounds.vBot - bounds.vTop) || 200;
-    const z = Math.min((r.width - 2 * m) / cw, (r.height - 2 * m) / ch, 4);
-    const cx = (bounds.uMin + bounds.uMax) / 2, cy = (bounds.vTop + bounds.vBot) / 2;
-    setCam({ z, tx: r.width / 2 - cx * z, ty: r.height / 2 - cy * z });
-    fittedRef.current = fitKey;
-  }, [fitKey, scrub, bounds.uMin, bounds.uMax, bounds.vTop, bounds.vBot]);
-
-  // While a section guide is being dragged, the cursor's position along the plan is the
-  // elevation's camera: pan horizontally so the point under the cursor is centered (keeping
-  // the current zoom). Lets you scrub along the wall as you place/move the cut.
-  useEffect(() => {
-    if (!scrub) return;
-    const el = svgRef.current; if (!el) return;
-    const r = el.getBoundingClientRect(); if (!r.width) return;
-    const u = proj(scrub.x, scrub.y).u;
-    setCam(c => { const cc = c || { z: 1, tx: 0, ty: 0 }; return { ...cc, tx: r.width / 2 - u * cc.z }; });
-    // On scrub end, force a re-fit so releasing always reframes the final cut (even after a
-    // horizontal drag where the cut depth — and thus fitKey — didn't change).
-    return () => { fittedRef.current = null; };
-  }, [scrub, proj]);
-
-  // Pan to a target u when the camera marker is dragged along the ruler. Doesn't touch the
-  // fit guard, so the pan persists (no snap-back) until the cut changes.
-  useEffect(() => {
-    if (panU == null) return;
-    const el = svgRef.current; if (!el) return;
-    const r = el.getBoundingClientRect(); if (!r.width) return;
-    setCam(c => { const cc = c || { z: 1, tx: 0, ty: 0 }; return { ...cc, tx: r.width / 2 - panU * cc.z }; });
-  }, [panU]);
-
-  // Report the camera's visible horizontal extent (in projected-u units) up to the plan so
-  // it can draw a "camera" marker on the matching edge ruler.
-  useEffect(() => {
-    if (!onView) return;
-    const el = svgRef.current; if (!el) return;
-    const r = el.getBoundingClientRect(); if (!r.width) return;
-    const c = cam || { tx: 0, z: 1 };
-    onView(dir, { uMin: (0 - c.tx) / c.z, uMax: (r.width - c.tx) / c.z, uCenter: (r.width / 2 - c.tx) / c.z });
-  }, [cam, dir, onView]);
-
-  const cm = cam || { tx: 0, ty: 0, z: 1 };
-  // screen <-> elevation conversions
-  const toScreen = (u, v) => ({ x: u * cm.z + cm.tx, y: v * cm.z + cm.ty });
-  const toElev = (sx, sy) => ({ x: (sx - cm.tx) / cm.z, y: (sy - cm.ty) / cm.z });
-  const svgPt = (e) => { const r = svgRef.current.getBoundingClientRect(); return { sx: e.clientX - r.left, sy: e.clientY - r.top }; };
-
-  // Object nodes the dim/label tools snap to — corners + edge-midpoints of every drawn item,
-  // plus marker centers, in elevation (u,v) space. Mirrors the plan dim tool's node snapping.
-  const snapPts = useMemo(() => {
-    const pts = [];
-    for (const it of items) {
-      if (it.kind === "marker") { pts.push({ u: it.u, v: it.v }); continue; }
-      let vb, vt;
-      if (it.kind === "wall" || it.kind === "column") { vb = 0; vt = it.top; }
-      else if (it.kind === "window") { const s = it.item.sill ?? 30, h = it.item.height ?? 48; vb = vAt(s); vt = vAt(s + h); }
-      else if (it.kind === "door") { vb = 0; vt = vAt(DOOR_HEIGHT_IN); }
-      else continue;
-      const um = (it.u1 + it.u2) / 2, vm = (vb + vt) / 2;
-      pts.push({ u: it.u1, v: vb }, { u: it.u2, v: vb }, { u: it.u1, v: vt }, { u: it.u2, v: vt },
-               { u: um, v: vb }, { u: um, v: vt }, { u: it.u1, v: vm }, { u: it.u2, v: vm });
-    }
-    return pts;
-  }, [items, vAt]);
-
-  // Snap an elevation point to the nearest item node within ~SNAP_R screen px, else to the
-  // floor/ceiling datum line (height only). Returns { x, y, snapped }.
-  const snapElev = (p) => {
-    const thresh = SNAP_R / cm.z;
-    let best = null, bd = thresh;
-    for (const s of snapPts) { const d = Math.hypot(p.x - s.u, p.y - s.v); if (d < bd) { best = s; bd = d; } }
-    if (best) return { x: best.u, y: best.v, snapped: true };
-    if (Math.abs(p.y) < thresh) return { x: p.x, y: 0, snapped: true };          // finished floor
-    if (Math.abs(p.y - ceilV) < thresh) return { x: p.x, y: ceilV, snapped: true }; // ceiling
-    return { x: p.x, y: p.y, snapped: false };
-  };
-
-  // Horizontal/vertical edge lines (with their spans) the Shift axis-lock snaps the dimension
-  // onto — every wall/window/door/column edge, plus the floor & ceiling datums.
-  const snapLines = useMemo(() => {
-    const h = [{ v: 0, uMin: -Infinity, uMax: Infinity }, { v: ceilV, uMin: -Infinity, uMax: Infinity }];
-    const v = [];
-    for (const it of items) {
-      if (it.kind === "marker") continue;
-      let vb, vt;
-      if (it.kind === "wall" || it.kind === "column") { vb = 0; vt = it.top; }
-      else if (it.kind === "window") { const s = it.item.sill ?? 30, hh = it.item.height ?? 48; vb = vAt(s); vt = vAt(s + hh); }
-      else if (it.kind === "door") { vb = 0; vt = vAt(DOOR_HEIGHT_IN); }
-      else continue;
-      const uMin = Math.min(it.u1, it.u2), uMax = Math.max(it.u1, it.u2);
-      const vMin = Math.min(vb, vt), vMax = Math.max(vb, vt);
-      h.push({ v: vt, uMin, uMax });                                  // top / head
-      if (it.kind === "window") h.push({ v: vb, uMin, uMax });        // sill
-      v.push({ u: it.u1, vMin, vMax }, { u: it.u2, vMin, vMax });     // left / right edges
-    }
-    return { h, v };
-  }, [items, vAt, ceilV]);
-
-  // Shift held while placing the 2nd point: lock to the dominant axis from p1, then snap the
-  // free coordinate onto any object edge the locked line actually crosses.
-  const axisSnap = (raw, p1) => {
-    const thresh = SNAP_R / cm.z;
-    if (Math.abs(raw.x - p1.x) >= Math.abs(raw.y - p1.y)) { // horizontal lock (v = p1.y)
-      let bx = raw.x, bd = thresh, hit = false;
-      for (const L of snapLines.v) { if (p1.y >= L.vMin - 1 && p1.y <= L.vMax + 1) { const d = Math.abs(raw.x - L.u); if (d < bd) { bx = L.u; bd = d; hit = true; } } }
-      return { x: bx, y: p1.y, snapped: hit, axis: "h" };
-    }
-    let by = raw.y, bd = thresh, hit = false;                // vertical lock (u = p1.x)
-    for (const L of snapLines.h) { if (p1.x >= L.uMin - 1 && p1.x <= L.uMax + 1) { const d = Math.abs(raw.y - L.v); if (d < bd) { by = L.v; bd = d; hit = true; } } }
-    return { x: p1.x, y: by, snapped: hit, axis: "v" };
-  };
-
-  const onBgMove = (e) => {
-    if (tool !== "dim" && tool !== "label") { if (hoverSnap) setHoverSnap(null); return; }
-    const { sx, sy } = svgPt(e);
-    const raw = toElev(sx, sy);
-    const dd = dimDraftRef.current;
-    // Shift axis-locks the 2nd point onto crossed edges; otherwise normal node snapping.
-    const sp = (tool === "dim" && e.shiftKey && dd && !("x2" in dd)) ? axisSnap(raw, { x: dd.x1, y: dd.y1 }) : snapElev(raw);
-    setHoverSnap({ ...sp, rx: raw.x, ry: raw.y }); // rx/ry = un-snapped cursor for the offset pull
-  };
-
-  const onWheel = (e) => {
-    e.preventDefault();
-    const { sx, sy } = svgPt(e);
-    const factor = 1 - e.deltaY * 0.001; // match the plan canvas's delta-proportional zoom speed
-    setCam(c => { const cc = c || cm; const z2 = Math.min(10, Math.max(0.05, cc.z * factor));
-      const ux = (sx - cc.tx) / cc.z, uy = (sy - cc.ty) / cc.z;
-      return { z: z2, tx: sx - ux * z2, ty: sy - uy * z2 }; });
-  };
-
-  const onBgDown = (e) => {
-    const { sx, sy } = svgPt(e);
-    if (tool === "dim" || tool === "label") {
-      const raw = toElev(sx, sy);
-      const p = snapElev(raw); // snap the measured points to object nodes, like the 2D dim tool
-      if (tool === "label") {
-        // Open the editor on mouse-UP, not down: focusing the textarea while the button is
-        // still pressed lets the browser steal focus back on release, which fires onBlur and
-        // instantly commits-and-closes the empty editor. Opening after release (like the
-        // plan's onUp label flow) lets autoFocus stick. The label isn't created until text is
-        // committed, so abandoning it (Esc / empty blur) leaves nothing behind.
-        // Drag (press → release apart) draws a leader: the press point is the leader tip, the
-        // release point is the label box — same as the plan's click-and-drag callout.
-        const down = { cx: e.clientX, cy: e.clientY };
-        const tipScreen = toScreen(p.x, p.y);
-        const move = (ev) => {
-          const s = svgPt(ev);
-          setLblDragPrev({ from: tipScreen, to: { x: s.sx, y: s.sy } });
-        };
-        const open = (ev) => {
-          window.removeEventListener("mousemove", move);
-          window.removeEventListener("mouseup", open);
-          setLblDragPrev(null);
-          const upS = svgPt(ev), upP = snapElev(toElev(upS.sx, upS.sy));
-          const isLeader = Math.hypot(ev.clientX - down.cx, ev.clientY - down.cy) > 8;
-          setEditingLbl(isLeader
-            ? { id: null, x: upP.x, y: upP.y, lx: p.x, ly: p.y, text: "" }
-            : { id: null, x: p.x, y: p.y, lx: null, ly: null, text: "" });
-        };
-        window.addEventListener("mousemove", move);
-        window.addEventListener("mouseup", open);
-        return;
-      }
-      // dim: 3-click (point, point, then pull the dim line away to set its offset) — like 2D
-      const dd = dimDraftRef.current;
-      if (!dd) {
-        dimDraftRef.current = { x1: p.x, y1: p.y }; setDimDraft({ x1: p.x, y1: p.y });
-      } else if (!("x2" in dd)) {
-        // Shift locks the axis from p1 and snaps onto any edge the locked line crosses.
-        const sp = (tool === "dim" && e.shiftKey) ? axisSnap(raw, { x: dd.x1, y: dd.y1 }) : p;
-        if (Math.hypot(sp.x - dd.x1, sp.y - dd.y1) < 4) return; // ignore a tiny second click
-        dimDraftRef.current = { ...dd, x2: sp.x, y2: sp.y }; setDimDraft({ ...dd, x2: sp.x, y2: sp.y });
-      } else {
-        const ddx = dd.x2 - dd.x1, ddy = dd.y2 - dd.y1, dlen = Math.hypot(ddx, ddy);
-        if (dlen < 1) { dimDraftRef.current = null; setDimDraft(null); return; }
-        const nnx = -ddy / dlen, nny = ddx / dlen; // perpendicular
-        const off = (raw.x - dd.x1) * nnx + (raw.y - dd.y1) * nny; // signed pull distance (un-snapped)
-        onPlaceDim?.({ x1: dd.x1, y1: dd.y1, x2: dd.x2, y2: dd.y2, offset: off });
-        dimDraftRef.current = null; setDimDraft(null);
-      }
-      return;
-    }
-    // pan
-    panRef.current = { startX: e.clientX, startY: e.clientY, tx: cm.tx, ty: cm.ty };
-    const move = (ev) => setCam(c => ({ ...(c || cm), tx: panRef.current.tx + (ev.clientX - panRef.current.startX), ty: panRef.current.ty + (ev.clientY - panRef.current.startY) }));
-    const up = () => { panRef.current = null; window.removeEventListener("mousemove", move); window.removeEventListener("mouseup", up); };
-    window.addEventListener("mousemove", move); window.addEventListener("mouseup", up);
-  };
-
-  const sel = (id, type) => (e) => { if (tool !== "select") return; e.stopPropagation(); onSelect?.(id, type); };
-  const isSel = (id, type) => selectedId === id && selType === type;
-
-  // Drag an existing annotation (elevation space). part: "p1"/"p2"/"line" for dims, "move" for labels.
-  const startAnnoDrag = (kind, id, part, e) => {
-    if (tool !== "select") return; // dim/label tools place new ones; only Select drags
-    e.stopPropagation();
-    onSelect?.(id, kind === "dim" ? "elevDim" : "elevLabel");
-    const s0 = svgPt(e), e0 = toElev(s0.sx, s0.sy);
-    const src = kind === "dim" ? (anno?.dims || []).find(x => x.id === id) : (anno?.labels || []).find(x => x.id === id);
-    if (!src) return;
-    const move = (ev) => {
-      const p = svgPt(ev), cur = toElev(p.sx, p.sy);
-      const dx = cur.x - e0.x, dy = cur.y - e0.y;
-      if (kind === "label") {
-        if (part === "tip") onUpdateLabel?.(id, { lx: (src.lx ?? src.x) + dx, ly: (src.ly ?? src.y) + dy });
-        else onUpdateLabel?.(id, { x: src.x + dx, y: src.y + dy }); // box moves; leader tip stays anchored
-        return;
-      }
-      if (part === "p1") onUpdateDim?.(id, { x1: src.x1 + dx, y1: src.y1 + dy });
-      else if (part === "p2") onUpdateDim?.(id, { x2: src.x2 + dx, y2: src.y2 + dy });
-      else {
-        // Dragging the dim line pulls the measurement away from the placed points (offset).
-        const ddx = src.x2 - src.x1, ddy = src.y2 - src.y1, dl = Math.hypot(ddx, ddy) || 1;
-        const nnx = -ddy / dl, nny = ddx / dl;
-        onUpdateDim?.(id, { offset: (cur.x - src.x1) * nnx + (cur.y - src.y1) * nny });
-      }
-    };
-    const up = () => { window.removeEventListener("mousemove", move); window.removeEventListener("mouseup", up); };
-    window.addEventListener("mousemove", move); window.addEventListener("mouseup", up);
-  };
-
-  // Screen-space geometry for an offset dimension string (elevation-space d {x1,y1,x2,y2,offset}).
-  // Mirrors the 2D DimString: extension lines, offset dim line, diagonal ticks, rotated label.
-  const elevDimGeom = (d) => {
-    const a1 = toScreen(d.x1, d.y1), a2 = toScreen(d.x2, d.y2);
-    const sdx = a2.x - a1.x, sdy = a2.y - a1.y, slen = Math.hypot(sdx, sdy) || 1;
-    const sux = sdx / slen, suy = sdy / slen, snx = -suy, sny = sux;
-    const soff = (d.offset || 0) * cm.z, sign = soff >= 0 ? 1 : -1, aoff = Math.abs(soff);
-    const gap = 4, over = 6, tk = 5;
-    let ang = Math.atan2(sdy, sdx) * 180 / Math.PI; if (ang > 90) ang -= 180; if (ang < -90) ang += 180;
-    return {
-      a1, a2, tk,
-      dl1: { x: a1.x + snx * soff, y: a1.y + sny * soff }, dl2: { x: a2.x + snx * soff, y: a2.y + sny * soff },
-      e1s: { x: a1.x + snx * sign * gap, y: a1.y + sny * sign * gap }, e1e: { x: a1.x + snx * sign * (aoff + over), y: a1.y + sny * sign * (aoff + over) },
-      e2s: { x: a2.x + snx * sign * gap, y: a2.y + sny * sign * gap }, e2e: { x: a2.x + snx * sign * (aoff + over), y: a2.y + sny * sign * (aoff + over) },
-      diagX: (sux + snx * sign) / Math.SQRT2, diagY: (suy + sny * sign) / Math.SQRT2,
-      mid: { x: (a1.x + a2.x) / 2 + snx * soff, y: (a1.y + a2.y) / 2 + sny * soff },
-      label: ft(Math.hypot(d.x2 - d.x1, d.y2 - d.y1)), ang, slen,
-    };
-  };
-  const ElevDimVisual = ({ g, col, sw }) => (<g style={{ pointerEvents: "none" }}>
-    <line x1={g.e1s.x} y1={g.e1s.y} x2={g.e1e.x} y2={g.e1e.y} stroke={col} strokeWidth={sw} />
-    <line x1={g.e2s.x} y1={g.e2s.y} x2={g.e2e.x} y2={g.e2e.y} stroke={col} strokeWidth={sw} />
-    <line x1={g.dl1.x} y1={g.dl1.y} x2={g.dl2.x} y2={g.dl2.y} stroke={col} strokeWidth={sw} />
-    <line x1={g.dl1.x - g.diagX * g.tk} y1={g.dl1.y - g.diagY * g.tk} x2={g.dl1.x + g.diagX * g.tk} y2={g.dl1.y + g.diagY * g.tk} stroke={col} strokeWidth={sw + 0.25} />
-    <line x1={g.dl2.x - g.diagX * g.tk} y1={g.dl2.y - g.diagY * g.tk} x2={g.dl2.x + g.diagX * g.tk} y2={g.dl2.y + g.diagY * g.tk} stroke={col} strokeWidth={sw + 0.25} />
-    <rect x={g.mid.x - (g.label.length * 3 + 4)} y={g.mid.y - 7} width={g.label.length * 6 + 8} height={14} fill={T.canvas} transform={`rotate(${g.ang},${g.mid.x},${g.mid.y})`} />
-    <text x={g.mid.x} y={g.mid.y} textAnchor="middle" dominantBaseline="middle" fontSize={10} fill={col} fontFamily="inherit" fontWeight={600} transform={`rotate(${g.ang},${g.mid.x},${g.mid.y})`}>{g.label}</text>
-  </g>);
-
-  // Datum lines in screen space (full pane width)
-  const floorY = toScreen(0, 0).y, ceilY = toScreen(0, ceilV).y;
-  const annoDims = anno?.dims || [], annoLabels = anno?.labels || [];
-
-  // Inline label editor commit/cancel (window.prompt is blocked in embedded browsers).
-  // editingLbl.id === null → a brand-new label (created only if text is committed); a real
-  // id → editing an existing label (empty commit deletes it, matching the plan).
-  const commitLblEdit = () => {
-    if (!editingLbl) return;
-    const { id, x, y, lx, ly, text } = editingLbl;
-    const t = text.trim();
-    if (id == null) { if (t) onPlaceLabel?.({ x, y, lx, ly, text: t }); }   // new: create only if non-empty
-    else if (t) onUpdateLabel?.(id, { text: t });
-    else onDeleteLabel?.(id);                                       // existing emptied → remove
-    setEditingLbl(null);
-  };
-  const cancelLblEdit = () => setEditingLbl(null); // nothing created/changed yet
-
-  return (
-    <div style={{ position: "relative", width: "100%", height: "100%" }}>
-    <svg ref={svgRef} width="100%" height="100%" onMouseDown={onBgDown} onMouseMove={onBgMove} onMouseLeave={() => hoverSnap && setHoverSnap(null)} onWheel={onWheel}
-      style={{ display: "block", background: T.canvas, cursor: (tool === "dim" || tool === "label") ? "crosshair" : "grab" }}>
-      {/* Floor + ceiling datum lines */}
-      <line x1={0} y1={floorY} x2="100%" y2={floorY} stroke={T.textMuted} strokeWidth={1} opacity={0.6} />
-      <line x1={0} y1={ceilY} x2="100%" y2={ceilY} stroke={T.textMuted} strokeWidth={0.75} strokeDasharray="5 4" opacity={0.4} />
-      <text x={6} y={floorY - 4} fontSize={9} fill={T.textMuted} fontFamily="inherit">FIN. FLOOR 0'-0"</text>
-      <text x={6} y={ceilY - 4} fontSize={9} fill={T.textMuted} fontFamily="inherit">CEILING {ft((ceilingHeight / 12) * pxPerFoot)}</text>
-
-      {items.map((it, i) => {
-        if (it.kind === "wall") {
-          const a = toScreen(it.u1, 0), b = toScreen(it.u2, it.top);
-          const x = Math.min(a.x, b.x), y = Math.min(a.y, b.y), w = Math.abs(b.x - a.x), h = Math.abs(a.y - b.y);
-          const on = isSel(it.id, "wall");
-          return <rect key={"w" + it.id + i} x={x} y={y} width={w} height={h}
-            fill={it.demo ? "none" : it.color + "55"} stroke={on ? T.accent : it.color}
-            strokeWidth={on ? 2 : 1} strokeDasharray={it.dash || "none"}
-            onClick={sel(it.id, "wall")} style={{ cursor: "pointer" }} />;
-        }
-        if (it.kind === "window") {
-          const sill = it.item.sill ?? 30, hgt = it.item.height ?? 48;
-          const a = toScreen(it.u1, vAt(sill)), b = toScreen(it.u2, vAt(sill + hgt));
-          const x = Math.min(a.x, b.x), y = Math.min(a.y, b.y), w = Math.abs(b.x - a.x), h = Math.abs(a.y - b.y);
-          const on = isSel(it.id, "window");
-          return <g key={"win" + it.id + i} onClick={sel(it.id, "window")} style={{ cursor: "pointer" }}>
-            <rect x={x} y={y} width={w} height={h} fill={"#7FB4D6" + "33"} stroke={on ? T.accent : "#60A0C8"} strokeWidth={on ? 2 : 1.2} />
-            <line x1={x} y1={y} x2={x + w} y2={y + h} stroke={"#60A0C8"} strokeWidth={0.6} opacity={0.6} />
-          </g>;
-        }
-        if (it.kind === "door") {
-          const a = toScreen(it.u1, 0), b = toScreen(it.u2, vAt(DOOR_HEIGHT_IN));
-          const x = Math.min(a.x, b.x), y = Math.min(a.y, b.y), w = Math.abs(b.x - a.x), h = Math.abs(a.y - b.y);
-          const on = isSel(it.id, "door");
-          return <rect key={"d" + it.id + i} x={x} y={y} width={w} height={h}
-            fill={"#A9885F" + "33"} stroke={on ? T.accent : "#A9885F"} strokeWidth={on ? 2 : 1.2}
-            onClick={sel(it.id, "door")} style={{ cursor: "pointer" }} />;
-        }
-        if (it.kind === "marker") {
-          const m = it.item;
-          const spec = SPEC_COMPONENTS[m.layer]?.[m.componentType];
-          const color = spec?.color || "#9A9488", letter = spec?.letter;
-          const a = toScreen(it.u, it.v);
-          const r = Math.max(3, 0.35 * pxPerFoot * cm.z); // ~0.7' symbol, min 3px
-          const on = isSel(it.id, "marker");
-          return <g key={"mk" + it.id + i} onClick={sel(it.id, "marker")} style={{ cursor: "pointer" }}>
-            <circle cx={a.x} cy={a.y} r={r} fill={color + "cc"} stroke={on ? T.accent : color} strokeWidth={on ? 2 : 1} />
-            {letter && <text x={a.x} y={a.y} textAnchor="middle" dominantBaseline="central" fontSize={r}
-              fill="#fff" fontFamily="inherit" fontWeight={700} style={{ pointerEvents: "none" }}>{letter}</text>}
-          </g>;
-        }
-        // column
-        const a = toScreen(it.u1, 0), b = toScreen(it.u2, it.top);
-        const x = Math.min(a.x, b.x), y = Math.min(a.y, b.y), w = Math.abs(b.x - a.x), h = Math.abs(a.y - b.y);
-        const on = isSel(it.id, "column");
-        return <rect key={"c" + it.id + i} x={x} y={y} width={w} height={h}
-          fill={T.nodeStroke + "66"} stroke={on ? T.accent : "#9A9488"} strokeWidth={on ? 2 : 1}
-          onClick={sel(it.id, "column")} style={{ cursor: "pointer" }} />;
-      })}
-
-      {/* Annotations (elevation space) — selectable + draggable with the Select tool */}
-      {annoDims.map(d => {
-        if (![d.x1, d.y1, d.x2, d.y2].every(Number.isFinite)) return null; // skip malformed/legacy dims
-        const g = elevDimGeom(d);
-        const on = isSel(d.id, "elevDim");
-        const interactive = tool === "select";
-        return <g key={d.id}>
-          {/* wide transparent hit line along the dim line — grab to pull the offset */}
-          <line x1={g.dl1.x} y1={g.dl1.y} x2={g.dl2.x} y2={g.dl2.y} stroke="transparent" strokeWidth={12}
-            onMouseDown={e => startAnnoDrag("dim", d.id, "line", e)}
-            style={{ cursor: interactive ? "move" : "inherit", pointerEvents: interactive ? "stroke" : "none" }} />
-          <ElevDimVisual g={g} col={on ? T.accent : T.dimText} sw={on ? 1.6 : 1} />
-          {on && interactive && [["p1", g.a1], ["p2", g.a2]].map(([part, p]) => (
-            <circle key={part} cx={p.x} cy={p.y} r={5} fill={T.accent} stroke={T.nodeFill} strokeWidth={1.5}
-              onMouseDown={e => startAnnoDrag("dim", d.id, part, e)} style={{ cursor: "move" }} />
-          ))}
-        </g>;
-      })}
-      {annoLabels.map(l => {
-        if (editingLbl?.id === l.id) return null; // hidden while its inline editor is open
-        const p = toScreen(l.x, l.y);
-        const on = isSel(l.id, "elevLabel");
-        const interactive = tool === "select";
-        const col = on ? T.accent : T.textBright;
-        const tip = l.lx != null ? toScreen(l.lx, l.ly) : null;
-        return <g key={l.id}>
-          {tip && <>
-            <line x1={tip.x} y1={tip.y} x2={p.x} y2={p.y} stroke={col} strokeWidth={on ? 1.5 : 1} opacity={0.85} style={{ pointerEvents: "none" }} />
-            <circle cx={tip.x} cy={tip.y} r={on && interactive ? 5 : 3} fill={col} opacity={0.85}
-              onMouseDown={e => startAnnoDrag("label", l.id, "tip", e)}
-              style={{ cursor: interactive ? "move" : "inherit", pointerEvents: interactive ? "auto" : "none" }} />
-          </>}
-          <text x={p.x} y={p.y} fontSize={11} fill={col} fontFamily="inherit"
-            onMouseDown={e => startAnnoDrag("label", l.id, "move", e)}
-            onDoubleClick={e => { if (tool !== "select") return; e.stopPropagation(); setEditingLbl({ id: l.id, x: l.x, y: l.y, lx: l.lx ?? null, ly: l.ly ?? null, text: l.text || "" }); }}
-            style={{ cursor: interactive ? "move" : "inherit", pointerEvents: interactive ? "auto" : "none" }}>{l.text}</text>
-        </g>;
-      })}
-      {/* Live leader preview while the user is still dragging to place a callout */}
-      {lblDragPrev && Math.hypot(lblDragPrev.to.x - lblDragPrev.from.x, lblDragPrev.to.y - lblDragPrev.from.y) > 8 && (
-        <g style={{ pointerEvents: "none" }}>
-          <line x1={lblDragPrev.from.x} y1={lblDragPrev.from.y} x2={lblDragPrev.to.x} y2={lblDragPrev.to.y}
-            stroke={T.accent} strokeWidth={1.5} opacity={0.7} strokeDasharray="4 3" />
-          <circle cx={lblDragPrev.from.x} cy={lblDragPrev.from.y} r={3} fill={T.accent} opacity={0.85} />
-        </g>
-      )}
-      {/* Live leader line while a callout's inline editor is open (the editor box is HTML, outside the SVG) */}
-      {editingLbl?.lx != null && (() => {
-        const tip = toScreen(editingLbl.lx, editingLbl.ly), box = toScreen(editingLbl.x, editingLbl.y);
-        return <g style={{ pointerEvents: "none" }}>
-          <line x1={tip.x} y1={tip.y} x2={box.x} y2={box.y} stroke={T.accent} strokeWidth={1.5} opacity={0.85} />
-          <circle cx={tip.x} cy={tip.y} r={3} fill={T.accent} opacity={0.85} />
-        </g>;
-      })()}
-      {dimDraft && (() => { const a = toScreen(dimDraft.x1, dimDraft.y1); const b = ("x2" in dimDraft) ? toScreen(dimDraft.x2, dimDraft.y2) : null;
-        return <g style={{ pointerEvents: "none" }}><circle cx={a.x} cy={a.y} r={3} fill={T.accent} />{b && <circle cx={b.x} cy={b.y} r={3} fill={T.accent} />}</g>; })()}
-
-      {/* Live preview for the dim/label tools */}
-      {(tool === "dim" || tool === "label") && hoverSnap && (() => {
-        // Offset phase: both measured points placed → preview the full offset dim at the cursor
-        if (tool === "dim" && dimDraft && ("x2" in dimDraft)) {
-          const dd = dimDraft, ddx = dd.x2 - dd.x1, ddy = dd.y2 - dd.y1, dl = Math.hypot(ddx, ddy) || 1;
-          const nnx = -ddy / dl, nny = ddx / dl;
-          const off = (hoverSnap.rx - dd.x1) * nnx + (hoverSnap.ry - dd.y1) * nny;
-          return <g style={{ pointerEvents: "none", opacity: 0.85 }}><ElevDimVisual g={elevDimGeom({ ...dd, offset: off })} col={T.accent} sw={1} /></g>;
-        }
-        // Measuring phase: snap ring + live span line + length
-        const s = toScreen(hoverSnap.x, hoverSnap.y);
-        return <g style={{ pointerEvents: "none" }}>
-          {dimDraft && (() => {
-            const a = toScreen(dimDraft.x1, dimDraft.y1);
-            const lenIn = Math.hypot(hoverSnap.x - dimDraft.x1, hoverSnap.y - dimDraft.y1) / pxPerFoot * 12;
-            const mid = { x: (a.x + s.x) / 2, y: (a.y + s.y) / 2 };
-            return <>
-              <line x1={a.x} y1={a.y} x2={s.x} y2={s.y} stroke={T.accent} strokeWidth={1} strokeDasharray="4 3" opacity={0.8} />
-              {lenIn > 0.5 && <text x={mid.x} y={mid.y - 4} textAnchor="middle" fontSize={10} fill={T.accent} fontFamily="inherit" fontWeight={600}>{ft((lenIn / 12) * pxPerFoot)}</text>}
-            </>;
-          })()}
-          {hoverSnap.snapped
-            ? <><circle cx={s.x} cy={s.y} r={5} fill="none" stroke={T.accent} strokeWidth={2} /><circle cx={s.x} cy={s.y} r={1.5} fill={T.accent} /></>
-            : <circle cx={s.x} cy={s.y} r={3} fill={T.accent} opacity={0.6} />}
-        </g>;
-      })()}
-
-      {/* Offset past the pane's view-selector chip (absolute, left:8, ~80px wide) so it isn't covered */}
-      <text x={100} y={22} fontSize={10} fontWeight={700} fill={T.textMuted} fontFamily="inherit" style={{ letterSpacing: "0.08em" }}>{dir.toUpperCase()} ELEVATION</text>
-    </svg>
-    {/* Inline label editor — same in-canvas flow as the plan (Enter commits, Esc cancels,
-        empty text deletes); replaces window.prompt, which embedded browsers block. */}
-    {editingLbl && (() => {
-      // New label: position from the click (editingLbl.x/y). Existing: from the label.
-      const src = editingLbl.id == null ? editingLbl : annoLabels.find(l => l.id === editingLbl.id);
-      if (!src) return null;
-      const p = toScreen(src.x, src.y);
-      return <textarea
-        autoFocus
-        rows={Math.max(1, editingLbl.text.split("\n").length)}
-        value={editingLbl.text}
-        onChange={e => setEditingLbl(s => ({ ...s, text: e.target.value }))}
-        onMouseDown={e => e.stopPropagation()}
-        onBlur={commitLblEdit}
-        onKeyDown={ev => {
-          if (ev.key === "Escape") { ev.stopPropagation(); cancelLblEdit(); }
-          else if (ev.key === "Enter" && !ev.shiftKey) { ev.preventDefault(); commitLblEdit(); }
-        }}
-        style={{ position: "absolute", left: p.x, top: p.y, transform: "translate(-50%,-50%)",
-          background: T.bg2 + "EE", border: "1.5px solid " + T.accent, borderRadius: 4,
-          color: T.textBright, fontSize: 11, fontFamily: "inherit", padding: "4px 8px",
-          minWidth: 90, resize: "none", outline: "none", textAlign: "center", zIndex: 30,
-          lineHeight: 1.4, overflow: "hidden", whiteSpace: "pre-wrap", wordBreak: "break-word" }}
-      />;
-    })()}
-    </div>
-  );
-}
+// Extracted modules — see CLAUDE.md → "Code structure" for what belongs where.
+import { THEMES, cadCrosshair, WALL_KINDS, WALL_KINDS_LIGHT, WALL_MATERIALS, WALL_MATERIAL_HATCHES } from "../constants/theme";
+import { SPEC_COMPONENTS, SPEC_LAYERS, DOOR_TYPES, WINDOW_TYPES, FLOW_PATH_COLORS, PROX_DRAG_TYPES, SNAP_R, LABEL_MAX_W, DEFAULT_PHASES } from "../constants/specs";
+import { wrapLabelLines, labelBounds } from "../utils/labels";
+import { WallIcon, WindowIcon, ColumnIcon } from "../components/icons";
+import { SliderInput, LabelAnnotation, AlignBtn } from "../components/ui";
+import ElevationView from "../components/ElevationView";
+import ZoneLibraryModal from "../components/ZoneLibraryModal";
 
 export default function TestfitTool() {
   const [themeMode, setThemeMode] = useState("light");
@@ -980,6 +92,8 @@ export default function TestfitTool() {
   const [activeSnapshotId, setActiveSnapshotId] = useState(null);
   const [showSnapMenu, setShowSnapMenu] = useState(false);
   const [snapMenuRect, setSnapMenuRect] = useState(null);
+  const [showModeMenu, setShowModeMenu] = useState(false); // workflow-stage dropdown (top bar)
+  const [modeMenuRect, setModeMenuRect] = useState(null);
   const [renamingSnapId, setRenamingSnapId] = useState(null);
   const [newSnapMode, setNewSnapMode] = useState(false); // inline "save as new" input
   const [snapDraftName, setSnapDraftName] = useState("");
@@ -3492,6 +2606,13 @@ export default function TestfitTool() {
   const selColumn = useMemo(() => selType === "column" ? columns.find(c => c.id === selectedId) : null, [selType, selectedId, columns]);
   const selLabel = useMemo(() => (selType === "label" || selType === "label-tip") ? labels.find(l => l.id === selectedId) : null, [selType, selectedId, labels]);
   const selRevCloud = useMemo(() => selType === "revcloud" ? revClouds.find(r => r.id === selectedId) : null, [selType, selectedId, revClouds]);
+  // Elevation labels live per-direction under elevAnnotations[dir].labels; ids are unique, so scan all dirs.
+  const selElevLabel = useMemo(() => selType === "elevLabel"
+    ? Object.values(elevAnnotations).flatMap(a => a?.labels || []).find(l => l.id === selectedId) ?? null
+    : null, [selType, selectedId, elevAnnotations]);
+  const selElevRevCloud = useMemo(() => selType === "elevRevCloud"
+    ? Object.values(elevAnnotations).flatMap(a => a?.revClouds || []).find(r => r.id === selectedId) ?? null
+    : null, [selType, selectedId, elevAnnotations]);
   const selFlowPath = useMemo(() => selType === "flowPath" ? flowPaths.find(r => r.id === selectedId) : null, [selType, selectedId, flowPaths]);
   const selFloorRegion = useMemo(() => selType === "floorRegion" ? floorRegions.find(r => r.id === selectedId) : null, [selType, selectedId, floorRegions]);
   const updFloorRegion = (u) => setFloorRegions(p => p.map(r => r.id === selectedId ? { ...r, ...u } : r));
@@ -3582,8 +2703,9 @@ export default function TestfitTool() {
       // so this multi-delete path must purge them too, or they can't be deleted.
       setElevAnnotations(prev => Object.fromEntries(Object.entries(prev).map(([dir, a]) => [dir, {
         ...a,
-        dims: (a.dims || []).filter(x => !idsToDelete.has(x.id)),
-        labels: (a.labels || []).filter(x => !idsToDelete.has(x.id)),
+        dims:      (a.dims      || []).filter(x => !idsToDelete.has(x.id)),
+        labels:    (a.labels    || []).filter(x => !idsToDelete.has(x.id)),
+        revClouds: (a.revClouds || []).filter(x => !idsToDelete.has(x.id)),
       }])));
 
       setSelectedIds([]);
@@ -3603,8 +2725,8 @@ export default function TestfitTool() {
       else if (selType === "revcloud") setRevClouds(p => p.filter(r => r.id !== selectedId));
       else if (selType === "flowPath") setFlowPaths(p => p.filter(r => r.id !== selectedId));
       else if (selType === "floorRegion") setFloorRegions(p => p.filter(r => r.id !== selectedId));
-      else if (selType === "elevDim" || selType === "elevLabel") {
-        const key = selType === "elevDim" ? "dims" : "labels";
+      else if (selType === "elevDim" || selType === "elevLabel" || selType === "elevRevCloud") {
+        const key = selType === "elevDim" ? "dims" : selType === "elevLabel" ? "labels" : "revClouds";
         setElevAnnotations(prev => Object.fromEntries(Object.entries(prev).map(([dir, a]) => [dir, { ...a, [key]: (a[key] || []).filter(x => x.id !== selectedId) }])));
       }
       else { setZones(p => p.filter(z => z.id !== selectedId)); setMarkers(p => phaseDeleteMarkers(p, m => m.id === selectedId)); }
@@ -3619,6 +2741,10 @@ export default function TestfitTool() {
   const updDoor = (u) => { const ids = _ids(); setDoors(p => p.map(d => ids.has(d.id) ? { ...d, ...u } : d)); };
   const updWindow = (u) => { const ids = _ids(); setWindows(p => p.map(w => ids.has(w.id) ? { ...w, ...u } : w)); };
   const updColumn = (u) => { const ids = _ids(); setColumns(p => p.map(c => ids.has(c.id) ? { ...c, ...u } : c)); };
+  const updElevLabel = (u) => setElevAnnotations(prev => Object.fromEntries(Object.entries(prev).map(([dir, a]) =>
+    [dir, { ...a, labels: (a?.labels || []).map(l => l.id === selectedId ? { ...l, ...u } : l) }])));
+  const updElevRevCloud = (u) => setElevAnnotations(prev => Object.fromEntries(Object.entries(prev).map(([dir, a]) =>
+    [dir, { ...a, revClouds: (a?.revClouds || []).map(r => r.id === selectedId ? { ...r, ...u } : r) }])));
   const updLabel = (u) => {
     const ids = _ids();
     setLabels(p => p.map(l => ids.has(l.id) ? { ...l, ...u } : l));
@@ -3845,10 +2971,10 @@ export default function TestfitTool() {
         return;
       }
       // Number keys for modes
-      if (e.key === "1") { setMode("build");  setT("select"); setSelectedId(null); setSelType(null); setSelectedIds([]); return; }
-      if (e.key === "2") { setMode("itmep");  setT("select"); setSelectedId(null); setSelType(null); setSelectedIds([]); return; }
-      if (e.key === "3") { setMode("zone");   setT("select"); setSelectedId(null); setSelType(null); setSelectedIds([]); return; }
-      if (e.key === "4") { setMode("budget"); setT("select"); setSelectedId(null); setSelType(null); setSelectedIds([]); return; }
+      if (e.key === "1") { setMode("build");  setT("select"); setSelectedId(null); setSelType(null); setSelectedIds([]); setShowModeMenu(false); return; }
+      if (e.key === "2") { setMode("itmep");  setT("select"); setSelectedId(null); setSelType(null); setSelectedIds([]); setShowModeMenu(false); return; }
+      if (e.key === "3") { setMode("zone");   setT("select"); setSelectedId(null); setSelType(null); setSelectedIds([]); setShowModeMenu(false); return; }
+      if (e.key === "4") { setMode("budget"); setT("select"); setSelectedId(null); setSelType(null); setSelectedIds([]); setShowModeMenu(false); return; }
       if (k === "V" || k === "H") { setT(k === "V" ? "select" : "pan"); }
       else if (mode === "build" && { W: "wall", C: "column" }[k]) { setT({ W: "wall", C: "column" }[k]); }
       else if (mode === "itmep" && k === "E") { setT("outlet"); }
@@ -4280,28 +3406,15 @@ export default function TestfitTool() {
   };
 
   const MODES = {
-    build:  { label: "(1) Build",   color: "#9A9488" },
-    itmep:  { label: "(2) IT/MEP",  color: "#4080E0" },
-    zone:   { label: "(3) Zones",   color: "#50A070" },
-    budget: { label: "(4) Budget",  color: T.uiBudget },
+    build:  { name: "Build",  num: 1, color: "#9A9488",    desc: "Walls, doors, windows, columns" },
+    itmep:  { name: "IT/MEP", num: 2, color: "#4080E0",    desc: "Power, data, mechanical markers" },
+    zone:   { name: "Zones",  num: 3, color: "#50A070",    desc: "Program areas & square footage" },
+    budget: { name: "Budget", num: 4, color: T.uiBudget,   desc: "Cost rollup & assumptions" },
   };
 
   const S = {
     root: { display: "flex", flexDirection: "column", height: "100vh", fontFamily: font, fontSize: 11, background: T.bg0, color: T.text, overflow: "hidden" },
     bar: { display: "flex", alignItems: "center", background: T.bg2, borderBottom: "1px solid " + T.border, padding: "0 12px", height: "44px", flexShrink: 0, gap: "6px", overflowX: "auto", overflowY: "hidden" },
-    mbtn: (a, c) => ({
-      padding: "7px 14px",
-      background: a ? c + "20" : "transparent",
-      color: a ? T.textBright : T.textMuted,
-      border: a ? "2px solid " + c + "60" : "2px solid transparent",
-      borderRadius: "6px",
-      cursor: "pointer",
-      fontSize: "11px",
-      fontFamily: "inherit",
-      letterSpacing: "0.04em",
-      fontWeight: a ? 600 : 500,
-      transition: "all 0.15s ease"
-    }),
     main: { display: "flex", flex: 1, overflow: "hidden" },
     side: { width: sidebarOpen ? "clamp(190px, 18vw, 240px)" : "0px", background: T.bg1, borderRight: sidebarOpen ? "1px solid " + T.bg3 : "none", display: "flex", flexDirection: "column", flexShrink: 0, overflow: "hidden", transition: "width 0.2s cubic-bezier(0.4,0,0.2,1)" },
     body: { flex: 1, overflow: "auto", padding: "12px" },
@@ -4416,7 +3529,7 @@ export default function TestfitTool() {
   const isDrawing = drawChain || drawPolyZone || drawRevCloud || drawFlowPath || drawFloorRegion;
 
   // Option panel (inspector) — selected-element block vs no-selection tool-settings block.
-  const inspSel = !!(selZone || selMarker || selWall || selNode || selDoor || selWindow || selColumn || selLabel || selRevCloud || selFlowPath || selFloorRegion || selType === "floor" || (selectedIds.length > 1 && multiSelType));
+  const inspSel = !!(selZone || selMarker || selWall || selNode || selDoor || selWindow || selColumn || selLabel || selElevLabel || selRevCloud || selElevRevCloud || selFlowPath || selFloorRegion || selType === "floor" || (selectedIds.length > 1 && multiSelType));
   const inspTool = !selectedId && ((mode === "build" && (isWallTool(tool) || tool === "door" || tool === "window" || tool === "column")) || (mode === "itmep" && (tool === "marker" || tool === "outlet" || tool === "lighting")) || (mode === "zone" && tool === "zone"));
   const inspectorToggle = (
     <div style={{ position: "sticky", top: -12, zIndex: 2, display: "flex", justifyContent: "flex-end", marginTop: -12, marginBottom: 2, paddingTop: 8, background: T.panelBg }}>
@@ -4600,6 +3713,8 @@ export default function TestfitTool() {
     const deleteLabel = (id) => setElevAnnotations(prev => { const cur = prev[dir] || { dims: [], labels: [] }; return { ...prev, [dir]: { ...cur, labels: (cur.labels || []).filter(l => l.id !== id) } }; });
     const updateDim = (id, patch) => setElevAnnotations(prev => { const cur = prev[dir] || { dims: [], labels: [] }; return { ...prev, [dir]: { ...cur, dims: (cur.dims || []).map(d => d.id === id ? { ...d, ...patch } : d) } }; });
     const updateLabel = (id, patch) => setElevAnnotations(prev => { const cur = prev[dir] || { dims: [], labels: [] }; return { ...prev, [dir]: { ...cur, labels: (cur.labels || []).map(l => l.id === id ? { ...l, ...patch } : l) } }; });
+    const placeRevCloud = (points) => { const nid = uid(); setElevAnnotations(prev => { const cur = prev[dir] || { dims: [], labels: [] }; return { ...prev, [dir]: { ...cur, revClouds: [...(cur.revClouds || []), { id: nid, points, arcR: 8, label: "", color: "#E05252" }] } }; }); setSelectedId(nid); setSelType("elevRevCloud"); setT("select"); };
+    const updateRevCloud = (id, patch) => setElevAnnotations(prev => { const cur = prev[dir] || { dims: [], labels: [] }; return { ...prev, [dir]: { ...cur, revClouds: (cur.revClouds || []).map(r => r.id === id ? { ...r, ...patch } : r) } }; });
     const cut = guides.find(g => g.dir === dir);
     const scrub = guideScrub && guideScrub.dir === dir ? { x: guideScrub.x, y: guideScrub.y } : null;
     return <ElevationView dir={dir} nodes={nodes} walls={walls} doors={doors} windows={windows} columns={columns}
@@ -4608,7 +3723,8 @@ export default function TestfitTool() {
       onView={onElevView} panU={cameraPan && cameraPan.dir === dir ? cameraPan.u : null}
       selectedId={selectedId} selType={selType}
       onSelect={(id, type) => { setSelectedId(id); setSelType(type); setSelectedIds(id ? [id] : []); }}
-      anno={anno} onPlaceDim={placeDim} onPlaceLabel={placeLabel} onUpdateDim={updateDim} onUpdateLabel={updateLabel} onDeleteLabel={deleteLabel} />;
+      anno={anno} onPlaceDim={placeDim} onPlaceLabel={placeLabel} onUpdateDim={updateDim} onUpdateLabel={updateLabel} onDeleteLabel={deleteLabel}
+      onPlaceRevCloud={placeRevCloud} onUpdateRevCloud={updateRevCloud} />;
   };
   // Per-pane view selector chip (top-left of each pane). Plan pane is fixed.
   const PaneChip = ({ i }) => {
@@ -4736,7 +3852,50 @@ export default function TestfitTool() {
           </div>;
         })()}
         <div style={{ width: 1, height: 20, background: T.border, margin: "0 6px 0 2px" }} />
-        {Object.entries(MODES).map(([k, m]) => <button key={k} style={S.mbtn(mode === k, m.color)} onClick={() => { setMode(k); setT("select"); setSelectedId(null); setSelType(null); setSelectedIds([]); }}>{m.label}</button>)}
+        {/* Workflow-stage dropdown — same trigger+popover pattern as the snapshot switcher above */}
+        {(() => {
+          const cur = MODES[mode];
+          // Live per-stage content counts so the menu shows which stages have work in them
+          const n = (c, w) => `${c} ${w}${c === 1 ? "" : "s"}`;
+          const HINTS = { build: n(walls.length, "wall"), itmep: n(markers.length, "marker"), zone: n(zones.length, "zone"), budget: $(cost.total) };
+          const badge = (m, active) => (
+            <span style={{ width: 16, height: 16, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, fontSize: 9, fontWeight: 700, fontFamily: "inherit",
+              background: active ? m.color : "transparent", color: active ? T.bg1 : T.textMuted, border: active ? "none" : "1.5px solid " + T.textFaint }}>{m.num}</span>
+          );
+          return <div style={{ position: "relative" }}>
+            <button
+              onClick={e => { setModeMenuRect(e.currentTarget.getBoundingClientRect()); setShowModeMenu(v => !v); }}
+              title="Workflow stage (1–4)"
+              style={{ display: "flex", alignItems: "center", gap: 7, padding: "4px 10px", background: cur.color + (showModeMenu ? "30" : "1C"), border: "1px solid " + cur.color + (showModeMenu ? "88" : "55"), borderRadius: 6, cursor: "pointer", color: T.textBright, fontWeight: 600, fontSize: 11, fontFamily: "inherit", transition: "all 0.12s ease", height: 28 }}
+            >
+              {badge(cur, true)}
+              <span>{cur.name}</span>
+              <ChevronDown size={10} style={{ opacity: 0.7, flexShrink: 0, transition: "transform 0.15s", transform: showModeMenu ? "rotate(180deg)" : "none" }} />
+            </button>
+            {showModeMenu && <>
+              <div style={{ position: "fixed", inset: 0, zIndex: 999 }} onClick={() => setShowModeMenu(false)} />
+              <div style={{ position: "fixed", top: (modeMenuRect?.bottom ?? 44) + 6, left: modeMenuRect?.left ?? 12, background: T.panelBg, border: "1px solid " + T.border, borderRadius: 8, padding: 6, zIndex: 1000, minWidth: 250, boxShadow: T.panelShadow, backdropFilter: "blur(16px)" }}>
+                <div style={{ fontSize: 8, color: T.textDim, textTransform: "uppercase", letterSpacing: "0.08em", padding: "4px 8px 6px", fontWeight: 600 }}>Workflow Stage</div>
+                {Object.entries(MODES).map(([k, m]) => {
+                  const isActive = k === mode;
+                  return <div key={k} role="button" aria-label={m.name}
+                    style={{ display: "flex", alignItems: "center", gap: 9, padding: "7px 8px", borderRadius: 6, background: isActive ? m.color + "18" : "transparent", marginBottom: 2, cursor: "pointer", transition: "background 0.12s" }}
+                    onMouseEnter={e => { if (!isActive) e.currentTarget.style.background = T.border + "44"; }}
+                    onMouseLeave={e => { if (!isActive) e.currentTarget.style.background = "transparent"; }}
+                    onClick={() => { setMode(k); setT("select"); setSelectedId(null); setSelType(null); setSelectedIds([]); setShowModeMenu(false); }}>
+                    {badge(m, isActive)}
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 11, fontWeight: isActive ? 600 : 500, color: isActive ? T.textBright : T.textMuted }}>{m.name}</div>
+                      <div style={{ fontSize: 9, color: T.textDim, marginTop: 1 }}>{m.desc}</div>
+                    </div>
+                    <span style={{ fontSize: 9, color: T.textDim, flexShrink: 0 }}>{HINTS[k]}</span>
+                    <span style={{ fontSize: 8, color: T.textFaint, border: "1px solid " + T.border, borderRadius: 3, padding: "1px 5px", flexShrink: 0 }}>{m.num}</span>
+                  </div>;
+                })}
+              </div>
+            </>}
+          </div>;
+        })()}
         <div style={{ flex: 1 }} />
         <Tooltip>
           <TooltipTrigger asChild>
@@ -6746,6 +5905,54 @@ export default function TestfitTool() {
                 <button style={S.del} onClick={delSel}>Delete Label</button>
               </>;
             })()}
+            {selectedIds.length <= 1 && selElevLabel && (() => {
+              // Elevation label/callout — same styling controls as plan labels (text editing
+              // stays in-pane: double-click the label in its elevation).
+              const LABEL_COLORS = [
+                { hex: "#F0EDE6", name: "White" },
+                { hex: "#E05252", name: "Red" },
+                { hex: "#4EBA78", name: "Green" },
+                { hex: "#4A8FE8", name: "Blue" },
+              ];
+              const fs = selElevLabel.fontSize ?? 11;
+              const stepFont = (d) => updElevLabel({ fontSize: Math.min(72, Math.max(8, fs + d)) });
+              const btnActive = (on) => ({ flex: 1, padding: "5px 0", background: on ? T.accent + "25" : "transparent", border: "1px solid " + (on ? T.accent : T.border), borderRadius: 4, color: on ? T.textBright : T.textMuted, cursor: "pointer", fontFamily: "inherit" });
+              return <>
+                <div style={{ fontSize: 12, color: T.textBright, marginBottom: 10, fontWeight: 600 }}>
+                  Elevation {selElevLabel.lx != null ? "Callout" : "Label"}
+                </div>
+                <div style={{ fontSize: 9, color: T.textDim, marginBottom: 10 }}>Double-click the label in its elevation to edit the text.</div>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 10 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 0, border: "1px solid " + T.border, borderRadius: 4, overflow: "hidden", flex: 1 }}>
+                    <button style={{ padding: "5px 10px", background: "transparent", border: "none", color: T.textMuted, cursor: "pointer", fontSize: 14, lineHeight: 1, fontFamily: "inherit" }}
+                      onClick={() => stepFont(-1)}>−</button>
+                    <span style={{ flex: 1, textAlign: "center", fontSize: 11, color: T.textBright, userSelect: "none", borderLeft: "1px solid " + T.border, borderRight: "1px solid " + T.border, padding: "5px 0" }}>{fs}</span>
+                    <button style={{ padding: "5px 10px", background: "transparent", border: "none", color: T.textMuted, cursor: "pointer", fontSize: 14, lineHeight: 1, fontFamily: "inherit" }}
+                      onClick={() => stepFont(1)}>+</button>
+                  </div>
+                  <button style={{ ...btnActive(selElevLabel.bold), flex: "0 0 32px", fontWeight: 700, fontSize: 13 }} onClick={() => updElevLabel({ bold: !selElevLabel.bold })}>B</button>
+                  <button style={{ ...btnActive(selElevLabel.italic), flex: "0 0 32px", fontStyle: "italic", fontSize: 13 }} onClick={() => updElevLabel({ italic: !selElevLabel.italic })}>I</button>
+                </div>
+                <div style={{ marginBottom: 10 }}>
+                  <div style={S.lbl}>Color</div>
+                  <div style={{ display: "flex", gap: 6 }}>
+                    {LABEL_COLORS.map(({ hex, name }) => (
+                      <button key={hex} title={name}
+                        style={{ width: 22, height: 22, borderRadius: 4, background: hex, cursor: "pointer", flexShrink: 0,
+                          boxShadow: selElevLabel.color === hex ? "0 0 0 2px " + T.accent : "0 0 0 1.5px rgba(255,255,255,0.12)",
+                          border: "none", outline: "none" }}
+                        onClick={() => updElevLabel({ color: hex })} />
+                    ))}
+                  </div>
+                </div>
+                {selElevLabel.lx != null && <div style={{ marginBottom: 10 }}>
+                  <div style={S.lbl}>Leader Line</div>
+                  <button style={{ ...S.inp, cursor: "pointer", textAlign: "center", fontSize: 10, color: T.textMuted }}
+                    onClick={() => updElevLabel({ lx: null, ly: null })}>Remove Leader</button>
+                </div>}
+                <button style={S.del} onClick={delSel}>Delete Label</button>
+              </>;
+            })()}
             {selectedIds.length <= 1 && selRevCloud && (() => {
               const RC_COLORS = [{ hex: "#E05252", name: "Red" }, { hex: "#E0A030", name: "Amber" },
                 { hex: "#4A8FE8", name: "Blue" }, { hex: "#50A070", name: "Green" }];
@@ -6769,6 +5976,35 @@ export default function TestfitTool() {
                           border: "none", outline: "none",
                           boxShadow: selRevCloud.color === hex ? "0 0 0 2px " + T.accent : "0 0 0 1.5px rgba(255,255,255,0.12)" }}
                         onClick={() => updRevCloud({ color: hex })} />)}
+                  </div>
+                </div>
+                <button style={S.del} onClick={delSel}>Delete Cloud</button>
+              </>;
+            })()}
+            {selectedIds.length <= 1 && selElevRevCloud && (() => {
+              // Elevation revision cloud — same controls as the plan's (label, arc size, color).
+              const RC_COLORS = [{ hex: "#E05252", name: "Red" }, { hex: "#E0A030", name: "Amber" },
+                { hex: "#4A8FE8", name: "Blue" }, { hex: "#50A070", name: "Green" }];
+              return <>
+                <div style={{ fontSize: 12, color: selElevRevCloud.color, marginBottom: 10, fontWeight: 600 }}>Elevation Revision Cloud</div>
+                <div style={{ marginBottom: 8 }}>
+                  <div style={S.lbl}>Label</div>
+                  <input style={S.inp} value={selElevRevCloud.label} onChange={e => updElevRevCloud({ label: e.target.value })} placeholder="Rev A…" />
+                </div>
+                <div style={{ marginBottom: 8 }}>
+                  <div style={S.lbl}>Arc Size</div>
+                  <SliderInput value={selElevRevCloud.arcR ?? 8} min={4} max={20} onChange={v => updElevRevCloud({ arcR: v })}
+                    accent={selElevRevCloud.color} textColor={T.textBright} bgColor={T.bg2} borderColor={T.border} />
+                </div>
+                <div style={{ marginBottom: 10 }}>
+                  <div style={S.lbl}>Color</div>
+                  <div style={{ display: "flex", gap: 6 }}>
+                    {RC_COLORS.map(({ hex, name }) =>
+                      <button key={hex} title={name}
+                        style={{ width: 22, height: 22, borderRadius: 4, background: hex, cursor: "pointer",
+                          border: "none", outline: "none",
+                          boxShadow: selElevRevCloud.color === hex ? "0 0 0 2px " + T.accent : "0 0 0 1.5px rgba(255,255,255,0.12)" }}
+                        onClick={() => updElevRevCloud({ color: hex })} />)}
                   </div>
                 </div>
                 <button style={S.del} onClick={delSel}>Delete Cloud</button>
@@ -7448,25 +6684,6 @@ export default function TestfitTool() {
           {bgImage && <div style={S.bg}><span style={{ color: T.textMuted, fontSize: 10, fontWeight: 500 }}>Underlay</span><input type="range" min="0" max="100" value={bgOpacity * 100} onChange={e => setBgOpacity(e.target.value / 100)} style={{ width: 70, accentColor: "#9A9488", height: 4 }} /><span style={{ fontSize: 10, fontWeight: 500 }}>{Math.round(bgOpacity * 100)}%</span></div>}
 
 
-          {/* ── Bottom Status Bar ────────────────────────────────────── */}
-          <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, background: T.bg2, borderTop: "1px solid " + T.border, padding: "6px 16px", display: "flex", alignItems: "center", gap: 12, fontSize: 10, color: T.textDim, zIndex: 10 }}>
-            {mode === "zone" && (
-              <span style={{ color: zoneLibrary[activeZoneType]?.color || "#5A5448", fontSize: 10, fontWeight: 500 }}>
-                {zoneLibrary[activeZoneType]?.name || "—"}
-              </span>
-            )}
-
-            {mode === "itmep" && activeSpecLayer !== "power" && (
-              <span style={{ color: SPEC_LAYERS[activeSpecLayer]?.color || "#5A5448", fontSize: 10, fontWeight: 500 }}>
-                {SPEC_COMPONENTS[activeSpecLayer]?.[activeComponentType]?.icon} {SPEC_COMPONENTS[activeSpecLayer]?.[activeComponentType]?.name}
-              </span>
-            )}
-
-            <div style={{ flex: 1 }} />
-            <span style={{ fontSize: 10, color: T.textMuted }}>{Math.round(zoom * 100)}%</span>
-            <div style={{ width: 1, height: 18, background: T.border }} />
-            <span style={{ color: T.uiBudget, fontWeight: 600, fontSize: 11 }}>{$(cost.total)}</span>
-          </div>
         </div>
 
         {panes.length > 1 && <VDivider />}
@@ -7482,6 +6699,26 @@ export default function TestfitTool() {
         )}
         </div>{/* end splitContainerRef */}
       </div>
+
+      {/* ── App Status Bar — fixed footer below all panes ───────────── */}
+      <div data-testid="app-statusbar" style={{ background: T.bg2, borderTop: "1px solid " + T.border, padding: "6px 16px", display: "flex", alignItems: "center", gap: 12, fontSize: 10, color: T.textDim, flexShrink: 0 }}>
+        {mode === "zone" && (
+          <span style={{ color: zoneLibrary[activeZoneType]?.color || "#5A5448", fontSize: 10, fontWeight: 500 }}>
+            {zoneLibrary[activeZoneType]?.name || "—"}
+          </span>
+        )}
+
+        {mode === "itmep" && activeSpecLayer !== "power" && (
+          <span style={{ color: SPEC_LAYERS[activeSpecLayer]?.color || "#5A5448", fontSize: 10, fontWeight: 500 }}>
+            {SPEC_COMPONENTS[activeSpecLayer]?.[activeComponentType]?.icon} {SPEC_COMPONENTS[activeSpecLayer]?.[activeComponentType]?.name}
+          </span>
+        )}
+
+        <div style={{ flex: 1 }} />
+        <span style={{ fontSize: 10, color: T.textMuted }}>{Math.round(zoom * 100)}%</span>
+        <div style={{ width: 1, height: 18, background: T.border }} />
+        <span style={{ color: T.uiBudget, fontWeight: 600, fontSize: 11 }}>{$(cost.total)}</span>
+      </div>
     </div>
 
     {/* ── Zone Library Settings Modal ──────────────────────────────── */}
@@ -7496,159 +6733,3 @@ export default function TestfitTool() {
     </TooltipProvider>
   );
 }
-
-// ─── Zone Library Settings Modal ───────────────────────────────────────────────
-function ZoneLibraryModal({ zoneLibrary, setZoneLibrary, onReset, onClose, T }) {
-  const [expandedKey, setExpandedKey] = useState(null);
-
-  const updZone = (key, patch) =>
-    setZoneLibrary(prev => ({ ...prev, [key]: { ...prev[key], ...patch } }));
-
-  const updItem = (key, idx, patch) =>
-    setZoneLibrary(prev => {
-      const items = prev[key].items.map((it, i) => i === idx ? { ...it, ...patch } : it);
-      return { ...prev, [key]: { ...prev[key], items } };
-    });
-
-  const addItem = (key) =>
-    setZoneLibrary(prev => ({
-      ...prev,
-      [key]: { ...prev[key], items: [...prev[key].items, { name: "", qty: 1, unitCost: 0 }] },
-    }));
-
-  const removeItem = (key, idx) =>
-    setZoneLibrary(prev => ({
-      ...prev,
-      [key]: { ...prev[key], items: prev[key].items.filter((_, i) => i !== idx) },
-    }));
-
-  const addZoneType = () => {
-    const newKey = "custom_" + Date.now();
-    setZoneLibrary(prev => ({
-      ...prev,
-      [newKey]: { name: "New Zone", color: "#888888", defaultW: 12, defaultH: 10, recommendedSf: 120, items: [] },
-    }));
-    setExpandedKey(newKey);
-  };
-
-  const deleteZoneType = (key) => {
-    setZoneLibrary(prev => { const next = { ...prev }; delete next[key]; return next; });
-    setExpandedKey(null);
-  };
-
-  const inp = (extra = {}) => ({
-    background: T.bg2, border: "1px solid " + T.border, borderRadius: 4,
-    color: T.text, fontSize: 11, fontFamily: "inherit", padding: "3px 6px",
-    outline: "none", ...extra,
-  });
-
-  return (
-    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 1000, display: "flex", alignItems: "flex-start", justifyContent: "center", paddingTop: 48, paddingBottom: 48, overflowY: "auto" }}>
-      <div style={{ background: T.bg1, border: "1px solid " + T.border, borderRadius: 10, width: 680, maxWidth: "95vw", boxShadow: "0 24px 64px rgba(0,0,0,0.4)", overflow: "hidden" }}>
-        {/* Header */}
-        <div style={{ display: "flex", alignItems: "center", padding: "14px 20px", borderBottom: "1px solid " + T.border, background: T.bg0 }}>
-          <span style={{ fontWeight: 600, fontSize: 14, color: T.textBright, flex: 1 }}>Zone Library</span>
-          <button onClick={onReset} style={{ ...inp(), marginRight: 8, cursor: "pointer", color: T.textMuted }}>Reset to defaults</button>
-          <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", color: T.textMuted, padding: 4 }}><X size={16} /></button>
-        </div>
-
-        {/* Zone list */}
-        <div style={{ maxHeight: "70vh", overflowY: "auto" }}>
-          {Object.entries(zoneLibrary).map(([key, zone]) => {
-            const isOpen = expandedKey === key;
-            const total = zone.items.reduce((s, i) => s + (i.qty || 0) * (i.unitCost || 0), 0);
-            return (
-              <div key={key} style={{ borderBottom: "1px solid " + T.border }}>
-                {/* Row header */}
-                <div
-                  onClick={() => setExpandedKey(isOpen ? null : key)}
-                  style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 20px", cursor: "pointer", background: isOpen ? T.bg2 : "transparent" }}
-                >
-                  <span style={{ color: T.textMuted, width: 14 }}>{isOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}</span>
-                  <input type="color" value={zone.color} onClick={e => e.stopPropagation()}
-                    onChange={e => updZone(key, { color: e.target.value })}
-                    style={{ width: 24, height: 24, border: "none", borderRadius: 4, cursor: "pointer", padding: 0, background: "none" }} />
-                  <input value={zone.name} onClick={e => e.stopPropagation()}
-                    onChange={e => updZone(key, { name: e.target.value })}
-                    style={{ ...inp(), flex: 1, fontWeight: 500 }} />
-                  <span style={{ fontSize: 10, color: T.textMuted, whiteSpace: "nowrap" }}>Rec. {zone.recommendedSf ?? "—"} sf</span>
-                  <span style={{ fontSize: 10, color: T.textMuted, whiteSpace: "nowrap" }}>${total.toLocaleString()} est.</span>
-                </div>
-
-                {/* Expanded detail */}
-                {isOpen && (
-                  <div style={{ padding: "12px 20px 16px 48px", background: T.bg0 }}>
-                    {/* Meta row */}
-                    <div style={{ display: "flex", gap: 12, marginBottom: 14, alignItems: "center", flexWrap: "wrap" }}>
-                      <label style={{ fontSize: 10, color: T.textMuted, display: "flex", alignItems: "center", gap: 6 }}>
-                        Sq Ft
-                        <input type="number" value={zone.recommendedSf ?? ""} onChange={e => {
-                          const newSf = Number(e.target.value);
-                          const ratio = (zone.defaultW || 1) / (zone.defaultH || 1);
-                          const newH = Math.round(Math.sqrt(newSf / ratio) * 10) / 10;
-                          const newW = Math.round(Math.sqrt(newSf * ratio) * 10) / 10;
-                          updZone(key, { recommendedSf: newSf, defaultW: newW, defaultH: newH });
-                        }} style={{ ...inp({ width: 64 }) }} />
-                      </label>
-                      <label style={{ fontSize: 10, color: T.textMuted, display: "flex", alignItems: "center", gap: 6 }}>
-                        Default Width (ft)
-                        <input type="number" value={zone.defaultW} onChange={e => {
-                          const newW = Number(e.target.value);
-                          updZone(key, { defaultW: newW, recommendedSf: Math.round(newW * (zone.defaultH || 1)) });
-                        }} style={{ ...inp({ width: 64 }) }} />
-                      </label>
-                      <label style={{ fontSize: 10, color: T.textMuted, display: "flex", alignItems: "center", gap: 6 }}>
-                        Default Depth (ft)
-                        <input type="number" value={zone.defaultH} onChange={e => {
-                          const newH = Number(e.target.value);
-                          updZone(key, { defaultH: newH, recommendedSf: Math.round((zone.defaultW || 1) * newH) });
-                        }} style={{ ...inp({ width: 64 }) }} />
-                      </label>
-                    </div>
-
-                    {/* FF&E items table */}
-                    <div style={{ fontSize: 10, color: T.textMuted, marginBottom: 6, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em" }}>FF&amp;E / Budget Items</div>
-                    {zone.items.length > 0 && (
-                      <div style={{ display: "grid", gridTemplateColumns: "1fr 56px 80px 28px", gap: 4, marginBottom: 6, fontSize: 10, color: T.textMuted, paddingRight: 4 }}>
-                        <span>Item</span><span style={{ textAlign: "center" }}>Qty</span><span style={{ textAlign: "right" }}>$/unit</span><span />
-                      </div>
-                    )}
-                    {zone.items.map((item, idx) => (
-                      <div key={idx} style={{ display: "grid", gridTemplateColumns: "1fr 56px 80px 28px", gap: 4, marginBottom: 4 }}>
-                        <input value={item.name} onChange={e => updItem(key, idx, { name: e.target.value })} placeholder="Item name" style={inp({ width: "100%" })} />
-                        <input type="number" value={item.qty} onChange={e => updItem(key, idx, { qty: Number(e.target.value) })} style={{ ...inp({ textAlign: "center" }) }} />
-                        <input type="number" value={item.unitCost} onChange={e => updItem(key, idx, { unitCost: Number(e.target.value) })} style={{ ...inp({ textAlign: "right" }) }} />
-                        <button onClick={() => removeItem(key, idx)} style={{ background: "none", border: "none", cursor: "pointer", color: T.textMuted, padding: 2, display: "flex", alignItems: "center" }}>
-                          <Trash2 size={12} />
-                        </button>
-                      </div>
-                    ))}
-                    <button onClick={() => addItem(key)} style={{ ...inp(), cursor: "pointer", marginTop: 4, color: T.textMuted, display: "flex", alignItems: "center", gap: 4 }}>
-                      <Plus size={11} /> Add item
-                    </button>
-
-                    {/* Delete zone type */}
-                    <div style={{ marginTop: 14, paddingTop: 12, borderTop: "1px solid " + T.border }}>
-                      <button onClick={() => deleteZoneType(key)}
-                        style={{ ...inp(), cursor: "pointer", color: "#E05050", display: "flex", alignItems: "center", gap: 4 }}>
-                        <Trash2 size={11} /> Delete zone type
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-
-        {/* Footer */}
-        <div style={{ padding: "12px 20px", borderTop: "1px solid " + T.border, background: T.bg0 }}>
-          <button onClick={addZoneType} style={{ ...inp(), cursor: "pointer", color: T.accent, display: "flex", alignItems: "center", gap: 6, fontWeight: 500 }}>
-            <Plus size={13} /> Add zone type
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-

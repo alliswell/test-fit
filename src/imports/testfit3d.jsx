@@ -1,5 +1,7 @@
 import { useState, useMemo, useRef, useEffect } from "react";
 import { traceOuterBoundary } from "./geometry";
+import { DOOR_TYPE_STYLES } from "../constants/theme";
+import { DOOR_KNOB_HEIGHT_IN } from "../constants/specs";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { OrbitControls, Grid, Text, Billboard, Environment, ContactShadows } from "@react-three/drei";
 import * as THREE from "three";
@@ -503,6 +505,8 @@ function WindowFrame({ segLenFt, winHFt, sillFt, thickFt, style3d = "clay" }) {
 
 function DoorSwing3D({ door, segLenFt, heightFt, offsetFt, thickFt, onSelect, isSelected, style3d = "clay", interactive = true }) {
   const isCaseOpening = door.doorType === "Case Opening";
+  const isGlass       = door.doorType === "Glass";
+  const st            = DOOR_TYPE_STYLES[door.doorType] || DOOR_TYPE_STYLES.Wood;
   const hingeRight    = door.hingeRight ?? false;
   const swingZ        = door.flipped ? -1 : 1;
   const doorH         = heightFt; // caller passes door-height only (DOOR_HEIGHT_FT)
@@ -529,21 +533,45 @@ function DoorSwing3D({ door, segLenFt, heightFt, offsetFt, thickFt, onSelect, is
       </mesh>
       {!isCaseOpening && (<>
         <group position={[hingeX, doorH / 2, swingZ * segLenFt / 2]}>
-          <mesh>
-            <boxGeometry args={[0.08, doorH, segLenFt]} />
-            {isDetailed
-              ? <meshStandardMaterial color="#A87545" roughness={0.55} metalness={0.05} envMapIntensity={0.7} />
-              : <meshLambertMaterial color="#C8A878" transparent opacity={0.88} />}
-          </mesh>
+          {isGlass ? (() => {
+            // Stile/rail frame + transparent pane (leaf local axes: x=thickness, y=height, z=width)
+            const fw = 0.15; // ~1.8" stiles/rails
+            const frameMat = isDetailed
+              ? <meshStandardMaterial {...st.frame.pbr} envMapIntensity={0.7} />
+              : <meshLambertMaterial color={st.frame.clay} />;
+            return <>
+              <mesh position={[0, 0, (segLenFt - fw) / 2]}><boxGeometry args={[0.08, doorH, fw]} />{frameMat}</mesh>
+              <mesh position={[0, 0, -(segLenFt - fw) / 2]}><boxGeometry args={[0.08, doorH, fw]} />{frameMat}</mesh>
+              <mesh position={[0, (doorH - fw) / 2, 0]}><boxGeometry args={[0.08, fw, segLenFt - 2 * fw]} />{frameMat}</mesh>
+              <mesh position={[0, -(doorH - fw) / 2, 0]}><boxGeometry args={[0.08, fw, segLenFt - 2 * fw]} />{frameMat}</mesh>
+              <mesh>
+                <boxGeometry args={[0.02, doorH - 2 * fw, segLenFt - 2 * fw]} />
+                {isDetailed
+                  ? <meshPhysicalMaterial {...st.pbr} thickness={0.4} ior={1.5} transparent envMapIntensity={1.2} side={THREE.DoubleSide} />
+                  : <meshLambertMaterial color={st.clay.color} transparent opacity={st.clay.opacity} side={THREE.DoubleSide} depthWrite={false} />}
+              </mesh>
+            </>;
+          })() : (
+            <mesh>
+              <boxGeometry args={[0.08, doorH, segLenFt]} />
+              {isDetailed
+                ? <meshStandardMaterial {...st.pbr} envMapIntensity={0.7} />
+                : <meshLambertMaterial color={st.clay.color} transparent opacity={st.clay.opacity} />}
+            </mesh>
+          )}
+          {/* Knob — latch edge (free end of the leaf), through both faces, brass in detailed */}
+          {(() => {
+            const knobMat = isDetailed
+              ? <meshStandardMaterial color="#C8A060" roughness={0.35} metalness={0.85} envMapIntensity={1.2} />
+              : <meshLambertMaterial color={showSel ? GLOW_COLOR : "#C8A060"} />;
+            return <group position={[0, DOOR_KNOB_HEIGHT_IN / 12 - doorH / 2, swingZ * (segLenFt / 2 - 0.25)]}>
+              <mesh rotation={[0, 0, Math.PI / 2]}><cylinderGeometry args={[0.018, 0.018, 0.22, 6]} />{knobMat}</mesh>
+              <mesh position={[0.1, 0, 0]}><sphereGeometry args={[0.05, 10, 8]} />{knobMat}</mesh>
+              <mesh position={[-0.1, 0, 0]}><sphereGeometry args={[0.05, 10, 8]} />{knobMat}</mesh>
+            </group>;
+          })()}
           {showSel && <BoxGlow w={0.08} h={doorH} d={segLenFt} />}
         </group>
-        {/* Door knob — brass in detailed mode */}
-        <mesh position={[hingeX, 0.06, 0]}>
-          <cylinderGeometry args={[0.05, 0.05, 0.14, 8]} />
-          {isDetailed
-            ? <meshStandardMaterial color="#C8A060" roughness={0.35} metalness={0.85} envMapIntensity={1.2} />
-            : <meshLambertMaterial color={showSel ? GLOW_COLOR : "#C8A060"} />}
-        </mesh>
         {/* Swing arc — drafting annotation, hidden in detailed mode */}
         {!isDetailed && (
           <mesh geometry={tubeGeo}>

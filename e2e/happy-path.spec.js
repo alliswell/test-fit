@@ -19,11 +19,21 @@ async function planCenter(page) {
   return { box, cx: box.x + box.width / 2, cy: box.y + box.height / 2 };
 }
 
-test("shell renders: mode tabs, tool rail, layout switcher, plan canvas", async ({ page }) => {
+test("shell renders: stage dropdown, tool rail, layout switcher, plan canvas", async ({ page }) => {
   await page.goto("/");
+  // The four workflow stages live in a single dropdown; the trigger shows the active stage.
+  const stageTrigger = page.getByTitle("Workflow stage (1–4)");
+  await expect(stageTrigger).toBeVisible();
+  await expect(stageTrigger).toContainText("Build");
+  await stageTrigger.click();
   for (const m of ["Build", "IT/MEP", "Zones", "Budget"]) {
-    await expect(page.getByRole("button", { name: new RegExp(m) })).toBeVisible();
+    await expect(page.getByRole("button", { name: m, exact: true })).toBeVisible();
   }
+  // switching stages from the menu updates the trigger and closes the menu
+  await page.getByRole("button", { name: "Zones", exact: true }).click();
+  await expect(stageTrigger).toContainText("Zones");
+  await page.keyboard.press("1"); // back to Build via the unchanged shortcut
+  await expect(stageTrigger).toContainText("Build");
   // layout switcher glyph buttons live in the top bar
   for (const g of ["▢", "◫", "⊞"]) {
     await expect(page.getByRole("button", { name: g, exact: true })).toBeVisible();
@@ -233,4 +243,128 @@ test("elevation annotation: a dimension is stored under elevAnnotations[front]",
 
   const m = await readModel(page);
   expect((m.elevAnnotations?.front?.dims || []).length).toBeGreaterThan(0);
+});
+
+test("elevation labels: place + commit, abandoned editor leaves nothing, drag makes a callout", async ({ page }) => {
+  await page.goto("/");
+  await newProject(page);
+  const { cx, cy } = await planCenter(page);
+
+  // draw a wall so the elevation has geometry
+  await page.keyboard.press("w");
+  await page.mouse.click(cx - 120, cy);
+  await page.mouse.click(cx + 120, cy);
+  await page.mouse.dblclick(cx + 120, cy);
+  await page.keyboard.press("Escape");
+
+  // split, set the aux pane to the Front elevation
+  await page.getByRole("button", { name: "◫", exact: true }).click();
+  await page.locator("select").filter({ has: page.locator('option[value="front"]') }).first().selectOption("front");
+  const elev = page.locator("svg").filter({ hasText: "FRONT ELEVATION" });
+  await expect(elev).toBeVisible();
+  const ebox = await elev.boundingBox();
+
+  // Label tool: click opens the inline editor on mouse-UP (real focus must survive the
+  // release — this is exactly the focus-steal regression this test guards against).
+  await page.keyboard.press("t");
+  await page.mouse.click(ebox.x + ebox.width * 0.4, ebox.y + ebox.height * 0.5);
+  const editor = page.locator("textarea");
+  await expect(editor).toBeVisible();
+  await expect(editor).toBeFocused();
+  await editor.fill("Window Head");
+  await page.keyboard.press("Enter");
+  await expect(editor).toHaveCount(0);
+
+  // Abandoning an empty editor (Escape) must not create a stray label.
+  await page.mouse.click(ebox.x + ebox.width * 0.6, ebox.y + ebox.height * 0.5);
+  await expect(editor).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(editor).toHaveCount(0);
+
+  // Drag = callout: press at the leader-tip point, release where the text goes.
+  await page.mouse.move(ebox.x + ebox.width * 0.35, ebox.y + ebox.height * 0.65);
+  await page.mouse.down();
+  await page.mouse.move(ebox.x + ebox.width * 0.55, ebox.y + ebox.height * 0.3, { steps: 6 });
+  await page.mouse.up();
+  await expect(editor).toBeVisible();
+  await editor.fill("Beam above");
+  await page.keyboard.press("Enter");
+  await page.waitForTimeout(900); // autosave debounce
+
+  const m = await readModel(page);
+  const labels = m.elevAnnotations?.front?.labels || [];
+  expect(labels.map((l) => l.text).sort()).toEqual(["Beam above", "Window Head"]);
+  const callout = labels.find((l) => l.text === "Beam above");
+  expect(callout.lx).not.toBeNull();          // leader tip stored
+  expect(labels.find((l) => l.text === "Window Head").lx ?? null).toBeNull(); // plain label has none
+});
+
+test("elevation revision cloud: click-to-draw closes at the first point and is stored", async ({ page }) => {
+  await page.goto("/");
+  await newProject(page);
+  const { cx, cy } = await planCenter(page);
+
+  // draw a wall so the elevation has geometry
+  await page.keyboard.press("w");
+  await page.mouse.click(cx - 120, cy);
+  await page.mouse.click(cx + 120, cy);
+  await page.mouse.dblclick(cx + 120, cy);
+  await page.keyboard.press("Escape");
+
+  // split, set the aux pane to the Front elevation
+  await page.getByRole("button", { name: "◫", exact: true }).click();
+  await page.locator("select").filter({ has: page.locator('option[value="front"]') }).first().selectOption("front");
+  const elev = page.locator("svg").filter({ hasText: "FRONT ELEVATION" });
+  await expect(elev).toBeVisible();
+  const ebox = await elev.boundingBox();
+
+  // revision cloud tool (N) → triangle, then close by clicking back on the first point
+  await page.keyboard.press("n");
+  await page.mouse.click(ebox.x + ebox.width * 0.25, ebox.y + ebox.height * 0.30);
+  await page.mouse.click(ebox.x + ebox.width * 0.75, ebox.y + ebox.height * 0.30);
+  await page.mouse.click(ebox.x + ebox.width * 0.50, ebox.y + ebox.height * 0.72);
+  await page.mouse.click(ebox.x + ebox.width * 0.25, ebox.y + ebox.height * 0.30); // close
+  await page.waitForTimeout(900); // autosave debounce
+
+  const m = await readModel(page);
+  const rcs = m.elevAnnotations?.front?.revClouds || [];
+  expect(rcs.length).toBe(1);
+  expect(rcs[0].points.length).toBe(3);
+  // closing auto-selects the cloud → its option panel is open
+  await expect(page.getByText("Elevation Revision Cloud")).toBeVisible();
+});
+
+test("door types in elevation: Case Opening renders dashed and stays clickable", async ({ page }) => {
+  await page.goto("/");
+  await newProject(page);
+  const { cx, cy } = await planCenter(page);
+
+  // draw a wall, then place a door on it (tool rail button — no keyboard shortcut)
+  await page.keyboard.press("w");
+  await page.mouse.click(cx - 120, cy);
+  await page.mouse.click(cx + 120, cy);
+  await page.mouse.dblclick(cx + 120, cy);
+  await page.keyboard.press("Escape");
+  await page.locator("button:has(svg.lucide-door-open)").click();
+  await page.mouse.click(cx, cy); // snaps to the wall, auto-selects the new door
+
+  // option panel is open for the selected door → set its type
+  await page.getByRole("button", { name: "Case Opening", exact: true }).click();
+  await page.keyboard.press("Escape"); // deselect
+
+  // split, set the aux pane to the Front elevation
+  await page.getByRole("button", { name: "◫", exact: true }).click();
+  await page.locator("select").filter({ has: page.locator('option[value="front"]') }).first().selectOption("front");
+  const elev = page.locator("svg").filter({ hasText: "FRONT ELEVATION" });
+  await expect(elev).toBeVisible();
+
+  // Case Opening = dashed outline, no fill — and the transparent fill must keep it clickable
+  const dashed = elev.locator('rect[stroke-dasharray="5 4"]');
+  await expect(dashed).toHaveCount(1);
+  await dashed.click();
+  await expect(page.getByRole("button", { name: "Case Opening", exact: true })).toBeVisible(); // door panel reopened
+
+  await page.waitForTimeout(900); // autosave debounce
+  const m = await readModel(page);
+  expect((m.doors || [])[0]?.doorType).toBe("Case Opening");
 });
