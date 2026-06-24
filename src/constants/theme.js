@@ -2,36 +2,43 @@
 // Pure design tokens — no React, no state. The active theme object `T` is
 // selected per-render in the main component (THEMES[themeMode]).
 
+// Two themes with distinct identities, not a flat invert:
+//   dark  = BLUEPRINT — deep cyanotype navy, luminous cyan accent (brand).
+//   light = VELLUM    — warm trace-paper, ink-black type, drafting-vermilion accent (brand).
+// `brand`/`brandDim`/`brandSoft` carry the signature accent; `accent` stays a neutral
+// interactive gray (it doubles as inactive icon/label color in many places).
 export const THEMES = {
   dark: {
-    bg0: "#1A1A18", bg1: "#1E1E1C", bg2: "#242422", bg3: "#2A2A26", border: "#3A3A32",
-    text: "#C8C0B0", textBright: "#E8E0D0", textMuted: "#7A7468", textDim: "#5A5448", textFaint: "#4A4A40",
-    accent: "#8A8478", accentDim: "#6A6458",
-    canvas: "#1A1A18", gridMajor: "#3A3A3220", gridMinor: "#5A544810", gridSub: "#5A5448",
-    nodeStroke: "#1A1A18", nodeFill: "#E8E0D0",
-    selBg: "#2A2A2660", selBorder: "#3A3A32",
-    panelBg: "#1E1E1CF2", panelShadow: "0 8px 24px rgba(0,0,0,0.4)",
-    toolbarBg: "#1E1E1CEE", toolbarShadow: "0 8px 24px rgba(0,0,0,0.4)",
-    delBg: "#6B2020", delText: "#FFB0B0",
-    dimText: "#E8E0D055", wallNode: "#E8E0D0",
-    crosshairColor: "%23E8E0D0",
+    bg0: "#0B1320", bg1: "#0E1828", bg2: "#101D30", bg3: "#16263C", border: "#26384F",
+    text: "#AEC2D8", textBright: "#EAF3FC", textMuted: "#6E84A0", textDim: "#536886", textFaint: "#3A4D68",
+    accent: "#7C8FA8", accentDim: "#56698A",
+    brand: "#3FC8E8", brandDim: "#2C90AE", brandSoft: "#3FC8E81E",
+    canvas: "#0C1422", gridMajor: "#3FC8E814", gridMinor: "#3FC8E80A", gridSub: "#2A405C",
+    nodeStroke: "#0C1422", nodeFill: "#EAF3FC",
+    selBg: "#3FC8E81E", selBorder: "#3FC8E8",
+    panelBg: "#0E1828F4", panelShadow: "0 10px 30px rgba(0,0,0,0.5)",
+    toolbarBg: "#0E1828EE", toolbarShadow: "0 10px 30px rgba(0,0,0,0.5)",
+    delBg: "#5A1D24", delText: "#FFB6BE",
+    dimText: "#EAF3FC55", wallNode: "#EAF3FC",
+    crosshairColor: "%233FC8E8",
     // UI accent colors (sidebar/panel text — distinct from canvas marker colors)
     uiLighting: "#E8D070", uiElec: "#50C878", uiDoor: "#C8A060",
     uiSwitch: "#C8A060", uiBudget: "#E8C840", uiPanel: "#E05050",
     uiConduit: "#E0A050", uiPrewire: "#C87840",
   },
   light: {
-    bg0: "#EEE7DC", bg1: "#E7DFD3", bg2: "#DDD5C8", bg3: "#D3CBBE", border: "#BDB5A5",
-    text: "#3A342C", textBright: "#1C1810", textMuted: "#7A7268", textDim: "#9A9285", textFaint: "#B0A898",
-    accent: "#5A5248", accentDim: "#8A8278",
-    canvas: "#EEE7DC", gridMajor: "#BDB5A520", gridMinor: "#9A928510", gridSub: "#BDB5A5",
-    nodeStroke: "#EEE7DC", nodeFill: "#1C1810",
-    selBg: "#BDB5A540", selBorder: "#A89E8E",
-    panelBg: "#E7DFD3F5", panelShadow: "0 8px 24px rgba(0,0,0,0.10)",
-    toolbarBg: "#E7DFD3F0", toolbarShadow: "0 8px 24px rgba(0,0,0,0.10)",
-    delBg: "#DEB8B8", delText: "#7A1A1A",
-    dimText: "#1C181055", wallNode: "#1C1810",
-    crosshairColor: "%231C1810",
+    bg0: "#E6DECF", bg1: "#EFE8DA", bg2: "#E1D9C8", bg3: "#D6CCB8", border: "#C2B7A0",
+    text: "#2E2820", textBright: "#15110A", textMuted: "#6C6453", textDim: "#928974", textFaint: "#B3AA95",
+    accent: "#564E42", accentDim: "#8A8170",
+    brand: "#BC3B26", brandDim: "#8E3322", brandSoft: "#BC3B2618",
+    canvas: "#ECE4D5", gridMajor: "#B0A78F22", gridMinor: "#92897412", gridSub: "#B6AC95",
+    nodeStroke: "#ECE4D5", nodeFill: "#15110A",
+    selBg: "#BC3B2616", selBorder: "#BC3B26",
+    panelBg: "#EFE8DAF6", panelShadow: "0 10px 28px rgba(60,42,20,0.14)",
+    toolbarBg: "#EFE8DAF2", toolbarShadow: "0 10px 28px rgba(60,42,20,0.14)",
+    delBg: "#DCB3AD", delText: "#7A1A12",
+    dimText: "#15110A55", wallNode: "#15110A",
+    crosshairColor: "%2315110A",
     // UI accent colors — darkened for legibility on warm light background
     uiLighting: "#7A6010", uiElec: "#1A6E3A", uiDoor: "#7A5518",
     uiSwitch: "#7A5518", uiBudget: "#8A6A10", uiPanel: "#B02020",

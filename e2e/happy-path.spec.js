@@ -66,12 +66,25 @@ test("single-pane view dropdown swaps Plan → 3D → Front elevation → Plan",
 
 test("crash-safe autosave round-trips across a reload", async ({ page }) => {
   await page.goto("/");
+
+  // Draw a wall first (before focusing the name field, so the 'w' shortcut isn't typed into it)
+  // — verifies geometry (now in the geometry store) round-trips, not just the project name.
+  const { cx, cy } = await planCenter(page);
+  await page.keyboard.press("w");
+  await page.mouse.click(cx - 120, cy);
+  await page.mouse.click(cx + 120, cy);
+  await page.mouse.dblclick(cx + 120, cy);
+  await page.keyboard.press("Escape");
+
   const marker = "E2E_PERSIST_" + Date.now();
-  const name = page.getByTestId("project-name");
-  await name.fill(marker);
+  await page.getByTestId("project-name").fill(marker);
+
   await page.waitForTimeout(1100);          // > 800ms autosave debounce
+  const wallsBefore = (await readModel(page)).walls?.length || 0;
+  expect(wallsBefore).toBeGreaterThan(0);
   await page.reload();
   await expect(page.getByTestId("project-name")).toHaveValue(marker);
+  expect((await readModel(page)).walls?.length || 0).toBe(wallsBefore); // geometry persisted
 });
 
 test("draw a wall: select Wall tool, click two points, finish → a wall renders", async ({ page }) => {
@@ -136,12 +149,11 @@ test("layers panel: visibility checkbox + lock toggle (Zustand-backed)", async (
   await locked.first().click();
   await expect(locked).toHaveCount(0);
 
-  // Visibility checkbox — the Zones layer row toggles its ✓.
+  // Visibility — the Zones layer row toggles between the eye / eye-off glyph.
   const zonesRow = page.getByText("Zones", { exact: true }).locator("xpath=..");
-  const zonesCheckbox = zonesRow.locator("> div").first();
-  await expect(zonesCheckbox).toHaveText("✓");
-  await zonesCheckbox.click();
-  await expect(zonesCheckbox).toHaveText("");
+  await expect(zonesRow.locator('span[title="Hide layer"]')).toHaveCount(1); // visible
+  await zonesRow.locator('span[title="Hide layer"]').click();
+  await expect(zonesRow.locator('span[title="Show layer"]')).toHaveCount(1); // hidden
 });
 
 // ── onDown/onMove coverage: these guard the canvas-interaction handlers so their
@@ -367,4 +379,63 @@ test("door types in elevation: Case Opening renders dashed and stays clickable",
   await page.waitForTimeout(900); // autosave debounce
   const m = await readModel(page);
   expect((m.doors || [])[0]?.doorType).toBe("Case Opening");
+});
+
+test("duplicate overlapping wall is deduped on load (door renders once)", async ({ page }) => {
+  // Reproduces the 3D double-door bug: a reversed-duplicate wall (same node pair) makes each
+  // wall copy claim the door in 3D. migrateProjectData must collapse it to one wall on load.
+  const blob = {
+    version: "testfit-v9", projectName: "Dedup",
+    nodes: [{ id: "a", x: 200, y: 200 }, { id: "b", x: 560, y: 200 }],
+    walls: [{ id: "w1", n1: "a", n2: "b", kind: "existing" }, { id: "w2", n1: "b", n2: "a", kind: "existing" }],
+    doors: [{ id: "d1", x: 380, y: 200, angle: 0, width: 36, doorType: "Wood", phase: "existing" }],
+  };
+  await page.addInitScript((b) => localStorage.setItem("testfit-autosave", JSON.stringify(b)), blob);
+  await page.goto("/");
+  await page.waitForTimeout(1100); // > autosave debounce
+  const m = await readModel(page);
+  expect((m.walls || []).length).toBe(1);  // reversed-duplicate collapsed
+  expect((m.doors || []).length).toBe(1);
+});
+
+test("IT/MEP finish: a black wall speaker stores finish:black", async ({ page }) => {
+  await page.goto("/");
+  await newProject(page);
+  const { cx, cy } = await planCenter(page);
+
+  await page.keyboard.press("2"); // IT/MEP mode
+  // pick the Speakers / AV layer → selects wall_speaker + the marker tool
+  await page.getByText("Speakers / AV", { exact: true }).first().click();
+  // finish toggle in the tool-settings panel
+  await page.getByRole("button", { name: "black" }).click();
+  // place on the canvas
+  await page.mouse.click(cx, cy);
+  await page.waitForTimeout(900);
+
+  const m = await readModel(page);
+  const spk = (m.markers || []).find(k => k.componentType === "wall_speaker");
+  expect(spk).toBeTruthy();
+  expect(spk.finish).toBe("black");
+});
+
+test("IT/MEP door access: toggling Access Control sets door.accessControl", async ({ page }) => {
+  await page.goto("/");
+  await newProject(page);
+  const { cx, cy } = await planCenter(page);
+
+  // draw a wall, then place a door on it
+  await page.keyboard.press("w");
+  await page.mouse.click(cx - 120, cy);
+  await page.mouse.click(cx + 120, cy);
+  await page.mouse.dblclick(cx + 120, cy);
+  await page.keyboard.press("Escape");
+  await page.locator("button:has(svg.lucide-door-open)").click();
+  await page.mouse.click(cx, cy); // auto-selects the new door
+
+  // door inspector → enable Access Control (clicking the label toggles its checkbox)
+  await page.getByText("Access Control (reader)").click();
+  await page.waitForTimeout(900);
+
+  const m = await readModel(page);
+  expect((m.doors || [])[0]?.accessControl).toBe(true);
 });

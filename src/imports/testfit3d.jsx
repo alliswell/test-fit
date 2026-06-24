@@ -1,7 +1,8 @@
 import { useState, useMemo, useRef, useEffect } from "react";
 import { traceOuterBoundary } from "./geometry";
 import { DOOR_TYPE_STYLES } from "../constants/theme";
-import { DOOR_KNOB_HEIGHT_IN } from "../constants/specs";
+import { DOOR_KNOB_HEIGHT_IN, FINISH_COLORS } from "../constants/specs";
+import { M3D } from "./markerMount";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { OrbitControls, Grid, Text, Billboard, Environment, ContactShadows } from "@react-three/drei";
 import * as THREE from "three";
@@ -237,7 +238,7 @@ const LIGHT_TYPES = new Set([
   "light_pendant",
   "light_linear_2","light_linear_4",
   "light_sconce",
-  "htrack_4","htrack_8","htrack",
+  "htrack_4","htrack_8",
 ]);
 
 const dst = (ax, ay, bx, by) => Math.sqrt((bx - ax) ** 2 + (by - ay) ** 2);
@@ -254,75 +255,8 @@ const polyCentroid = pts => { let x = 0, y = 0; pts.forEach(p => { x += p.x; y +
 const ftFmtDirect = v => { const ti = Math.round(v * 12); const f = Math.floor(ti / 12), i = ti % 12; return i === 0 ? `${f}′-0″` : `${f}′-${i}″`; };
 const ftFmt = (px, ppf) => ftFmtDirect(px / ppf);
 
-// ─── Marker 3D config table ────────────────────────────────────────────────────
-// y      : AFF in feet; "ceil" = flush ceiling; "hangN" = N ft below ceiling
-// shape  : geometry variant key
-// All dimensional values in feet unless noted.
-const M3D = {
-  // ── In-wall outlets (18" AFF) ─────────────────────────────
-  outlet_duplex:         { y: 1.5,      shape: "outlet",   color: "#50C878", w: 0.23, h: 0.375, d: 0.06 },
-  outlet_quad:           { y: 1.5,      shape: "outlet",   color: "#50C878", w: 0.23, h: 0.375, d: 0.06 },
-  // Surface/conduit outlets (18" AFF, thicker box)
-  outlet_duplex_surface: { y: 1.5,      shape: "surf",     color: "#E0A050", w: 0.23, h: 0.23,  d: 0.16 },
-  outlet_quad_surface:   { y: 1.5,      shape: "surf",     color: "#E0A050", w: 0.23, h: 0.23,  d: 0.16 },
-  // Ceiling outlet
-  outlet_ceiling:        { y: "ceil",   shape: "disc",     color: "#60B0E0", r: 0.15, d: 0.05  },
-  // Switches (48" AFF)
-  switch_single:         { y: 4.0,      shape: "switch",   color: "#C8A060", w: 0.12, h: 0.22,  d: 0.04 },
-  switch_double:         { y: 4.0,      shape: "switch",   color: "#C8A060", w: 0.22, h: 0.22,  d: 0.04 },
-  switch_dimmer:         { y: 4.0,      shape: "switch",   color: "#C8A060", w: 0.16, h: 0.22,  d: 0.04 },
-  // Electrical panel — 14.5"W × 21.5"H × 4"D, center at 60" AFF
-  panel_board:           { y: 5.0,      shape: "panel",    color: "#E05050"                                },
-  // T-Stat (60" AFF)
-  tstat:                 { y: 5.0,      shape: "plate",    color: "#E8C0A0", w: 0.2,  h: 0.25,  d: 0.04 },
-  // Prewires
-  sconce_prewire:        { y: 5.5,      shape: "disc",     color: "#C87840", r: 0.07, d: 0.04  },
-  pendent_prewire:       { y: "ceil",   shape: "disc",     color: "#C87840", r: 0.07, d: 0.04  },
-  // H-Track (ceiling, 1" below)
-  htrack_4:              { y: "ceil",   shape: "htrack",   color: "#E8D070", len: 4               },
-  htrack_8:              { y: "ceil",   shape: "htrack",   color: "#E8D070", len: 8               },
-  htrack:                { y: "ceil",   shape: "htrack",   color: "#E8D070", len: 4               },
-  // Recessed cans (ceiling-flush)
-  light_can_4:           { y: "ceil",   shape: "can",      color: "#FFFACD", r: 4 / 24            },
-  light_can_6:           { y: "ceil",   shape: "can",      color: "#FFFACD", r: 6 / 24            },
-  // Pendant (1.3 ft below ceiling)
-  light_pendant:         { y: "hang1.3",shape: "pendant",  color: "#FFFACD"                       },
-  // Linear fixtures (ceiling)
-  light_linear_2:        { y: "ceil",   shape: "linear",   color: "#FFFACD", len: 2               },
-  light_linear_4:        { y: "ceil",   shape: "linear",   color: "#FFFACD", len: 4               },
-  // Wall sconce (66" AFF)
-  light_sconce:          { y: 5.5,      shape: "sconce",   color: "#FFFACD"                       },
-  // Legacy power symbols
-  duplex_outlet:         { y: 1.5,      shape: "plate",    color: "#50A070", w: 0.23, h: 0.375, d: 0.06 },
-  quad_outlet:           { y: 1.5,      shape: "plate",    color: "#E05050", w: 0.23, h: 0.375, d: 0.06 },
-  dedicated_quad:        { y: 1.5,      shape: "plate",    color: "#4080E0", w: 0.23, h: 0.375, d: 0.06 },
-  ceiling_quad:          { y: "ceil",   shape: "disc",     color: "#E05050", r: 0.15, d: 0.05  },
-  // ── AV ────────────────────────────────────────────────────
-  wall_speaker:          { y: 7.0,      shape: "speaker",  color: "#D07840"                       },
-  subwoofer:             { y: 0.25,     shape: "box",      color: "#704020", w: 0.5,  h: 0.42,  d: 0.42 },
-  pendant_speaker:       { y: "hang0.8",shape: "cone",     color: "#D07840"                       },
-  speaker_line:          { y: 7.0,      shape: "disc",     color: "#D07840", r: 0.12, d: 0.05  },
-  // ── IT ────────────────────────────────────────────────────
-  router:                { y: 2.5,      shape: "box",      color: "#4080E0", w: 0.35, h: 0.12,  d: 0.25 },
-  access_point:          { y: "ceil",   shape: "ap",       color: "#60A0D0"                       },
-  // ── MEP ───────────────────────────────────────────────────
-  drain_line:            { y: 0.02,     shape: "disc",     color: "#50A070", r: 0.1,  d: 0.04  },
-  water_line:            { y: 1.5,      shape: "pipe",     color: "#5050A0"                       },
-  // ── Security ──────────────────────────────────────────────
-  white_camera:          { y: 7.5,      shape: "camera",   color: "#E8E0D0"                       },
-  black_camera:          { y: 7.5,      shape: "camera",   color: "#1A1A1A"                       },
-  outdoor_camera:        { y: 7.5,      shape: "camera",   color: "#556B2F"                       },
-};
-
-// Mounting height (center, AFF in feet) for a marker component, resolving the M3D table's
-// "ceil" (flush ceiling) and "hangN" (N ft below ceiling) forms. Single source of truth so
-// the 2D elevation view places IT/MEP markers at the same height the 3D scene uses.
-export function markerMountYFt(componentType, ceilingHeightFt) {
-  const y = M3D[componentType]?.y ?? 4.0; // unknown component → mid-wall fallback
-  if (y === "ceil") return ceilingHeightFt;
-  if (typeof y === "string" && y.startsWith("hang")) return Math.max(0, ceilingHeightFt - (parseFloat(y.slice(4)) || 0));
-  return y;
-}
+// Device finish (white/black) overrides the M3D base color when a marker carries one.
+const finishColor = (marker, cfg) => (marker.finish && FINISH_COLORS[marker.finish]) ? FINISH_COLORS[marker.finish].body : cfg.color;
 
 // Resolve y-spec to a world Y coordinate
 const resolveY = (ySpec, ceilH) => {
@@ -343,6 +277,16 @@ function CylGlow({ r, h }) {
   useFrame(({ clock }) => { if (ref.current) ref.current.material.opacity = 0.38 + 0.22 * Math.sin(clock.getElapsedTime() * 3.5); });
   const G = GLOW_OFFSET;
   return <mesh ref={ref}><cylinderGeometry args={[r + G, r + G, h + G * 2, 24]} /><meshLambertMaterial color={GLOW_COLOR} transparent opacity={0.5} side={THREE.BackSide} depthWrite={false} /></mesh>;
+}
+
+// Translucent coverage cone — apex at the device, opening into the room along local +Z.
+// Used to preview a camera's field of view or a speaker's dispersion.
+function CoverageCone({ color = "#3FC8E8", half = 40, dist = 8, opacity = 0.12 }) {
+  const r = dist * Math.tan(Math.min(80, half) * Math.PI / 180);
+  return <mesh position={[0, 0, dist / 2]} rotation={[-Math.PI / 2, 0, 0]}>
+    <coneGeometry args={[r, dist, 22, 1, true]} />
+    <meshBasicMaterial color={color} transparent opacity={opacity} side={THREE.DoubleSide} depthWrite={false} />
+  </mesh>;
 }
 
 // ─── Warm 2700 K light glow (detailed mode only) ───────────────────────────────
@@ -584,6 +528,23 @@ function DoorSwing3D({ door, segLenFt, heightFt, offsetFt, thickFt, onSelect, is
           <boxGeometry args={[segLenFt + GLOW_OFFSET * 2, doorH + GLOW_OFFSET * 2, thickFt + GLOW_OFFSET * 2]} /><meshLambertMaterial color={GLOW_COLOR} transparent opacity={0.3} side={THREE.BackSide} depthWrite={false} />
         </mesh>
       )}
+      {/* Access reader (Openpath) on the jamb at ~44" AFF */}
+      {door.accessControl && (() => {
+        const hingeXloc = offsetFt + (hingeRight ? segLenFt / 2 : -segLenFt / 2);
+        const latchXloc = offsetFt + (hingeRight ? -segLenFt / 2 : segLenFt / 2);
+        const baseX = door.accessSide === "hinge" ? hingeXloc : latchXloc;
+        const outward = Math.sign(baseX - offsetFt) || 1;
+        return (
+          <group position={[baseX + outward * 0.34, 44 / 12, thickFt * 0.7]}>
+            <mesh><boxGeometry args={[0.14, 0.5, 0.05]} /><meshLambertMaterial color="#ECEAE3" /></mesh>
+            <mesh position={[0, 0.12, 0.03]}><boxGeometry args={[0.07, 0.18, 0.02]} />
+              {isDetailed
+                ? <meshStandardMaterial color="#3FC8E8" emissive="#3FC8E8" emissiveIntensity={1.2} toneMapped={false} />
+                : <meshLambertMaterial color="#3FC8E8" />}
+            </mesh>
+          </group>
+        );
+      })()}
     </group>
   );
 }
@@ -750,7 +711,7 @@ function Marker3D({ marker, cx, cz, pxPerFoot, ceilingHeight, onSelect, isSelect
   const cH = ceilingHeight / 12;
 
   const cfg = M3D[marker.componentType] ?? { y: 2.0, shape: "sphere", color: "#9A9488" };
-  const baseColor = cfg.color;
+  const baseColor = finishColor(marker, cfg);
   const c = hov ? "#ffffff" : isSelected ? GLOW_COLOR : baseColor;
   const wy = resolveY(cfg.y, cH);
 
@@ -971,51 +932,122 @@ function Marker3D({ marker, cx, cz, pxPerFoot, ceilingHeight, onSelect, isSelect
     </group>
   );
 
-  // ── Wall speaker — interior face only ────────────────────────────────────
-  if (shape === "speaker") return (
-    <group position={[wx, wy, wz]} rotation={wallRot} onClick={click} {...hp}>
-      <group position={[0, 0, interiorZ]}>
-        <mesh><boxGeometry args={[0.27, 0.32, 0.1]} /><meshLambertMaterial color={c} transparent={isNew} opacity={isNew ? 0.55 : 1} /></mesh>
-        <mesh position={[0, 0, 0.051]}><cylinderGeometry args={[0.09, 0.09, 0.01, 16]} /><meshLambertMaterial color="#1A1A1A" /></mesh>
+  // ── Wall speaker (JBL Control 23-1) — drivers face the room (local +Z = aim) ─
+  if (shape === "speaker") {
+    const w = cfg.w, h = cfg.h, d = cfg.d;
+    return (
+      <group position={[wx, wy, wz]} rotation={[0, Math.PI / 2 - angle, 0]} onClick={click} {...hp}>
+        <group position={[0, 0, WALL_SURFACE]}>
+          <mesh><boxGeometry args={[w, h, d]} /><meshLambertMaterial color={c} transparent={isNew} opacity={isNew ? 0.55 : 1} /></mesh>
+          {/* 3" woofer + tweeter on the room-facing (+Z) face */}
+          <mesh position={[0, -h * 0.12, d / 2 + 0.01]} rotation={[Math.PI / 2, 0, 0]}><cylinderGeometry args={[w * 0.33, w * 0.33, 0.02, 18]} /><meshLambertMaterial color="#161616" /></mesh>
+          <mesh position={[0, h * 0.28, d / 2 + 0.01]} rotation={[Math.PI / 2, 0, 0]}><cylinderGeometry args={[w * 0.11, w * 0.11, 0.02, 12]} /><meshLambertMaterial color="#2A2A2A" /></mesh>
+          {isSelected && <CoverageCone color="#E06040" half={50} dist={8} />}
+          {isSelected && <BoxGlow w={w} h={h} d={d} />}
+        </group>
       </group>
-      {isSelected && <BoxGlow w={0.27} h={0.32} d={0.1} />}
-    </group>
-  );
+    );
+  }
 
-  // ── Pendant speaker (cone on wire, pointing down) ─────────────────────────
-  if (shape === "cone") return (
-    <group position={[wx, 0, wz]} rotation={floorRot} onClick={click} {...hp}>
-      <mesh position={[0, cH - 0.4, 0]}><cylinderGeometry args={[0.008, 0.008, 0.6, 4]} /><meshLambertMaterial color="#606060" /></mesh>
-      <mesh position={[0, cH - 0.86, 0]} rotation={[Math.PI, 0, 0]}>
-        <coneGeometry args={[0.12, 0.2, 8]} /><meshLambertMaterial color={c} />
-      </mesh>
-      {isSelected && <group position={[0, cH - 0.86, 0]}><CylGlow r={0.12} h={0.2} /></group>}
-    </group>
-  );
+  // ── Pendant speaker (JBL Control 64P/T cylinder, down-firing) ─────────────
+  if (shape === "pendant_spkr") {
+    const r = cfg.r, h = cfg.h, topY = cH - 1.0;
+    return (
+      <group position={[wx, 0, wz]} rotation={floorRot} onClick={click} {...hp}>
+        <mesh position={[0, cH - 0.5, 0]}><cylinderGeometry args={[0.01, 0.01, 1.0, 4]} /><meshLambertMaterial color="#606060" /></mesh>
+        <mesh position={[0, topY - h / 2, 0]}><cylinderGeometry args={[r, r, h, 22]} /><meshLambertMaterial color={c} transparent={isNew} opacity={isNew ? 0.55 : 1} /></mesh>
+        {/* down-firing grille */}
+        <mesh position={[0, topY - h - 0.005, 0]}><cylinderGeometry args={[r * 0.82, r * 0.82, 0.02, 22]} /><meshLambertMaterial color="#161616" /></mesh>
+        {isSelected && <group position={[0, topY - h / 2, 0]}><CylGlow r={r} h={h} /></group>}
+      </group>
+    );
+  }
 
-  // ── Generic box (router, subwoofer, etc.) ─────────────────────────────────
-  if (shape === "box") return (
+  // ── Subwoofer (JBL Control SB2210, dual 10" front-firing) ─────────────────
+  if (shape === "sub") return (
     <group position={[wx, wy, wz]} rotation={floorRot} onClick={click} {...hp}>
-      <mesh><boxGeometry args={[cfg.w, cfg.h, cfg.d]} /><meshLambertMaterial color={c} /></mesh>
+      <mesh><boxGeometry args={[cfg.w, cfg.h, cfg.d]} /><meshLambertMaterial color={c} transparent={isNew} opacity={isNew ? 0.55 : 1} /></mesh>
+      {[cfg.h * 0.2, -cfg.h * 0.2].map((oy, i) => (
+        <mesh key={i} position={[0, oy, cfg.d / 2 + 0.01]} rotation={[Math.PI / 2, 0, 0]}><cylinderGeometry args={[0.42, 0.42, 0.02, 22]} /><meshLambertMaterial color="#161616" /></mesh>
+      ))}
       {isSelected && <BoxGlow w={cfg.w} h={cfg.h} d={cfg.d} />}
     </group>
   );
 
-  // ── Access point (flat teardrop disc at ceiling) ───────────────────────────
-  if (shape === "ap") return (
-    <group position={[wx, wy, wz]} rotation={floorRot} onClick={click} {...hp}>
-      <mesh><cylinderGeometry args={[0.22, 0.18, 0.05, 16]} /><meshLambertMaterial color={c} /></mesh>
-      {/* LED ring accent */}
-      <mesh position={[0, 0, 0]}><cylinderGeometry args={[0.24, 0.22, 0.025, 16]} /><meshLambertMaterial color="#88C8E8" /></mesh>
-      {isSelected && <CylGlow r={0.24} h={0.05} />}
+  // ── Speaker drop — ceiling box, cable, 1/4" TS plug ───────────────────────
+  if (shape === "speaker_drop") return (
+    <group position={[wx, 0, wz]} rotation={floorRot} onClick={click} {...hp}>
+      <mesh position={[0, cH - 0.03, 0]}><cylinderGeometry args={[0.08, 0.08, 0.06, 12]} /><meshLambertMaterial color={c} /></mesh>
+      <mesh position={[0, cH - 0.5, 0]}><cylinderGeometry args={[0.012, 0.012, 0.85, 6]} /><meshLambertMaterial color="#3A3A3A" /></mesh>
+      {/* 1/4" plug: sleeve + tip */}
+      <mesh position={[0, cH - 1.0, 0]}><cylinderGeometry args={[0.03, 0.03, 0.14, 12]} /><meshLambertMaterial color="#C6C6C6" /></mesh>
+      <mesh position={[0, cH - 1.12, 0]}><cylinderGeometry args={[0.017, 0.017, 0.06, 12]} /><meshLambertMaterial color="#9A9A9A" /></mesh>
+      {isSelected && <group position={[0, cH - 1.0, 0]}><CylGlow r={0.05} h={0.34} /></group>}
     </group>
   );
 
-  // ── Water line pipe stub ──────────────────────────────────────────────────
-  if (shape === "pipe") return (
+  // ── IT rack (9U open-frame, wall-mounted) ─────────────────────────────────
+  if (shape === "rack") {
+    const w = cfg.w, h = cfg.h, d = cfg.d;
+    const posts = [[-w / 2, -d / 2], [w / 2, -d / 2], [-w / 2, d / 2], [w / 2, d / 2]];
+    return (
+      <group position={[wx, wy, wz]} rotation={wallRot} onClick={click} {...hp}>
+        <group position={[0, 0, interiorZ + d / 2 - 0.05]}>
+          {posts.map(([ox, oz], i) => (
+            <mesh key={"p" + i} position={[ox, 0, oz]}><boxGeometry args={[0.05, h, 0.05]} /><meshLambertMaterial color={c} /></mesh>
+          ))}
+          {[h / 2, -h / 2].map((oy, i) => [-d / 2, d / 2].map((oz, j) => (
+            <mesh key={"r" + i + j} position={[0, oy, oz]}><boxGeometry args={[w, 0.05, 0.05]} /><meshLambertMaterial color={c} /></mesh>
+          )))}
+          {/* mounted equipment (switch, patch panel, UPS) */}
+          {[0.34, 0.04, -0.32].map((f, i) => (
+            <mesh key={"e" + i} position={[0, f * h, 0]}><boxGeometry args={[w * 0.92, h * 0.15, d * 0.78]} /><meshLambertMaterial color={i === 0 ? "#23262B" : "#33363C"} /></mesh>
+          ))}
+        </group>
+        {isSelected && <BoxGlow w={w} h={h} d={d} />}
+      </group>
+    );
+  }
+
+  // ── Router (Ubiquiti U7 Lite flat disc, LED ring + Wi-Fi fan) ─────────────
+  if (shape === "router") {
+    const wcol = "#88C8E8";
+    const wmat = () => style3d === "detailed"
+      ? <meshStandardMaterial color={wcol} emissive={wcol} emissiveIntensity={1.0} toneMapped={false} />
+      : <meshLambertMaterial color={wcol} />;
+    return (
+      <group position={[wx, wy, wz]} rotation={floorRot} onClick={click} {...hp}>
+        <mesh><cylinderGeometry args={[cfg.r, cfg.r, cfg.d, 28]} /><meshLambertMaterial color={c} transparent={isNew} opacity={isNew ? 0.55 : 1} /></mesh>
+        {/* Wi-Fi fan on the underside (room-facing): concentric arcs + source dot */}
+        <group position={[0, -cfg.d / 2 - 0.012, 0]} rotation={[Math.PI / 2, 0, 0]}>
+          {[0.09, 0.15, 0.21].map((R, i) => <mesh key={i}><torusGeometry args={[R, 0.007, 6, 18, Math.PI]} />{wmat()}</mesh>)}
+          <mesh><sphereGeometry args={[0.02, 8, 6]} />{wmat()}</mesh>
+        </group>
+        {isSelected && <CylGlow r={cfg.r} h={cfg.d} />}
+      </group>
+    );
+  }
+
+  // ── Wall drain / cleanout (round cover on the wall face) ───────────────────
+  if (shape === "drain") {
+    const faceSign = interiorZ > 0 ? 1 : -1;
+    return (
+      <group position={[wx, wy, wz]} rotation={wallRot} onClick={click} {...hp}>
+        <group position={[0, 0, interiorZ]}>
+          <mesh rotation={[Math.PI / 2, 0, 0]}><cylinderGeometry args={[cfg.r, cfg.r, 0.05, 20]} /><meshLambertMaterial color={c} /></mesh>
+          {[-0.05, 0, 0.05].map((ox, i) => (
+            <mesh key={i} position={[ox, 0, faceSign * 0.03]}><boxGeometry args={[0.012, cfg.r * 1.5, 0.006]} /><meshLambertMaterial color="#23262B" /></mesh>
+          ))}
+        </group>
+        {isSelected && <CylGlow r={cfg.r} h={0.05} />}
+      </group>
+    );
+  }
+
+  // ── Water line stub + valve wheel ─────────────────────────────────────────
+  if (shape === "water") return (
     <group position={[wx, wy, wz]} rotation={floorRot} onClick={click} {...hp}>
       <mesh><cylinderGeometry args={[0.04, 0.04, 0.2, 8]} /><meshLambertMaterial color={c} /></mesh>
-      {/* Valve wheel */}
       <mesh position={[0, 0.12, 0]} rotation={[Math.PI / 2, 0, 0]}>
         <torusGeometry args={[0.06, 0.01, 6, 12]} /><meshLambertMaterial color="#888888" />
       </mesh>
@@ -1023,21 +1055,35 @@ function Marker3D({ marker, cx, cz, pxPerFoot, ceilingHeight, onSelect, isSelect
     </group>
   );
 
-  // ── Security camera — interior face only ─────────────────────────────────
-  if (shape === "camera") return (
-    <group position={[wx, wy, wz]} rotation={wallRot} onClick={click} {...hp}>
-      <group position={[0, 0, interiorZ]}>
-        <group rotation={[THREE.MathUtils.degToRad(25), 0, 0]}>
-          <mesh><boxGeometry args={[0.21, 0.14, 0.24]} /><meshLambertMaterial color={c} transparent={isNew} opacity={isNew ? 0.55 : 1} /></mesh>
-          <mesh position={[0, 0, -0.14]} rotation={[Math.PI / 2, 0, 0]}>
-            <cylinderGeometry args={[0.045, 0.055, 0.1, 10]} /><meshLambertMaterial color="#111111" />
-          </mesh>
+  // ── Security camera / floodlight (Ring) — faces the room (local +Z = aim) ──
+  if (shape === "camera" || shape === "floodlight") {
+    const isFlood = shape === "floodlight";
+    const covDist = isSelected ? (isFlood ? 12 : 10) : 1.7; // extend coverage when selected
+    const covHalf = isFlood ? 55 : 38;
+    const covColor = isFlood ? "#FFD24A" : "#3FC8E8";
+    return (
+      <group position={[wx, wy, wz]} rotation={[0, Math.PI / 2 - angle, 0]} onClick={click} {...hp}>
+        <group position={[0, 0, WALL_SURFACE]}>
+          {/* mount arm to the wall (behind, -Z) */}
+          <mesh position={[0, 0.02, -0.09]}><boxGeometry args={[0.06, 0.18, 0.12]} /><meshLambertMaterial color="#6A6A66" /></mesh>
+          <group rotation={[THREE.MathUtils.degToRad(18), 0, 0]}>
+            <mesh><boxGeometry args={[0.2, 0.13, 0.16]} /><meshLambertMaterial color={c} transparent={isNew} opacity={isNew ? 0.55 : 1} /></mesh>
+            {/* lens, into the room (+Z) */}
+            <mesh position={[0, 0, 0.09]} rotation={[Math.PI / 2, 0, 0]}><cylinderGeometry args={[0.05, 0.06, 0.06, 12]} /><meshLambertMaterial color="#111111" /></mesh>
+            {isFlood && [-0.22, 0.22].map((ox, i) => (
+              <mesh key={i} position={[ox, 0.02, 0.04]}><boxGeometry args={[0.16, 0.1, 0.04]} />
+                {style3d === "detailed"
+                  ? <meshStandardMaterial color="#FFF6DC" emissive="#FFE9A8" emissiveIntensity={1.6} toneMapped={false} />
+                  : <meshLambertMaterial color="#F4F1E6" />}
+              </mesh>
+            ))}
+          </group>
+          <CoverageCone color={covColor} half={covHalf} dist={covDist} opacity={isSelected ? 0.12 : 0.07} />
+          {isSelected && <BoxGlow w={0.24} h={0.3} d={0.2} />}
         </group>
-        <mesh position={[0, 0.15, 0]}><boxGeometry args={[0.07, 0.22, 0.07]} /><meshLambertMaterial color="#666666" /></mesh>
       </group>
-      {isSelected && <BoxGlow w={0.21} h={0.35} d={0.24} />}
-    </group>
-  );
+    );
+  }
 
   // ── Fallback sphere ───────────────────────────────────────────────────────
   return (

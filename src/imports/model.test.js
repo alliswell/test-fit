@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   sn, dst, ptSeg, polyArea, polyCentroid, pointInPoly, orthoSnap,
-  isLightComponent, parseDimInput, migrateProjectData, PROJECT_VERSION,
+  isLightComponent, parseDimInput, migrateProjectData, PROJECT_VERSION, dedupeWalls,
 } from "./model";
 
 describe("geometry", () => {
@@ -57,9 +57,30 @@ describe("isLightComponent", () => {
   it("classifies lighting vs electrical component types", () => {
     expect(isLightComponent("light_recessed")).toBe(true);
     expect(isLightComponent("htrack_4")).toBe(true);
-    expect(isLightComponent("sconce_prewire")).toBe(true);
+    expect(isLightComponent("light_sconce")).toBe(true);
     expect(isLightComponent("outlet_duplex")).toBeFalsy();
     expect(isLightComponent(undefined)).toBeFalsy();
+  });
+});
+
+describe("dedupeWalls", () => {
+  it("collapses a reversed-duplicate wall (same node pair) to one", () => {
+    const walls = [
+      { id: "a", n1: "p", n2: "q", kind: "existing" },
+      { id: "b", n1: "q", n2: "p", kind: "existing" }, // reverse duplicate
+      { id: "c", n1: "q", n2: "r", kind: "existing" },
+    ];
+    const out = dedupeWalls(walls);
+    expect(out.map(w => w.id)).toEqual(["a", "c"]);
+  });
+  it("drops zero-length and malformed walls; keeps distinct segments", () => {
+    expect(dedupeWalls([{ id: "z", n1: "p", n2: "p" }, { id: "x" }, null]).length).toBe(0);
+    const ok = [{ id: "1", n1: "a", n2: "b" }, { id: "2", n1: "b", n2: "c" }];
+    expect(dedupeWalls(ok)).toEqual(ok);
+  });
+  it("migrateProjectData dedupes walls", () => {
+    const m = migrateProjectData({ walls: [{ id: "a", n1: "p", n2: "q" }, { id: "b", n1: "q", n2: "p" }] });
+    expect(m.walls.length).toBe(1);
   });
 });
 

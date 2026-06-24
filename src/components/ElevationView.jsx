@@ -4,11 +4,11 @@
 // own pan/zoom camera. Props-only — no main-component state.
 
 import { useState, useRef, useCallback, useEffect, useMemo } from "react";
-import { markerMountYFt } from "../imports/testfit3d";
+import { markerMountYFt } from "../imports/markerMount";
 import { dst, polyCentroid } from "../imports/model";
 import { revCloudPath } from "../imports/geometry";
 import { WALL_KINDS, DOOR_TYPE_STYLES, WINDOW_TYPE_STYLES } from "../constants/theme";
-import { SPEC_COMPONENTS, DOOR_HEIGHT_IN, DOOR_KNOB_HEIGHT_IN, SNAP_R } from "../constants/specs";
+import { SPEC_COMPONENTS, DOOR_HEIGHT_IN, DOOR_KNOB_HEIGHT_IN, SNAP_R, FINISH_COLORS } from "../constants/specs";
 
 export default function ElevationView({ dir, nodes, walls, doors, windows, columns, markers = [], ceilingHeight, pxPerFoot, T,
   selectedId, selType, onSelect, ft, tool, cut, scrub, onView, panU, anno, onPlaceDim, onPlaceLabel, onUpdateDim, onUpdateLabel, onDeleteLabel, onPlaceRevCloud, onUpdateRevCloud }) {
@@ -505,20 +505,58 @@ export default function ElevationView({ dir, nodes, walls, doors, windows, colum
               const ky = toScreen(0, vAt(DOOR_KNOB_HEIGHT_IN)).y;
               return <circle cx={kx} cy={ky} r={Math.max(1.8, w * 0.045)} fill={stroke} opacity={0.9} style={{ pointerEvents: "none" }} />;
             })()}
+            {/* Access reader (Openpath) on the jamb at ~44" AFF */}
+            {it.item.accessControl && (() => {
+              const hingeLeft = it.hingeU != null && Math.abs(it.hingeU - it.u1) < Math.abs(it.hingeU - it.u2);
+              const onLeft = (it.item.accessSide === "hinge") ? hingeLeft : !hingeLeft;
+              const rw = Math.max(2.5, w * 0.1), rh = Math.max(8, 0.5 * pxPerFoot * cm.z);
+              const rx = onLeft ? x - rw - 2 : x + w + 2;
+              const ry = toScreen(0, vAt(44)).y - rh / 2;
+              return <g style={{ pointerEvents: "none" }}>
+                <rect x={rx} y={ry} width={rw} height={rh} rx={1.5} fill="#ECEAE3" stroke={on ? T.accent : "#8A8478"} strokeWidth={1} />
+                <rect x={rx + rw * 0.25} y={ry + rh * 0.12} width={rw * 0.5} height={rh * 0.3} rx={1} fill="#3FC8E8" />
+              </g>;
+            })()}
           </g>;
         }
         if (it.kind === "marker") {
           const m = it.item;
           const spec = SPEC_COMPONENTS[m.layer]?.[m.componentType];
-          const color = spec?.color || "#9A9488", letter = spec?.letter;
+          const sym = spec?.symbol, letter = spec?.letter;
+          const baseColor = spec?.color || "#9A9488";
           const a = toScreen(it.u, it.v);
           const r = Math.max(3, 0.35 * pxPerFoot * cm.z); // ~0.7' symbol, min 3px
           const on = isSel(it.id, "marker");
-          return <g key={"mk" + it.id + i} onClick={sel(it.id, "marker")} style={{ cursor: "pointer" }}>
-            <circle cx={a.x} cy={a.y} r={r} fill={color + "cc"} stroke={on ? T.accent : color} strokeWidth={on ? 2 : 1} />
-            {letter && <text x={a.x} y={a.y} textAnchor="middle" dominantBaseline="central" fontSize={r}
-              fill="#fff" fontFamily="inherit" fontWeight={700} style={{ pointerEvents: "none" }}>{letter}</text>}
-          </g>;
+          const fin = m.finish && FINISH_COLORS[m.finish];
+          const fillC = fin ? fin.fill : baseColor;
+          const lineC = on ? T.accent : (fin ? fin.line : baseColor);
+          const sw = on ? 2 : 1.2;
+          // Recognizable silhouettes by symbol family.
+          const rectSyms = new Set(["speaker", "sub", "rack", "panel", "switch", "outlet", "surf", "tstat", "water", "linear_lt", "rect", "speaker_drop", "plate"]);
+          const domeSyms = new Set(["camera", "floodlight"]);
+          let glyph;
+          if (sym === "router") {
+            const dy = a.y + r * 0.5;
+            const arc = (R) => { let p = ""; for (let k = 0; k <= 8; k++) { const th = (220 + 12.5 * k) * Math.PI / 180; p += (k ? " L " : "M ") + (a.x + R * Math.cos(th)).toFixed(1) + " " + (dy + R * Math.sin(th)).toFixed(1); } return p; };
+            glyph = <>
+              <circle cx={a.x} cy={a.y} r={r} fill={fillC} stroke={lineC} strokeWidth={sw} />
+              {[r * 0.42, r * 0.72, r * 1.02].map((R, i) => <path key={i} d={arc(R)} fill="none" stroke={lineC} strokeWidth={1} strokeLinecap="round" />)}
+              <circle cx={a.x} cy={dy} r={1.5} fill={lineC} />
+            </>;
+          } else if (domeSyms.has(sym)) {
+            glyph = <>
+              <path d={`M ${a.x - r} ${a.y + r} L ${a.x - r} ${a.y - r * 0.2} Q ${a.x - r} ${a.y - r} ${a.x} ${a.y - r} Q ${a.x + r} ${a.y - r} ${a.x + r} ${a.y - r * 0.2} L ${a.x + r} ${a.y + r} Z`}
+                fill={fillC} stroke={lineC} strokeWidth={sw} />
+              <circle cx={a.x} cy={a.y + r * 0.1} r={r * 0.34} fill="#141414" stroke={lineC} strokeWidth={0.6} />
+            </>;
+          } else if (rectSyms.has(sym)) {
+            glyph = <><rect x={a.x - r} y={a.y - r} width={r * 2} height={r * 2} rx={1.5} fill={fillC} stroke={lineC} strokeWidth={sw} />
+              {letter && <text x={a.x} y={a.y} textAnchor="middle" dominantBaseline="central" fontSize={r} fill={fin ? fin.line : "#fff"} fontFamily="inherit" fontWeight={700} style={{ pointerEvents: "none" }}>{letter}</text>}</>;
+          } else {
+            glyph = <><circle cx={a.x} cy={a.y} r={r} fill={fin ? fillC : baseColor + "cc"} stroke={lineC} strokeWidth={sw} />
+              {letter && <text x={a.x} y={a.y} textAnchor="middle" dominantBaseline="central" fontSize={r} fill={fin ? fin.line : "#fff"} fontFamily="inherit" fontWeight={700} style={{ pointerEvents: "none" }}>{letter}</text>}</>;
+          }
+          return <g key={"mk" + it.id + i} onClick={sel(it.id, "marker")} style={{ cursor: "pointer" }}>{glyph}</g>;
         }
         // column
         const a = toScreen(it.u1, 0), b = toScreen(it.u2, it.top);

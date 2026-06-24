@@ -33,10 +33,17 @@ instead of growing `testfit.jsx`:**
 src/
   app/                 App.tsx entry → renders <TestfitTool/>; shadcn ui/ (Tooltip…)
   imports/
-    testfit.jsx        TestfitTool — main editor: all geometry state, undo/redo,
-                       persistence, hitTest + onDown/onMove/onUp, plan-canvas SVG,
-                       sidebar/inspector/top-bar JSX, pane layout. (largest file)
-    testfit3d.jsx      <TestFit3D> react-three-fiber 3D view; markerMountYFt()
+    testfit.jsx        TestfitTool — main editor: undo/redo, persistence, plan-canvas SVG,
+                       sidebar/inspector/top-bar JSX, pane layout. (largest file, ~5.1k lines)
+                       Geometry/interaction state live in stores (destructured to the same
+                       local names); the canvas handlers live in useCanvasEvents.js;
+                       <TestFit3D> is lazy-loaded (React.lazy + Suspense).
+    useCanvasEvents.js hitTest + onDown/onMove/onUp (+ nodeCentroid), extracted from
+                       testfit.jsx. Reads geometry/interaction/selection via their stores;
+                       receives helper callbacks, UI scalars, refs & tool-config via `ctx`.
+    testfit3d.jsx      <TestFit3D> react-three-fiber 3D view (lazy chunk; imports M3D)
+    markerMount.js     pure (no three.js): M3D mount config + markerMountYFt — imported by
+                       both testfit3d and the 2D ElevationView so 3D stays in its own chunk
     model.js           pure: uid, sn, dst, polyArea/Centroid, pointInPoly, orthoSnap,
                        parseDimInput, migrateProjectData, PROJECT_VERSION, AUTOSAVE_KEY
     geometry.js        pure: wallResizeCursor, applySmartGuides, lineInt, wallMiterPt,
@@ -46,8 +53,12 @@ src/
     theme.js           THEMES (dark/light), cadCrosshair, WALL_KINDS(_LIGHT),
                        WALL_MATERIALS(_HATCHES), DOOR_TYPE_STYLES, WINDOW_TYPE_STYLES
                        (per-type elevation + 3D material styling; pinned by theme.test.js)
-    specs.js           SPEC_COMPONENTS, SPEC_LAYERS, DOOR/WINDOW option lists,
-                       FLOW_PATH_COLORS, PROX_DRAG_TYPES, SNAP_R, LABEL_MAX_W, DEFAULT_PHASES
+    specs.js           SPEC_COMPONENTS (IT/MEP catalog: normalized {symbol,color,mount,
+                       finish?,directional?,product?} — drives plan symbol + elevation glyph
+                       + 3D shape; pinned by specs.test.js), SPEC_LAYERS, COMPONENT_FINISHES,
+                       FINISH_COLORS (white/black device finish), ACCESS_READER_COST,
+                       DOOR/WINDOW option lists, FLOW_PATH_COLORS, PROX_DRAG_TYPES, SNAP_R,
+                       LABEL_MAX_W, DEFAULT_PHASES
   utils/
     labels.js          wrapLabelLines, labelBounds (label box layout)
   components/
@@ -55,18 +66,31 @@ src/
     ui.jsx             SliderInput, LabelAnnotation, AlignBtn
     ElevationView.jsx  one elevation pane (own pan/zoom camera + dim/label/revcloud tools)
     ZoneLibraryModal.jsx  zone catalog editor
-  store/               zustand stores (view/panes, layers, selection)
+    TopBar.jsx         props-only top chrome (wordmark, snapshot switcher, stage dropdown,
+                       undo/redo, save/load/new, layout switcher, theme + settings)
+  store/               zustand stores (view/panes, layers, selection, geometry, interaction)
+                       geometryStore: persistent plan geometry (nodes/walls/zones/markers/
+                       doors/windows/columns/dims/labels/revClouds/flowPaths/floorRegions/
+                       guides). interactionStore: transient canvas state (draws/drag/marquee/
+                       pan/hover). Both destructured to the same local names in testfit.jsx —
+                       steps toward extracting a useCanvasEvents hook.
   data/zone-library.json  default zone catalog
 e2e/happy-path.spec.js Playwright shell/draw/elevation tests
 ```
 
-## Deferred refactors (future passes, intentionally not done yet)
+## Refactors in progress / deferred
 
-- Extract the canvas event handlers (`hitTest` + `onDown`/`onMove`/`onUp`, ~2,500 lines
-  touching 50+ state vars) into a `useCanvasEvents` hook.
-- Extract the sidebar, inspector/option panel, and top bar JSX into components. These are
-  tightly coupled to main-component state, so they need their own focused pass (likely
-  moving geometry state into a store first).
+- **Extract `useCanvasEvents` hook — ✅ DONE** (all 3 stages): (1) geometry → `geometryStore`;
+  (2) transient interaction state → `interactionStore`; (3) the four handlers (+ `nodeCentroid`)
+  moved verbatim into `useCanvasEvents.js`. The hook reads geometry/interaction/selection via
+  their stores and takes the remaining ~77 component bindings (helper callbacks, UI scalars,
+  refs, tool-config) via a `ctx` object built where the hook is called (right after `setT`).
+  testfit.jsx shrank ~6,860 → ~5,130 lines.
+- Extract the chrome JSX into props-only components: **✅ top bar → `TopBar.jsx`** (done).
+  Remaining: the **sidebar** (PROJECT/SUMMARY/placed-components/LAYERS) and the **inspector /
+  option panel** (the largest, ~1.5k lines; many per-selection `updXxx` callbacks) — each its
+  own focused pass. Pattern: props-only component, pass `S`/`T` + data/handlers (store-backed
+  state can be read from the stores directly to trim the prop surface).
 
 ## Build & test
 

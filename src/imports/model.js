@@ -6,7 +6,7 @@ export const uid = () => Math.random().toString(36).slice(2, 10);
 export const sn = (v, g) => Math.round(v / g) * g;
 
 // Power-layer markers split into Lighting vs Electrical by component type.
-export const isLightComponent = (ct) => ct?.startsWith("light_") || ct?.startsWith("htrack_") || ct === "sconce_prewire" || ct === "pendent_prewire";
+export const isLightComponent = (ct) => ct?.startsWith("light_") || ct?.startsWith("htrack_");
 
 // Shift-ortho: snap point B to a 90° (horizontal or vertical) line from anchor A,
 // choosing the axis the segment is mostly drawn along.
@@ -67,6 +67,22 @@ export const PROJECT_VERSION = "testfit-v9";
 export const AUTOSAVE_KEY = "testfit-autosave"; // localStorage key for crash-safe session restore
 const _arr = (v) => Array.isArray(v) ? v : [];
 const _obj = (v) => (v && typeof v === "object") ? v : {};
+// Collapse redundant walls: the same node-pair (either direction) → one wall, and drop any
+// zero-length wall (n1===n2). Guards against duplicate/overlapping segments, which otherwise
+// double-render a door in 3D (each wall claims the door) and double-count footage in budget.
+export const dedupeWalls = (walls) => {
+  const seen = new Set();
+  const out = [];
+  for (const w of _arr(walls)) {
+    if (!w || w.n1 == null || w.n2 == null || w.n1 === w.n2) continue;
+    const key = String(w.n1) < String(w.n2) ? w.n1 + "|" + w.n2 : w.n2 + "|" + w.n1;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(w);
+  }
+  return out;
+};
+
 export function migrateProjectData(d) {
   if (!d || typeof d !== "object") d = {};
   // legacy: standalone `cutouts` were folded into windows as a window type
@@ -78,7 +94,7 @@ export function migrateProjectData(d) {
   }
   return {
     projectName: typeof d.projectName === "string" ? d.projectName : "Untitled",
-    nodes: _arr(d.nodes), walls: _arr(d.walls), zones: _arr(d.zones), markers: _arr(d.markers),
+    nodes: _arr(d.nodes), walls: dedupeWalls(d.walls), zones: _arr(d.zones), markers: _arr(d.markers),
     doors: _arr(d.doors), windows, columns: _arr(d.columns), dims: _arr(d.dims), labels: _arr(d.labels),
     revClouds: _arr(d.revClouds), flowPaths: _arr(d.flowPaths), floorRegions: _arr(d.floorRegions),
     guides: _arr(d.guides), // elevation cut-line guides { id, dir, pos }

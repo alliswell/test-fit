@@ -24,19 +24,19 @@
 }
 
 body {
-  font-family: var(--font-sans);
-  background-color: #faf8f5;
-  color: #1a1a2e;
+  font-family: "IBM Plex Mono", var(--font-sans);
+  background-color: #0c1422;
+  color: #eaf3fc;
   margin: 0;
   padding: 0;
   overflow: hidden;
   overscroll-behavior: none;
 }
 
-/* Scrollbar styling */
+/* Scrollbar styling — theme-neutral translucent so it reads on vellum and blueprint alike */
 ::-webkit-scrollbar {
-  width: 4px;
-  height: 4px;
+  width: 6px;
+  height: 6px;
 }
 
 ::-webkit-scrollbar-track {
@@ -44,8 +44,12 @@ body {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #d4a574;
+  background: rgba(128, 132, 140, 0.45);
   border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(128, 132, 140, 0.7);
 }
 
 /* Receipt styling */

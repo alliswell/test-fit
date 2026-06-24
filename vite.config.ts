@@ -19,4 +19,11 @@ export default defineConfig({
 
   // File types to support raw imports. Never add .css, .tsx, or .ts files to this.
   assetsInclude: ['**/*.svg', '**/*.csv'],
+
+  build: {
+    // The 3D view (three.js / r3f / drei) is intentionally a large, lazy-loaded chunk
+    // (testfit3d-*.js) that only downloads when a 3D pane is opened — so the default
+    // 500 kB warning is expected noise. Raise the limit above that chunk's size.
+    chunkSizeWarningLimit: 1200,
+  },
 })
