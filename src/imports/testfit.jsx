@@ -4,7 +4,7 @@ import ZONE_LIBRARY_DEFAULTS from "../data/zone-library.json";
 import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "../app/components/ui/tooltip";
 // Lazy-loaded so three.js / r3f / drei (a large bundle) only download when a 3D pane is shown.
 const TestFit3D = lazy(() => import("./testfit3d"));
-import { uid, sn, dst, ptSeg, polyArea, polyCentroid, pointInPoly, orthoSnap, isLightComponent, parseDimInput, migrateProjectData, PROJECT_VERSION, AUTOSAVE_KEY, dedupeWalls } from "./model";
+import { uid, sn, dst, ptSeg, polyArea, polyCentroid, pointInPoly, orthoSnap, isLightComponent, parseDimInput, migrateProjectData, PROJECT_VERSION, AUTOSAVE_KEY, dedupeWalls, splitWallThroughNodes, splitWallAtNode, weldWallCrossings } from "./model";
 import { wallResizeCursor, applySmartGuides, lineInt, revCloudPath } from "./geometry";
 import { useViewStore } from "../store/viewStore";
 import { useLayersStore } from "../store/layersStore";
@@ -16,7 +16,7 @@ import { useCanvasEvents } from "./useCanvasEvents";
 import { THEMES, cadCrosshair, WALL_KINDS, WALL_KINDS_LIGHT, WALL_MATERIALS, WALL_MATERIAL_HATCHES } from "../constants/theme";
 import { SPEC_COMPONENTS, SPEC_LAYERS, DOOR_TYPES, WINDOW_TYPES, FLOW_PATH_COLORS, PROX_DRAG_TYPES, SNAP_R, LABEL_MAX_W, DEFAULT_PHASES, COMPONENT_FINISHES, FINISH_COLORS, ACCESS_READER_COST } from "../constants/specs";
 import { wrapLabelLines, labelBounds } from "../utils/labels";
-import { WallIcon, WindowIcon, ColumnIcon } from "../components/icons";
+import { WallIcon, WindowIcon, ColumnIcon, RectRoomIcon } from "../components/icons";
 import { SliderInput, LabelAnnotation, AlignBtn } from "../components/ui";
 import ElevationView from "../components/ElevationView";
 import TopBar from "../components/TopBar";
@@ -40,7 +40,7 @@ export default function TestfitTool() {
   // Transient canvas-interaction state (handler-owned, also read by render) — Zustand store,
   // same local names. Session-only; lets the canvas handlers move into useCanvasEvents.
   const {
-    drawChain, setDrawChain, drawDim, setDrawDim, drawPolyZone, setDrawPolyZone,
+    drawChain, setDrawChain, drawRect, setDrawRect, drawDim, setDrawDim, drawPolyZone, setDrawPolyZone,
     drawRevCloud, setDrawRevCloud, drawFlowPath, setDrawFlowPath, drawFloorRegion, setDrawFloorRegion,
     drag, setDrag, resize, setResize, marquee, setMarquee, ghostPos, setGhostPos,
     rotatingMarker, setRotatingMarker, calibrationLine, setCalibrationLine, hoverNid, setHoverNid,
@@ -630,9 +630,10 @@ export default function TestfitTool() {
   }, [nodes, walls, doors, windows, columns, markers, zones, wc, gn]);
 
   // Snap a point to the nearest wall — returns {x, y, angle, wallId} or null
-  const snapToWall = useCallback((px, py, maxDist = 20) => {
+  const snapToWall = useCallback((px, py, maxDist = 20, excludeWallIds = null) => {
     let best = null, bestD = maxDist;
     for (const w of walls) {
+      if (excludeWallIds && excludeWallIds.has(w.id)) continue;
       const c = wc(w);
       if (!c) continue;
       const dx = c.x2 - c.x1, dy = c.y2 - c.y1, ls = dx * dx + dy * dy;
@@ -643,38 +644,13 @@ export default function TestfitTool() {
       if (d < bestD) {
         bestD = d;
         const angle = (Math.atan2(dy, dx) * 180) / Math.PI;
-        best = { x: projX, y: projY, angle, wallId: w.id };
+        best = { x: projX, y: projY, angle, wallId: w.id, t };
       }
     }
     return best;
   }, [walls, wc]);
 
   const isWallTool = (t) => t === "wall";
-
-  // Save/Load
-  const save = useCallback(async () => {
-    const payload = JSON.stringify({ projectName, nodes, walls, zones, markers, doors, windows, columns, dims, labels, revClouds, flowPaths, floorRegions, floorMaterial, bgOpacity, bgScale, bgOffset, pxPerFoot, showDims });
-    try {
-      if (window.storage) { await window.storage.set("testfit:v4", payload); }
-      else { localStorage.setItem("testfit:v4", payload); }
-    } catch (e) { console.warn("Auto-save failed:", e); }
-  }, [projectName, nodes, walls, zones, markers, doors, windows, columns, dims, labels, revClouds, flowPaths, floorRegions, floorMaterial, bgOpacity, bgScale, bgOffset, pxPerFoot, showDims]);
-  const load = useCallback(async () => {
-    try {
-      let raw = null;
-      if (window.storage) { const r = await window.storage.get("testfit:v4"); raw = r?.value ?? null; }
-      else { raw = localStorage.getItem("testfit:v4"); }
-      if (raw) {
-        const d = JSON.parse(raw);
-        const migratedCutouts = (d.cutouts || []).map(c => ({ ...c, type: "Cut Opening" }));
-        const loadedNodes = d.nodes || [];
-        setProjectName(d.projectName || "New Club"); setNodes(loadedNodes); setWalls(d.walls || []); setZones(d.zones || []); setMarkers(d.markers || []); setDoors(d.doors || []); setWindows([...(d.windows || []), ...migratedCutouts]); setColumns(d.columns || []); setDims(d.dims || []); setLabels(d.labels || []); setRevClouds(d.revClouds || []); setFlowPaths(d.flowPaths || []); setFloorRegions(d.floorRegions || []); if (d.floorMaterial) setFloorMaterial(d.floorMaterial); setBgOpacity(d.bgOpacity ?? 0.35); setBgScale(d.bgScale ?? 1); setBgOffset(d.bgOffset ?? { x: 0, y: 0 }); if (d.pxPerFoot) setPxPerFoot(d.pxPerFoot); if (d.showDims !== undefined) setShowDims(d.showDims);
-        if (loadedNodes.length) setTimeout(() => fitAll(loadedNodes), 50);
-      }
-    } catch (e) { console.warn("Auto-load failed:", e); }
-  }, []);
-  useEffect(() => { load(); }, [load]);
-  useEffect(() => { const t = setTimeout(save, 800); return () => clearTimeout(t); }, [save]);
 
   // After animating to ±360° (visually = 0°), silently snap back to 0 with no transition
   useEffect(() => {
@@ -732,62 +708,65 @@ export default function TestfitTool() {
   }, [viewOff, zoom, canvasRotation]);
 
   // Commit a wall segment in the chain
-  const commitWallSegment = useCallback((fromNodeId, fromX, fromY, toX, toY, kind) => {
+  // toNodeId (optional): connect the end to this exact node (skips findNear) — used by
+  // the rect-room tool to close its loop onto the corner node created in the same tick,
+  // which findNear can't see yet (state updates land after the handler).
+  const commitWallSegment = useCallback((fromNodeId, fromX, fromY, toX, toY, kind, toNodeId = null) => {
     let n1Id = fromNodeId;
     const newNodes = [];
     if (!n1Id) { const nn = { id: uid(), x: fromX, y: fromY }; newNodes.push(nn); n1Id = nn.id; }
-    const nearEnd = findNear(toX, toY, [n1Id]);
-    let n2Id = nearEnd ? nearEnd.id : null;
+    const nearEnd = toNodeId ? null : findNear(toX, toY, [n1Id]);
+    let n2Id = toNodeId ?? (nearEnd ? nearEnd.id : null);
     const isNewEndNode = !n2Id;
     if (!n2Id) { const nn = { id: uid(), x: toX, y: toY }; newNodes.push(nn); n2Id = nn.id; }
     if (n1Id !== n2Id) {
-      if (newNodes.length) setNodes(prev => [...prev, ...newNodes]);
       const w = { id: uid(), n1: n1Id, n2: n2Id, kind, phase: activePhase };
       if (wallMaterial) w.material = wallMaterial;
       if (wallPaintColor !== "#E8E0D0") w.paintColor = wallPaintColor;
       if (wallPaintFinish) w.paintFinish = wallPaintFinish;
       if (wallNotes) w.notes = wallNotes;
       if (kind === "pony") { w.ponyHeight = ponyHeight; w.ponyDepth = ponyDepth; }
-
-      // Helper: if a point is on a wall body (not at its endpoints), split that wall at nodeId.
-      const splitWallAt = (px, py, nodeId, wallList) => {
-        for (let i = 0; i < wallList.length; i++) {
-          const ew = wallList[i];
-          const ec = wc(ew);
-          if (!ec) continue;
-          const edx = ec.x2 - ec.x1, edy = ec.y2 - ec.y1, els = edx*edx + edy*edy;
-          if (els < 1) continue;
-          const t = ((px - ec.x1)*edx + (py - ec.y1)*edy) / els;
-          if (t < 0.02 || t > 0.98) continue;
-          const projX = ec.x1 + t*edx, projY = ec.y1 + t*edy;
-          if (dst(px, py, projX, projY) > 4) continue;
-          // Split: replace ew at index i with two halves
-          const a = { ...ew, id: uid(), n2: nodeId };
-          const b = { ...ew, id: uid(), n1: nodeId };
-          return [...wallList.slice(0, i), a, b, ...wallList.slice(i + 1)];
-        }
-        return null; // no split
-      };
-
-      // Never create a second wall between the same node pair (would double-render doors in
-      // 3D and double-count footage). If one already exists, keep the chain going without it.
-      const dupPair = (list) => list.some(x => (x.n1 === n1Id && x.n2 === n2Id) || (x.n1 === n2Id && x.n2 === n1Id));
-      // Check if start or end nodes (when newly created) land on an existing wall body.
       const isNewStartNode = !fromNodeId;
-      if (isNewEndNode || isNewStartNode) {
-        setWalls(prev => {
-          let list = prev;
-          if (isNewStartNode) { const r = splitWallAt(fromX, fromY, n1Id, list); if (r) list = r; }
-          if (isNewEndNode)   { const r = splitWallAt(toX,   toY,   n2Id, list); if (r) list = r; }
-          return dupPair(list) ? list : [...list, w];
-        });
-      } else {
-        setWalls(prev => dupPair(prev) ? prev : [...prev, w]);
-      }
-      return { nodeId: n2Id, x: nearEnd ? nearEnd.x : toX, y: nearEnd ? nearEnd.y : toY };
+
+      // One atomic update over nodes + walls: the welds below create junction nodes and
+      // split walls together, and setState always sees fresh state — so same-tick call
+      // sequences (the rect-room tool commits four sides at once) compose correctly.
+      useGeometryStore.setState((s) => {
+        let ns = newNodes.length ? [...s.nodes, ...newNodes] : s.nodes;
+        let ws = s.walls;
+        const byId = Object.fromEntries(ns.map(n => [n.id, n]));
+        // T-weld: a NEW endpoint that landed on an existing wall's body splits it there.
+        const splitAt = (px, py, nodeId) => {
+          for (const ew of ws) {
+            const a = byId[ew.n1], b = byId[ew.n2];
+            if (!a || !b) continue;
+            const edx = b.x - a.x, edy = b.y - a.y, els = edx * edx + edy * edy;
+            if (els < 1) continue;
+            const t = ((px - a.x) * edx + (py - a.y) * edy) / els;
+            if (t < 0.02 || t > 0.98) continue;
+            if (dst(px, py, a.x + t * edx, a.y + t * edy) > 4) continue;
+            ws = splitWallAtNode(ws, ew.id, nodeId);
+            return;
+          }
+        };
+        if (isNewStartNode) splitAt(fromX, fromY, n1Id);
+        if (isNewEndNode)   splitAt(toX,   toY,   n2Id);
+        // Never create a second wall between the same node pair (would double-render
+        // doors in 3D and double-count footage).
+        if (ws.some(x => (x.n1 === n1Id && x.n2 === n2Id) || (x.n1 === n2Id && x.n2 === n1Id)))
+          return { nodes: ns, walls: ws };
+        ws = [...ws, w];
+        // X-crossings: drawing across a wall welds a shared junction into both.
+        const xed = weldWallCrossings(ns, ws, w.id);
+        ns = xed.nodes; ws = xed.walls;
+        // Collinear connect / pass-through: split the new wall at nodes it passes over
+        // (incl. the crossing nodes just made) and collapse any doubled pieces.
+        return { nodes: ns, walls: dedupeWalls(splitWallThroughNodes(ws, ns, w.id)) };
+      });
+      return { nodeId: n2Id, startNodeId: n1Id, x: nearEnd ? nearEnd.x : toX, y: nearEnd ? nearEnd.y : toY };
     }
     return null;
-  }, [findNear, wc, wallMaterial, wallPaintColor, wallPaintFinish, wallNotes, ponyHeight, ponyDepth, activePhase]);
+  }, [findNear, wallMaterial, wallPaintColor, wallPaintFinish, wallNotes, ponyHeight, ponyDepth, activePhase]);
 
   // Hit test
   // Resolve a label's leader tip to its live canvas position (follows anchor object when set)
@@ -1271,6 +1250,9 @@ export default function TestfitTool() {
       if (e.key === "4") { setMode("budget"); setT("select"); setSelectedId(null); setSelType(null); setSelectedIds([]); setShowModeMenu(false); return; }
       if (k === "V" || k === "H") { setT(k === "V" ? "select" : "pan"); }
       else if (mode === "build" && { W: "wall", C: "column" }[k]) { setT({ W: "wall", C: "column" }[k]); }
+      // R = rect-room tool — but R also flips a selected door's hinge / rotates a selected
+      // window or directional marker, so only when nothing R-sensitive is selected.
+      else if (mode === "build" && k === "R" && !selDoor && !selWindow && !selMarker) { setT("rect"); }
       else if (mode === "itmep" && k === "E") { setT("outlet"); }
       else if (mode === "itmep" && k === "L") { setT("lighting"); }
       else if (k === "M") { setT("dim"); setDrawDim(null); }
@@ -1310,8 +1292,8 @@ export default function TestfitTool() {
         else if (drawRevCloud) { setDrawRevCloud(null); }
         else if (drawFlowPath) { setDrawFlowPath(null); }
         else if (drawFloorRegion) { setDrawFloorRegion(null); }
-        else if (drawChain || drawPolyZone || drawDim) {
-          setDrawChain(null); setDrawPolyZone(null); setCursorPos(null); setDimInput(""); setDrawDim(null);
+        else if (drawChain || drawRect || drawPolyZone || drawDim) {
+          setDrawChain(null); setDrawRect(null); setDrawPolyZone(null); setCursorPos(null); setDimInput(""); setDrawDim(null);
         } else {
           setSelectedId(null); setSelType(null); setSelectedIds([]);
         }
@@ -1361,7 +1343,7 @@ export default function TestfitTool() {
     window.addEventListener("keydown", down);
     window.addEventListener("keyup", up);
     return () => { window.removeEventListener("keydown", down); window.removeEventListener("keyup", up); };
-  }, [selectedId, selectedIds, selType, delSel, selDoor, selWindow, selMarker, undo, redo, fitAll, dimInput, cursorPos, drawChain, pxPerFoot, commitWallSegment, tool, findNear, walls, nodes, doors, windows, columns, markers, zones, clipboard, pasteOffset, outletType, htrackAngle, lightingType, lastCopyInfo, repeatInput, resolvePos, resolvePoints, editingLabelId, addingLeaderToId, activePhase, labels, revClouds, flowPaths, drawFlowPath, drawFloorRegion]);
+  }, [selectedId, selectedIds, selType, delSel, selDoor, selWindow, selMarker, undo, redo, fitAll, dimInput, cursorPos, drawChain, drawRect, pxPerFoot, commitWallSegment, tool, findNear, walls, nodes, doors, windows, columns, markers, zones, clipboard, pasteOffset, outletType, htrackAngle, lightingType, lastCopyInfo, repeatInput, resolvePos, resolvePoints, editingLabelId, addingLeaderToId, activePhase, labels, revClouds, flowPaths, drawFlowPath, drawFloorRegion]);
 
   const $ = (n) => "$" + n.toLocaleString();
   const font = "'IBM Plex Mono','SF Mono','Consolas','Monaco',monospace";
@@ -1829,7 +1811,7 @@ export default function TestfitTool() {
 
   // ── Mode system ─────────────────────────────────────────────────────
   const setT = (t) => {
-    setTool(t); setGhostPos(null); setDrawChain(null); setDrawPolyZone(null); setCursorPos(null); setDimInput(""); setDrawDim(null); setDrawRevCloud(null); setDrawFloorRegion(null); setProxHover(null);
+    setTool(t); setGhostPos(null); setDrawChain(null); setDrawRect(null); setDrawPolyZone(null); setCursorPos(null); setDimInput(""); setDrawDim(null); setDrawRevCloud(null); setDrawFloorRegion(null); setProxHover(null);
     // Re-entering the flow-path tool with a flow path selected → continue it.
     if (t === "flowPath" && selType === "flowPath" && selectedId) {
       const fp = flowPaths.find(f => f.id === selectedId);
@@ -1844,7 +1826,7 @@ export default function TestfitTool() {
   // Plan-canvas interaction handlers (extracted) — geometry/interaction/selection via
   // their stores; the rest via ctx. See useCanvasEvents.js.
   const { hitTest, onDown, onMove, onUp } = useCanvasEvents({
-    activeComponentType, activePhase, activeSpecLayer, activeZoneType, bgImage, bgOffset, canvasRotation, columnLabel, columnNotes, columnShape, columnSize, commitWallSegment, cvs, cvsContainer, doorFlipped, doorHingeRight, doorType, doorWidth, findDimSnap, findNear, findProxHover, gn, htrackAngle, inToPx, isWallTool, lastCopyInfo, layerLocked, lightingIsNew, lightingType, markerFinish, markerLocked, markerNotes, markerVisible, mode, outletIsNew, outletType, phaseVisible, proxHover, pxPerFoot, resolveDimEndpoints, resolveLeaderTip, resolvePoints, resolvePos, s2c, setBgOffset, setCursorPos, setDimInput, setEditingLabelId, setEditingLabelText, setGuideScrub, setHoverGuideId, setLastCopyInfo, setProxHover, setSmartGuides, setT, setTool, setViewOff, setZoneEdge, snapGrid, snapGuide, snapLabelAnchor, snapToWall, themeMode, tool, viewOff, wallKind, wc, windowHeight, windowSill, windowType, windowWidth, zoneEdge, zoneLibrary, zoneNotes, zonePaintColor, zonePaintFinish, zoom,
+    activeComponentType, activePhase, activeSpecLayer, activeZoneType, bgImage, bgOffset, canvasRotation, columnLabel, columnNotes, columnShape, columnSize, commitWallSegment, cvs, cvsContainer, doorFlipped, doorHingeRight, doorType, doorWidth, findDimSnap, findNear, findProxHover, floorMaterial, gn, htrackAngle, inToPx, isWallTool, lastCopyInfo, layerLocked, lightingIsNew, lightingType, markerFinish, markerLocked, markerNotes, markerVisible, mode, outletIsNew, outletType, phaseVisible, proxHover, pxPerFoot, resolveDimEndpoints, resolveLeaderTip, resolvePoints, resolvePos, s2c, setBgOffset, setCursorPos, setDimInput, setEditingLabelId, setEditingLabelText, setGuideScrub, setHoverGuideId, setLastCopyInfo, setProxHover, setSmartGuides, setT, setTool, setViewOff, setZoneEdge, snapGrid, snapGuide, snapLabelAnchor, snapToWall, themeMode, tool, viewOff, wallKind, wc, windowHeight, windowSill, windowType, windowWidth, zoneEdge, zoneLibrary, zoneNotes, zonePaintColor, zonePaintFinish, zoom,
   });
 
   const MODES = {
@@ -2206,7 +2188,7 @@ export default function TestfitTool() {
     <TooltipProvider>
     <div style={S.root}>
       {/* ── Top Mode Bar ──────────────────────────────────────────── */}
-      <TopBar $={$} MODES={MODES} S={S} T={T} activeSnapshotId={activeSnapshotId} canRedo={canRedo} canUndo={canUndo} cost={cost} deleteSnapshot={deleteSnapshot} display={display} exportPdf={exportPdf} exportPng={exportPng} exportProject={exportProject} font={font} importProject={importProject} liveDirty={liveDirty} loadRef={loadRef} markers={markers} mode={mode} modeMenuRect={modeMenuRect} newProject={newProject} newSnapMode={newSnapMode} redo={redo} renameSnapshot={renameSnapshot} renamingSnapId={renamingSnapId} save={save} saveMenuRect={saveMenuRect} setMode={setMode} setModeMenuRect={setModeMenuRect} setNewSnapMode={setNewSnapMode} setRenamingSnapId={setRenamingSnapId} setSaveMenuRect={setSaveMenuRect} setShowModeMenu={setShowModeMenu} setShowSaveMenu={setShowSaveMenu} setShowSettings={setShowSettings} setShowSnapMenu={setShowSnapMenu} setSidebarOpen={setSidebarOpen} setSnapDraftName={setSnapDraftName} setSnapMenuRect={setSnapMenuRect} setT={setT} setThemeMode={setThemeMode} showModeMenu={showModeMenu} showSaveMenu={showSaveMenu} showSnapMenu={showSnapMenu} sidebarOpen={sidebarOpen} snapDraftName={snapDraftName} snapMenuRect={snapMenuRect} snapshot={snapshot} snapshots={snapshots} switchSnapshot={switchSnapshot} takeSnapshot={takeSnapshot} themeMode={themeMode} undo={undo} updateSnapshot={updateSnapshot} walls={walls} zones={zones} panes={panes} setLayout={setLayout} setSelType={setSelType} setSelectedId={setSelectedId} setSelectedIds={setSelectedIds} />
+      <TopBar $={$} MODES={MODES} S={S} T={T} activeSnapshotId={activeSnapshotId} canRedo={canRedo} canUndo={canUndo} cost={cost} deleteSnapshot={deleteSnapshot} display={display} exportPdf={exportPdf} exportPng={exportPng} exportProject={exportProject} font={font} importProject={importProject} liveDirty={liveDirty} loadRef={loadRef} markers={markers} mode={mode} modeMenuRect={modeMenuRect} newProject={newProject} newSnapMode={newSnapMode} redo={redo} renameSnapshot={renameSnapshot} renamingSnapId={renamingSnapId} saveMenuRect={saveMenuRect} setMode={setMode} setModeMenuRect={setModeMenuRect} setNewSnapMode={setNewSnapMode} setRenamingSnapId={setRenamingSnapId} setSaveMenuRect={setSaveMenuRect} setShowModeMenu={setShowModeMenu} setShowSaveMenu={setShowSaveMenu} setShowSettings={setShowSettings} setShowSnapMenu={setShowSnapMenu} setSidebarOpen={setSidebarOpen} setSnapDraftName={setSnapDraftName} setSnapMenuRect={setSnapMenuRect} setT={setT} setThemeMode={setThemeMode} showModeMenu={showModeMenu} showSaveMenu={showSaveMenu} showSnapMenu={showSnapMenu} sidebarOpen={sidebarOpen} snapDraftName={snapDraftName} snapMenuRect={snapMenuRect} snapshot={snapshot} snapshots={snapshots} switchSnapshot={switchSnapshot} takeSnapshot={takeSnapshot} themeMode={themeMode} undo={undo} updateSnapshot={updateSnapshot} walls={walls} zones={zones} panes={panes} setLayout={setLayout} setSelType={setSelType} setSelectedId={setSelectedId} setSelectedIds={setSelectedIds} />
 
       <div style={S.main}>
         {/* ── Sidebar ──────────────────────────────────────────────── */}
@@ -2680,6 +2662,15 @@ export default function TestfitTool() {
                   </button>
                 </TooltipTrigger>
                 <TooltipContent side="right" sideOffset={8}>Wall <kbd style={{ background:"#333", border:"1px solid #555", borderRadius:3, padding:"1px 4px", fontSize:10 }}>W</kbd></TooltipContent>
+              </Tooltip>
+
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button style={S.toolBtn(tool === "rect", wallKinds[wallKind].color)} onClick={() => setT("rect")}>
+                    <RectRoomIcon />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="right" sideOffset={8}>Rect Room <kbd style={{ background:"#333", border:"1px solid #555", borderRadius:3, padding:"1px 4px", fontSize:10 }}>R</kbd></TooltipContent>
               </Tooltip>
 
               <div style={S.toolSepH} />
@@ -3305,12 +3296,45 @@ export default function TestfitTool() {
                   return { w, c, wk, sel, halfT, nx, ny, dx, dy, hatchId, edgeColor, edgeW, mN1, mN2, segs, segPts, glowEffect: mode === "budget" && sel };
                 }).filter(Boolean);
 
+                // Junction fill caps — where ≥2 walls meet, the per-wall mitered quads can leave a
+                // small uncovered wedge (worst at odd / T-junction angles: a triangle in the wall
+                // band with its apex at the node). Fill the convex wedge spanned by the walls' corner
+                // points at the node, drawn BEHIND the wall pass so it shows only where no wall fill
+                // already covers — closing the gap so joins read as merged at any angle.
+                // Cluster wall ends by junction POSITION (not node id) within the same proximity the
+                // miter uses, so caps also close near-miss joins where two walls meet but sit on
+                // separate, unsnapped nodes a few px apart — the common "doesn't look merged" case.
+                const CAP_PROX = 6; // must match getMiterSides' neighbour proximity
+                const caps = []; // { x, y, pts:[{x,y}], walls:Set, hatchId, color }
+                const addCap = (jx, jy, p, d) => {
+                  let cl = caps.find(c => Math.abs(c.x - jx) <= CAP_PROX && Math.abs(c.y - jy) <= CAP_PROX);
+                  if (!cl) { cl = { x: jx, y: jy, pts: [], walls: new Set(), hatchId: d.hatchId, color: d.wk.color }; caps.push(cl); }
+                  cl.pts.push(p); cl.walls.add(d.w.id);
+                };
+                wallData.forEach(d => {
+                  addCap(d.c.x1, d.c.y1, d.mN1.L, d); addCap(d.c.x1, d.c.y1, d.mN1.R, d);
+                  addCap(d.c.x2, d.c.y2, d.mN2.L, d); addCap(d.c.x2, d.c.y2, d.mN2.R, d);
+                });
+                const capPolys = caps.map((cl, i) => {
+                  if (cl.walls.size < 2) return null; // open end → no wedge
+                  const uniq = [];
+                  cl.pts.forEach(p => { if (!uniq.some(q => Math.abs(q.x - p.x) < 0.5 && Math.abs(q.y - p.y) < 0.5)) uniq.push(p); });
+                  if (uniq.length < 3) return null; // collinear pass-through
+                  uniq.sort((a, b) => Math.atan2(a.y - cl.y, a.x - cl.x) - Math.atan2(b.y - cl.y, b.x - cl.x));
+                  return { nid: Math.round(cl.x) + "_" + Math.round(cl.y) + "_" + i, points: uniq.map(p => `${p.x},${p.y}`).join(" "), hatchId: cl.hatchId, color: cl.color };
+                }).filter(Boolean);
+
                 // Terminators (more open ends) render first; through-walls render last so their
                 // canvas fill buries any junction edge bleed from the walls they cross.
                 const openCount = d => (d.mN1.openL?1:0)+(d.mN1.openR?1:0)+(d.mN2.openL?1:0)+(d.mN2.openR?1:0);
                 const fillOrder = wallData.filter(Boolean).sort((a, b) => openCount(a) - openCount(b));
 
                 return <>
+                  {capPolys.map(c => <g key={"cap"+c.nid} style={{ pointerEvents: "none" }}>
+                    <polygon points={c.points} fill={T.canvas} stroke="none" />
+                    <polygon points={c.points} fill={c.color + "18"} stroke="none" />
+                    <polygon points={c.points} fill={`url(#${c.hatchId})`} stroke="none" />
+                  </g>)}
                   {fillOrder.map(({ w, wk, sel, hatchId, edgeColor, edgeW, mN1, mN2, segPts, glowEffect }) =>
                     <g key={"f"+w.id} style={{ pointerEvents: "none" }} filter={glowEffect ? "url(#glow-budget)" : undefined}>
                       {segPts.map((sp, i) => <g key={i}>
@@ -3407,6 +3431,26 @@ export default function TestfitTool() {
                   </g>}
                   <circle cx={ax} cy={ay} r={4} fill={col} />
                   <circle cx={bx} cy={by} r={4} fill={effectiveCursor.snap ? "#50C878" : T.nodeFill} />
+                </g>;
+              })()}
+
+              {/* Rect-room ghost — dashed rectangle + W×H dims from first corner to cursor */}
+              {tool === "rect" && cursorPos && (() => {
+                const col = wallKinds[wallKind].color;
+                if (!drawRect) return <circle cx={cursorPos.x} cy={cursorPos.y} r={4} fill={cursorPos.snap ? "#50C878" : col} opacity={0.8} />;
+                const x0 = Math.min(drawRect.x1, cursorPos.x), x1r = Math.max(drawRect.x1, cursorPos.x);
+                const y0 = Math.min(drawRect.y1, cursorPos.y), y1r = Math.max(drawRect.y1, cursorPos.y);
+                const wPx = x1r - x0, hPx = y1r - y0;
+                const sf = Math.round((wPx * hPx) / (pxPerFoot * pxPerFoot));
+                return <g style={{ pointerEvents: "none" }}>
+                  <rect x={x0} y={y0} width={wPx} height={hPx} fill={col + "10"} stroke={col} strokeWidth={1.2} strokeDasharray="6 4" />
+                  {wPx > 10 && <DimLbl cx={(x0 + x1r) / 2} cy={y0} text={ft(wPx)} angle={0} off={-14} color={T.nodeFill} />}
+                  {hPx > 10 && <DimLbl cx={x0} cy={(y0 + y1r) / 2} text={ft(hPx)} angle={90} off={-14} color={T.nodeFill} />}
+                  {wPx > 30 && hPx > 30 && sf > 0 &&
+                    <text x={(x0 + x1r) / 2} y={(y0 + y1r) / 2} textAnchor="middle" dominantBaseline="middle"
+                      fill={T.nodeFill} fontSize={14} fontWeight={700} fontFamily="inherit">{sf} sf</text>}
+                  <circle cx={drawRect.x1} cy={drawRect.y1} r={4} fill={col} />
+                  <circle cx={cursorPos.x} cy={cursorPos.y} r={4} fill={cursorPos.snap ? "#50C878" : T.nodeFill} />
                 </g>;
               })()}
 

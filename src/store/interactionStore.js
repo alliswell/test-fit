@@ -14,6 +14,7 @@ const vou = (set, key) => (v) => set((s) => ({ [key]: typeof v === "function" ? 
 
 export const useInteractionStore = create((set) => ({
   drawChain: null,        // in-progress wall chain
+  drawRect: null,         // in-progress rect room: { x1, y1 } (first corner)
   drawDim: null,          // null | {x1,y1} | {x1,y1,x2,y2}
   drawPolyZone: null,     // { points:[{x,y}], type }
   drawRevCloud: null,     // null | {points:[{x,y}]}
@@ -33,6 +34,7 @@ export const useInteractionStore = create((set) => ({
   spaceHeld: false,
 
   setDrawChain: vou(set, "drawChain"),
+  setDrawRect: vou(set, "drawRect"),
   setDrawDim: vou(set, "drawDim"),
   setDrawPolyZone: vou(set, "drawPolyZone"),
   setDrawRevCloud: vou(set, "drawRevCloud"),

@@ -3,7 +3,7 @@
 // verbatim. Geometry / interaction / selection state come from their stores; everything
 // else (helper callbacks, UI scalars, refs, tool config) arrives via `ctx`.
 import { useCallback, useMemo } from "react";
-import { uid, sn, dst, ptSeg, orthoSnap, pointInPoly, polyCentroid } from "./model";
+import { uid, sn, dst, ptSeg, orthoSnap, pointInPoly, polyCentroid, splitWallAtNode, mergeNode, dedupeWalls, splitWallThroughNodes } from "./model";
 import { applySmartGuides, wallResizeCursor } from "./geometry";
 import { labelBounds } from "../utils/labels";
 import { SPEC_COMPONENTS, SNAP_R, PROX_DRAG_TYPES } from "../constants/specs";
@@ -14,10 +14,10 @@ import { useLayersStore } from "../store/layersStore";
 
 export function useCanvasEvents(ctx) {
   const { nodes, setNodes, walls, setWalls, zones, setZones, markers, setMarkers, doors, setDoors, windows, setWindows, columns, setColumns, dims, setDims, labels, setLabels, revClouds, setRevClouds, flowPaths, setFlowPaths, floorRegions, setFloorRegions, guides, setGuides } = useGeometryStore();
-  const { drawChain, setDrawChain, drawDim, setDrawDim, drawPolyZone, setDrawPolyZone, drawRevCloud, setDrawRevCloud, drawFlowPath, setDrawFlowPath, drawFloorRegion, setDrawFloorRegion, drag, setDrag, resize, setResize, marquee, setMarquee, ghostPos, setGhostPos, rotatingMarker, setRotatingMarker, calibrationLine, setCalibrationLine, hoverNid, setHoverNid, guideDraft, setGuideDraft, addingLeaderToId, setAddingLeaderToId, panning, setPanning, panSt, setPanSt, spaceHeld, setSpaceHeld } = useInteractionStore();
+  const { drawChain, setDrawChain, drawRect, setDrawRect, drawDim, setDrawDim, drawPolyZone, setDrawPolyZone, drawRevCloud, setDrawRevCloud, drawFlowPath, setDrawFlowPath, drawFloorRegion, setDrawFloorRegion, drag, setDrag, resize, setResize, marquee, setMarquee, ghostPos, setGhostPos, rotatingMarker, setRotatingMarker, calibrationLine, setCalibrationLine, hoverNid, setHoverNid, guideDraft, setGuideDraft, addingLeaderToId, setAddingLeaderToId, panning, setPanning, panSt, setPanSt, spaceHeld, setSpaceHeld } = useInteractionStore();
   const { selectedId, setSelectedId, selType, setSelType, selectedIds, setSelectedIds } = useSelectionStore();
   const {
-    activeComponentType, activePhase, activeSpecLayer, activeZoneType, bgImage, bgOffset, canvasRotation, columnLabel, columnNotes, columnShape, columnSize, commitWallSegment, cvs, cvsContainer, doorFlipped, doorHingeRight, doorType, doorWidth, findDimSnap, findNear, findProxHover, gn, htrackAngle, inToPx, isWallTool, lastCopyInfo, layerLocked, lightingIsNew, lightingType, markerFinish, markerLocked, markerNotes, markerVisible, mode, outletIsNew, outletType, phaseVisible, proxHover, pxPerFoot, resolveDimEndpoints, resolveLeaderTip, resolvePoints, resolvePos, s2c, setBgOffset, setCursorPos, setDimInput, setEditingLabelId, setEditingLabelText, setGuideScrub, setHoverGuideId, setLastCopyInfo, setProxHover, setSmartGuides, setT, setTool, setViewOff, setZoneEdge, snapGrid, snapGuide, snapLabelAnchor, snapToWall, themeMode, tool, viewOff, wallKind, wc, windowHeight, windowSill, windowType, windowWidth, zoneEdge, zoneLibrary, zoneNotes, zonePaintColor, zonePaintFinish, zoom,
+    activeComponentType, activePhase, activeSpecLayer, activeZoneType, bgImage, bgOffset, canvasRotation, columnLabel, columnNotes, columnShape, columnSize, commitWallSegment, cvs, cvsContainer, doorFlipped, doorHingeRight, doorType, doorWidth, findDimSnap, findNear, findProxHover, floorMaterial, gn, htrackAngle, inToPx, isWallTool, lastCopyInfo, layerLocked, lightingIsNew, lightingType, markerFinish, markerLocked, markerNotes, markerVisible, mode, outletIsNew, outletType, phaseVisible, proxHover, pxPerFoot, resolveDimEndpoints, resolveLeaderTip, resolvePoints, resolvePos, s2c, setBgOffset, setCursorPos, setDimInput, setEditingLabelId, setEditingLabelText, setGuideScrub, setHoverGuideId, setLastCopyInfo, setProxHover, setSmartGuides, setT, setTool, setViewOff, setZoneEdge, snapGrid, snapGuide, snapLabelAnchor, snapToWall, themeMode, tool, viewOff, wallKind, wc, windowHeight, windowSill, windowType, windowWidth, zoneEdge, zoneLibrary, zoneNotes, zonePaintColor, zonePaintFinish, zoom,
   } = ctx;
 
   const hitTest = useCallback((pos) => {
@@ -237,8 +237,9 @@ export function useCanvasEvents(ctx) {
         if (dst(drawChain.lastX, drawChain.lastY, tx, ty) > 8) {
           const result = commitWallSegment(drawChain.lastNodeId, drawChain.lastX, drawChain.lastY, tx, ty, wallKind);
           if (result) {
-            // If we connected to an existing node, finish the chain (stay in wall tool)
-            if (near) {
+            // If we connected to the existing network — an existing node, or a wall body
+            // (commitWallSegment welds a T-junction there) — finish the chain (stay in wall tool)
+            if (near || wallSnap) {
               setDrawChain(null);
               setCursorPos(null);
               setDimInput("");
@@ -247,6 +248,32 @@ export function useCanvasEvents(ctx) {
             }
           }
         }
+      }
+      return;
+    }
+    // Rect-room tool: two clicks = four welded walls tracing the rectangle.
+    if (tool === "rect") {
+      // Corner snapping mirrors the wall tool — node first, then wall body.
+      const near = findNear(sx, sy);
+      const ws = !near ? snapToWall(sx, sy, SNAP_R) : null;
+      const px = near ? near.x : ws ? ws.x : sx;
+      const py = near ? near.y : ws ? ws.y : sy;
+      if (!drawRect) { setDrawRect({ x1: px, y1: py }); return; }
+      const { x1, y1 } = drawRect;
+      if (Math.abs(px - x1) > 8 && Math.abs(py - y1) > 8) {
+        // Trace the loop corner-by-corner; commitWallSegment handles node reuse and
+        // wall-body welds per side. The closing side targets the first corner's node
+        // id directly — nodes created this tick aren't visible to findNear yet.
+        const r1 = commitWallSegment(null, x1, y1, px, y1, wallKind);
+        const r2 = r1 && commitWallSegment(r1.nodeId, px, y1, px, py, wallKind);
+        const r3 = r2 && commitWallSegment(r2.nodeId, px, py, x1, py, wallKind);
+        if (r3) {
+          commitWallSegment(r3.nodeId, x1, py, x1, y1, wallKind, r1.startNodeId);
+          // A room gets a floor: same shape the floorRegion tool makes, using the
+          // project's default floor material. Renders in Detailed 3D + plan hatch.
+          setFloorRegions(p => [...p, { id: uid(), points: [{ x: x1, y: y1 }, { x: px, y: y1 }, { x: px, y: py }, { x: x1, y: py }], material: floorMaterial || "Wood", label: "", phase: activePhase }]);
+        }
+        setDrawRect(null); setCursorPos(null);
       }
       return;
     }
@@ -946,7 +973,7 @@ export function useCanvasEvents(ctx) {
         }
       }
     }
-  }, [tool, activeZoneType, activeSpecLayer, s2c, findNear, findDimSnap, hitTest, walls, wc, zones, markers, doors, windows, columns, labels, revClouds, flowPaths, viewOff, drawChain, commitWallSegment, spaceHeld, doorWidth, windowWidth, columnSize, columnShape, snapToWall, snapGrid, activeComponentType, markerFinish, nodeCentroid, bgImage, bgOffset, gn, calibrationLine, drawDim, dims, nodes, pxPerFoot, zoneEdge, resolvePos, resolvePoints, activePhase, addingLeaderToId, snapLabelAnchor, drawRevCloud, drawFlowPath, floorRegions, drawFloorRegion, polyCentroid, resolveDimEndpoints]);
+  }, [tool, activeZoneType, activeSpecLayer, s2c, findNear, findDimSnap, hitTest, walls, wc, zones, markers, doors, windows, columns, labels, revClouds, flowPaths, viewOff, drawChain, drawRect, commitWallSegment, floorMaterial, spaceHeld, doorWidth, windowWidth, columnSize, columnShape, snapToWall, snapGrid, activeComponentType, markerFinish, nodeCentroid, bgImage, bgOffset, gn, calibrationLine, drawDim, dims, nodes, pxPerFoot, zoneEdge, resolvePos, resolvePoints, activePhase, addingLeaderToId, snapLabelAnchor, drawRevCloud, drawFlowPath, floorRegions, drawFloorRegion, polyCentroid, resolveDimEndpoints]);
 
   const onMove = useCallback((e) => {
     if (panning && panSt) {
@@ -989,6 +1016,15 @@ export function useCanvasEvents(ctx) {
         setSmartGuides([]);
       }
       setCursorPos({ x: cpx, y: cpy, snap: !!(near || wallSnap2) });
+      setHoverNid(near ? near.id : null);
+      return;
+    }
+
+    // Rect-room tool: track the (snapped) cursor for the ghost rectangle
+    if (tool === "rect") {
+      const near = findNear(sx, sy);
+      const ws = !near ? snapToWall(sx, sy, SNAP_R) : null;
+      setCursorPos({ x: near ? near.x : ws ? ws.x : sx, y: near ? near.y : ws ? ws.y : sy, snap: !!(near || ws) });
       setHoverNid(near ? near.id : null);
       return;
     }
@@ -1129,6 +1165,9 @@ export function useCanvasEvents(ctx) {
     }
 
     if (drag) {
+      // Wall/node topology welds operate on the base ("existing") geometry only — phase
+      // overrides move px positions, not the shared node graph.
+      const baseGeom = !activePhase || activePhase === "existing";
       // Build smart-guide target list — all element centers except the one(s) being dragged
       const _dragIds = new Set(
         drag.type === "multi" ? drag.objects.map(o => o.id)
@@ -1233,11 +1272,21 @@ export function useCanvasEvents(ctx) {
       } else if (drag.type === "node") {
         const near = findNear(sx, sy, [drag.id]);
         let newNodeX = near ? near.x : sx, newNodeY = near ? near.y : sy;
-        if (!near) {
-          const g = applySmartGuides(newNodeX, newNodeY, _guideTargets);
-          newNodeX = g.x; newNodeY = g.y;
-          setSmartGuides(g.guides);
-        } else { setSmartGuides([]); }
+        if (near) { setSmartGuides([]); }
+        else {
+          // No node under the cursor — try welding onto another wall's body: snap the
+          // node onto its centerline (mid-span only) so the drop becomes a clean
+          // T-junction. Walls already touching this node are excluded.
+          const incident = new Set(walls.filter(w => w.n1 === drag.id || w.n2 === drag.id).map(w => w.id));
+          const ws = baseGeom ? snapToWall(sx, sy, SNAP_R, incident) : null;
+          if (ws && ws.t > 0.02 && ws.t < 0.98) {
+            newNodeX = ws.x; newNodeY = ws.y; setSmartGuides([]);
+          } else {
+            const g = applySmartGuides(newNodeX, newNodeY, _guideTargets);
+            newNodeX = g.x; newNodeY = g.y;
+            setSmartGuides(g.guides);
+          }
+        }
         setNodes(prev => prev.map(n => {
           if (n.id !== drag.id) return n;
           if (activePhase && activePhase !== "existing")
@@ -1722,11 +1771,83 @@ export function useCanvasEvents(ctx) {
       return;
     }
     
-    if (drag?.type === "node" && hoverNid && hoverNid !== drag.id) {
-      const src = drag.id, tgt = hoverNid;
-      setWalls(prev => prev.map(w => ({ ...w, n1: w.n1 === src ? tgt : w.n1, n2: w.n2 === src ? tgt : w.n2 })).filter(w => w.n1 !== w.n2));
-      setNodes(prev => prev.filter(n => n.id !== src));
-      setSelectedId(tgt); setSelType("node");
+    // Weld dragged geometry onto the existing node graph. An endpoint dropped on another
+    // node merges into it; dropped on a wall's body, it splits that wall into a shared
+    // T-junction. Applies to a single node drag, both ends of a whole-wall drag, and every
+    // dragged node of a multi-drag (marquee / alt-drag a room against another room).
+    // Topology lives on the base ("existing") geometry only.
+    if ((!activePhase || activePhase === "existing") && (drag?.type === "node" || drag?.type === "wall" || drag?.type === "multi")) {
+      // Project a point onto the nearest wall BODY of the working copy (cur), not the
+      // store — sequential welds split walls into fresh ids, so a store-based snap
+      // would return an id that no longer exists and silently skip the 2nd+ weld.
+      const wallBodyHit = (cur, px, py, excl) => {
+        const byId = Object.fromEntries(cur.nodes.map(n => [n.id, n]));
+        let best = null, bd = SNAP_R;
+        for (const w of cur.walls) {
+          if (excl.has(w.id)) continue;
+          const A = byId[w.n1], B = byId[w.n2]; if (!A || !B) continue;
+          const dx = B.x - A.x, dy = B.y - A.y, ls = dx * dx + dy * dy; if (ls < 1) continue;
+          const t = ((px - A.x) * dx + (py - A.y) * dy) / ls;
+          if (t <= 0.02 || t >= 0.98) continue; // mid-span only — ends merge via findNear
+          const d = dst(px, py, A.x + t * dx, A.y + t * dy);
+          if (d < bd) { bd = d; best = w.id; }
+        }
+        return best;
+      };
+      // After a weld, a wall now attached at `nid` may run collinear over another wall
+      // (drag a wall in line with one it connects to) — split it at any node it passes
+      // over so the commit-time dedupe collapses the doubled piece.
+      const splitIncidents = (nodesList, wallsList, nid) => {
+        let out = wallsList;
+        for (const w of wallsList) if (w.n1 === nid || w.n2 === nid) out = splitWallThroughNodes(out, nodesList, w.id);
+        return out;
+      };
+      // exclNodes/exclWalls keep a multi-drag selection from welding onto itself.
+      const weld = (cur, endId, preferNid, exclNodes, exclWalls) => {
+        const p = cur.nodes.find(n => n.id === endId);
+        if (!p) return { cur, mergedInto: null };
+        let tgtId = (preferNid && preferNid !== endId && cur.nodes.some(n => n.id === preferNid)) ? preferNid : null;
+        if (!tgtId) { const t = findNear(p.x, p.y, exclNodes || [endId]); if (t && cur.nodes.some(n => n.id === t.id)) tgtId = t.id; }
+        if (tgtId) {
+          const m = mergeNode(cur.nodes, cur.walls, endId, tgtId);
+          return { cur: { nodes: m.nodes, walls: splitIncidents(m.nodes, m.walls, tgtId) }, mergedInto: tgtId };
+        }
+        const incident = new Set(cur.walls.filter(w => w.n1 === endId || w.n2 === endId).map(w => w.id));
+        if (exclWalls) exclWalls.forEach(id => incident.add(id));
+        const hitId = wallBodyHit(cur, p.x, p.y, incident);
+        if (hitId) {
+          const w2 = splitWallAtNode(cur.walls, hitId, endId);
+          return { cur: { nodes: cur.nodes, walls: splitIncidents(cur.nodes, w2, endId) }, mergedInto: null };
+        }
+        return { cur, mergedInto: null };
+      };
+      // dedupeWalls on commit: two welds can leave a wall collinear-on top of another
+      // (drop a room flush against a room → shared wall) — collapse to one segment.
+      if (drag.type === "node") {
+        const r = weld({ nodes, walls }, drag.id, hoverNid);
+        if (r.cur.nodes !== nodes) setNodes(r.cur.nodes);
+        if (r.cur.walls !== walls) setWalls(dedupeWalls(r.cur.walls));
+        if (r.mergedInto) { setSelectedId(r.mergedInto); setSelType("node"); }
+        else if (r.cur.walls !== walls) { setSelectedId(drag.id); setSelType("node"); }
+      } else if (drag.type === "wall") {
+        const w = walls.find(x => x.id === drag.id);
+        let cur = { nodes, walls };
+        if (w) [w.n1, w.n2].forEach(id => { cur = weld(cur, id, null).cur; });
+        if (cur.nodes !== nodes) setNodes(cur.nodes);
+        if (cur.walls !== walls) setWalls(dedupeWalls(cur.walls));
+      } else {
+        // Multi-drag: weld each dragged node against STATIONARY geometry only — never
+        // against other dragged nodes or the selection's own (possibly deforming) walls.
+        const dragNodeIds = drag.objects.filter(o => o.type === "node").map(o => o.id);
+        if (dragNodeIds.length) {
+          const dragNodeSet = new Set(dragNodeIds);
+          const dragWallIds = walls.filter(w => dragNodeSet.has(w.n1) || dragNodeSet.has(w.n2)).map(w => w.id);
+          let cur = { nodes, walls };
+          dragNodeIds.forEach(id => { cur = weld(cur, id, null, dragNodeIds, dragWallIds).cur; });
+          if (cur.nodes !== nodes) setNodes(cur.nodes);
+          if (cur.walls !== walls) setWalls(dedupeWalls(cur.walls));
+        }
+      }
     }
     // When a copy-drag finishes, record the total displacement so "/" can distribute intermediates
     if (drag?.isCopy && drag.type === "multi") {
@@ -1750,7 +1871,7 @@ export function useCanvasEvents(ctx) {
     }
     // No re-clipping on zone drag/vertex drag end — user controls shape manually
     setDrag(null); setResize(null); setPanning(false); setPanSt(null); setHoverNid(null); setProxHover(null); setRotatingMarker(null); setSmartGuides([]);
-  }, [drag, resize, hoverNid, marquee, mode, nodes, walls, doors, windows, zones, markers, columns, labels, revClouds, flowPaths, floorRegions, guides, phaseVisible, resolvePos, resolvePoints, wc, lastCopyInfo, s2c, themeMode, activePhase, snapLabelAnchor, layerLocked, markerLocked]);
+  }, [drag, resize, hoverNid, marquee, mode, nodes, walls, doors, windows, zones, markers, columns, labels, revClouds, flowPaths, floorRegions, guides, phaseVisible, resolvePos, resolvePoints, wc, lastCopyInfo, s2c, themeMode, activePhase, snapLabelAnchor, layerLocked, markerLocked, findNear, snapToWall]);
 
   return { hitTest, onDown, onMove, onUp };
 }

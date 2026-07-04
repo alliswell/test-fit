@@ -188,6 +188,156 @@ test("drag: dragging a wall body translates its nodes (onDown/onMove)", async ({
   expect(allMoved).toBe(true);
 });
 
+test("merge: dragging a wall's endpoint onto another wall splits it into a T-junction", async ({ page }) => {
+  await page.goto("/");
+  await newProject(page);
+  const { cx, cy } = await planCenter(page);
+
+  // A long horizontal wall…
+  await page.keyboard.press("w");
+  await page.mouse.click(cx - 120, cy);
+  await page.mouse.click(cx + 120, cy);
+  await page.mouse.dblclick(cx + 120, cy);
+  await page.keyboard.press("Escape");
+  // …and a separate vertical stub below it (top end 60px clear of the wall).
+  await page.keyboard.press("w");
+  await page.mouse.click(cx, cy + 120);
+  await page.mouse.click(cx, cy + 60);
+  await page.mouse.dblclick(cx, cy + 60);
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("v");
+  await page.waitForTimeout(900);
+  const before = await readModel(page);
+  expect(before.nodes.length).toBe(4);
+  expect(before.walls.length).toBe(2);
+
+  // Drag the stub up by its body so its top endpoint lands on the horizontal wall.
+  await page.mouse.move(cx, cy + 90);
+  await page.mouse.down();
+  await page.mouse.move(cx, cy + 30, { steps: 8 }); // body up 60 → top endpoint reaches the wall
+  await page.mouse.up();
+  await page.waitForTimeout(900);
+
+  const after = await readModel(page);
+  // The horizontal wall split in two; the stub's endpoint became the shared junction —
+  // no extra node, one more wall.
+  expect(after.nodes.length).toBe(4);
+  expect(after.walls.length).toBe(3);
+  // The welded endpoint is now a T-junction: one node referenced by three walls.
+  const degree = {};
+  after.walls.forEach((w) => { degree[w.n1] = (degree[w.n1] || 0) + 1; degree[w.n2] = (degree[w.n2] || 0) + 1; });
+  expect(Math.max(...Object.values(degree))).toBe(3);
+});
+
+test("draw-weld: ending a drawn wall on another wall's body welds a T-junction and finishes the chain", async ({ page }) => {
+  await page.goto("/");
+  await newProject(page);
+  const { cx, cy } = await planCenter(page);
+
+  // A long horizontal wall…
+  await page.keyboard.press("w");
+  await page.mouse.click(cx - 120, cy);
+  await page.mouse.click(cx + 120, cy);
+  await page.mouse.dblclick(cx + 120, cy);
+  await page.keyboard.press("Escape");
+  // …then draw a stub from below, ending ON the wall's body (mid-span).
+  await page.keyboard.press("w");
+  await page.mouse.click(cx, cy + 100);
+  await page.mouse.click(cx, cy); // lands on the wall → weld + auto-finish chain
+  await page.keyboard.press("v");
+  await page.waitForTimeout(900);
+
+  const m = await readModel(page);
+  // Horizontal wall split in two + the stub = 3 walls, 4 nodes, one degree-3 junction.
+  expect(m.nodes.length).toBe(4);
+  expect(m.walls.length).toBe(3);
+  const degree = {};
+  m.walls.forEach((w) => { degree[w.n1] = (degree[w.n1] || 0) + 1; degree[w.n2] = (degree[w.n2] || 0) + 1; });
+  expect(Math.max(...Object.values(degree))).toBe(3);
+});
+
+test("rect room tool: two clicks create a closed 4-wall loop", async ({ page }) => {
+  await page.goto("/");
+  await newProject(page);
+  const { cx, cy } = await planCenter(page);
+
+  await page.keyboard.press("r");
+  await page.mouse.click(cx - 100, cy - 80);
+  // Mid-draw the ghost shows live square footage in the rect's center.
+  await page.mouse.move(cx + 100, cy + 80);
+  await expect(page.getByTestId("plan-canvas").locator("text", { hasText: /\d+ sf/ })).toBeVisible();
+  await page.mouse.click(cx + 100, cy + 80);
+  await page.waitForTimeout(900);
+
+  const m = await readModel(page);
+  expect(m.nodes.length).toBe(4);
+  expect(m.walls.length).toBe(4);
+  // Closed loop: every corner has exactly two walls.
+  const degree = {};
+  m.walls.forEach((w) => { degree[w.n1] = (degree[w.n1] || 0) + 1; degree[w.n2] = (degree[w.n2] || 0) + 1; });
+  expect(Object.values(degree).every((d) => d === 2)).toBe(true);
+  // The room auto-gets a floor region matching its rectangle.
+  expect(m.floorRegions.length).toBe(1);
+  expect(m.floorRegions[0].points).toHaveLength(4);
+});
+
+test("crossing weld: drawing a wall across another creates a shared 4-way junction", async ({ page }) => {
+  await page.goto("/");
+  await newProject(page);
+  const { cx, cy } = await planCenter(page);
+
+  // Horizontal wall…
+  await page.keyboard.press("w");
+  await page.mouse.click(cx - 120, cy);
+  await page.mouse.click(cx + 120, cy);
+  await page.mouse.dblclick(cx + 120, cy);
+  await page.keyboard.press("Escape");
+  // …then a vertical wall drawn straight across it.
+  await page.keyboard.press("w");
+  await page.mouse.click(cx, cy - 100);
+  await page.mouse.click(cx, cy + 100);
+  await page.mouse.dblclick(cx, cy + 100);
+  await page.keyboard.press("Escape");
+  await page.waitForTimeout(900);
+
+  const m = await readModel(page);
+  // Both walls split at the intersection: 5 nodes, 4 segments, one degree-4 junction.
+  expect(m.nodes.length).toBe(5);
+  expect(m.walls.length).toBe(4);
+  const degree = {};
+  m.walls.forEach((w) => { degree[w.n1] = (degree[w.n1] || 0) + 1; degree[w.n2] = (degree[w.n2] || 0) + 1; });
+  expect(Math.max(...Object.values(degree))).toBe(4);
+});
+
+test("collinear connect: extending onto an existing wall splits instead of stacking", async ({ page }) => {
+  await page.goto("/");
+  await newProject(page);
+  const { cx, cy } = await planCenter(page);
+
+  // Existing vertical wall from (cx, cy-100) to (cx, cy+100)…
+  await page.keyboard.press("w");
+  await page.mouse.click(cx, cy - 100);
+  await page.mouse.click(cx, cy + 100);
+  await page.mouse.dblclick(cx, cy + 100);
+  await page.keyboard.press("Escape");
+  // …then draw in line with it, from above, ending mid-span at (cx, cy).
+  await page.keyboard.press("w");
+  await page.mouse.click(cx, cy - 220);
+  await page.mouse.click(cx, cy);
+  await page.keyboard.press("Escape");
+  await page.waitForTimeout(900);
+
+  const m = await readModel(page);
+  // 3 clean segments, no doubled pair, no wall spanning across an interior node.
+  expect(m.nodes.length).toBe(4);
+  expect(m.walls.length).toBe(3);
+  const pairs = m.walls.map((w) => [w.n1, w.n2].sort().join("|"));
+  expect(new Set(pairs).size).toBe(pairs.length); // no duplicate segments
+  const degree = {};
+  m.walls.forEach((w) => { degree[w.n1] = (degree[w.n1] || 0) + 1; degree[w.n2] = (degree[w.n2] || 0) + 1; });
+  expect(Object.values(degree).sort().join(",")).toBe("1,1,2,2"); // one straight run
+});
+
 test("marquee multi-select + group nudge moves the whole selection", async ({ page }) => {
   await page.goto("/");
   await newProject(page);

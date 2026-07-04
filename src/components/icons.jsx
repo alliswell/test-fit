@@ -22,6 +22,14 @@ export const NewWallIcon = () => (
   </svg>
 );
 
+export const RectRoomIcon = () => (
+  <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <rect x="3.5" y="4.5" width="13" height="11" stroke="currentColor" strokeWidth="1.5" fill="none"/>
+    <circle cx="3.5" cy="4.5" r="1.6" fill="currentColor"/>
+    <circle cx="16.5" cy="15.5" r="1.6" fill="currentColor"/>
+  </svg>
+);
+
 export const WindowIcon = () => (
   <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
     <rect x="4" y="4" width="12" height="12" stroke="currentColor" strokeWidth="1.5" fill="none"/>

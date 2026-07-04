@@ -539,7 +539,7 @@ function DoorSwing3D({ door, segLenFt, heightFt, offsetFt, thickFt, onSelect, is
             <mesh><boxGeometry args={[0.14, 0.5, 0.05]} /><meshLambertMaterial color="#ECEAE3" /></mesh>
             <mesh position={[0, 0.12, 0.03]}><boxGeometry args={[0.07, 0.18, 0.02]} />
               {isDetailed
-                ? <meshStandardMaterial color="#3FC8E8" emissive="#3FC8E8" emissiveIntensity={1.2} toneMapped={false} />
+                ? <meshStandardMaterial color="#3FC8E8" emissive="#3FC8E8" emissiveIntensity={3.2} toneMapped={false} />
                 : <meshLambertMaterial color="#3FC8E8" />}
             </mesh>
           </group>
@@ -675,6 +675,60 @@ function Wall3D({ w, nodes, walls = [], doors, windows, cx, cz, pxPerFoot, ceili
       )}
     </group>
   );
+}
+
+// ─── Corner posts ────────────────────────────────────────────────────────────
+// Adjacent wall boxes overlap at every junction, so their coplanar end-cap / face
+// pairs z-fight — a speckled "frizz" (worst where two materials meet, e.g. brick
+// against drywall) plus thin slivers and a notch at the base. One clean post per
+// junction, sized a hair proud of the walls, caps the corner crisply and hides
+// the overlap behind a single solid box. The cladding (textured) material wins so
+// brick wraps the corner the way real masonry returns.
+const TEXTURED_WALL_MATERIALS = new Set(Object.keys(WALL_MATERIAL_TILE_FT));
+const NOOP = () => {};
+function CornerPosts({ walls = [], nodes = [], cx, cz, pxPerFoot, ceilingHeight, style3d = "clay" }) {
+  const ni = useMemo(() => Object.fromEntries(nodes.map(n => [n.id, n])), [nodes]);
+  const junctions = useMemo(() => {
+    const byNode = {};
+    walls.forEach(w => { (byNode[w.n1] ||= []).push(w); (byNode[w.n2] ||= []).push(w); });
+    const out = [];
+    for (const [id, adj] of Object.entries(byNode)) {
+      const node = ni[id];
+      if (!node || adj.length < 2) continue;
+      // Skip straight pass-throughs (two near-collinear walls): no real corner there.
+      if (adj.length === 2) {
+        const dir = (w) => { const o = ni[w.n1 === id ? w.n2 : w.n1]; return o ? Math.atan2(o.y - node.y, o.x - node.x) : null; };
+        const a = dir(adj[0]), b = dir(adj[1]);
+        if (a != null && b != null) {
+          let d = Math.abs(a - b); if (d > Math.PI) d = 2 * Math.PI - d;
+          if (Math.abs(d - Math.PI) < 0.26) continue; // within ~15° of straight
+        }
+      }
+      let thickFt = 0, heightFt = 0, material = null, color = null;
+      for (const w of adj) {
+        const wk = WALL_KINDS[w.kind || "existing"];
+        const t = (w.kind === "pony" ? (w.ponyDepth || 6) : (wk.thickness || 5)) / 12;
+        const h = w.kind === "pony" ? (w.ponyHeight || 42) / 12 : (w.ceilingHeight ?? ceilingHeight) / 12;
+        if (t > thickFt) thickFt = t;
+        if (h > heightFt) heightFt = h;
+        if (!color) color = wk.color;
+        if (!material || (TEXTURED_WALL_MATERIALS.has(w.material) && !TEXTURED_WALL_MATERIALS.has(material))) material = w.material;
+      }
+      out.push({ id, x: (node.x - cx) / pxPerFoot, z: (node.y - cz) / pxPerFoot, thickFt, heightFt, material, color });
+    }
+    return out;
+  }, [walls, ni, cx, cz, pxPerFoot, ceilingHeight]);
+
+  if (style3d === "xray") return null; // see-through mode — corner fill isn't wanted
+  const PROUD = 0.02; // ft proud each side; clears the depth buffer like the floor grid does
+  return junctions.map(j => (
+    <group key={"post-" + j.id} position={[j.x, 0, j.z]}>
+      <WallBox lenFt={j.thickFt + PROUD * 2} thickFt={j.thickFt + PROUD * 2} heightFt={j.heightFt}
+        yCenter={j.heightFt / 2} offsetFt={0} color={j.color} material={j.material}
+        wallId={null} onSelect={NOOP} isDemo={false} isSelected={false} style3d={style3d}
+        interactive={false} edges={false} />
+    </group>
+  ));
 }
 
 // ─── Column ────────────────────────────────────────────────────────────────────
@@ -853,7 +907,7 @@ function Marker3D({ marker, cx, cz, pxPerFoot, ceilingHeight, onSelect, isSelect
     <group position={[wx, wy, wz]} rotation={floorRot} onClick={click} {...hp}>
       <mesh><cylinderGeometry args={[cfg.r, cfg.r, 0.06, 16]} />
         {isLight
-          ? <meshStandardMaterial color={WARM_HALO} emissive={WARM_HALO} emissiveIntensity={2.5} roughness={0.3} metalness={0} toneMapped={false} />
+          ? <meshStandardMaterial color={WARM_HALO} emissive={WARM_HALO} emissiveIntensity={4.0} roughness={0.3} metalness={0} toneMapped={false} />
           : <meshLambertMaterial color={c} />}
       </mesh>
       <mesh><cylinderGeometry args={[cfg.r + 0.025, cfg.r + 0.025, 0.025, 16]} /><meshLambertMaterial color="#999999" /></mesh>
@@ -892,7 +946,7 @@ function Marker3D({ marker, cx, cz, pxPerFoot, ceilingHeight, onSelect, isSelect
       {/* Diffuser face */}
       <mesh position={[0, -0.033, 0]}><boxGeometry args={[cfg.len - 0.04, 0.005, 0.24]} />
         {isLight
-          ? <meshStandardMaterial color={WARM_HALO} emissive={WARM_HALO} emissiveIntensity={2.5} transparent opacity={0.9} toneMapped={false} />
+          ? <meshStandardMaterial color={WARM_HALO} emissive={WARM_HALO} emissiveIntensity={4.0} transparent opacity={0.9} toneMapped={false} />
           : <meshLambertMaterial color="#FFFFFF" transparent opacity={0.6} />}
       </mesh>
       {isSelected && <BoxGlow w={cfg.len} h={0.067} d={0.267} />}
@@ -1013,7 +1067,7 @@ function Marker3D({ marker, cx, cz, pxPerFoot, ceilingHeight, onSelect, isSelect
   if (shape === "router") {
     const wcol = "#88C8E8";
     const wmat = () => style3d === "detailed"
-      ? <meshStandardMaterial color={wcol} emissive={wcol} emissiveIntensity={1.0} toneMapped={false} />
+      ? <meshStandardMaterial color={wcol} emissive={wcol} emissiveIntensity={3.2} toneMapped={false} />
       : <meshLambertMaterial color={wcol} />;
     return (
       <group position={[wx, wy, wz]} rotation={floorRot} onClick={click} {...hp}>
@@ -1073,7 +1127,7 @@ function Marker3D({ marker, cx, cz, pxPerFoot, ceilingHeight, onSelect, isSelect
             {isFlood && [-0.22, 0.22].map((ox, i) => (
               <mesh key={i} position={[ox, 0.02, 0.04]}><boxGeometry args={[0.16, 0.1, 0.04]} />
                 {style3d === "detailed"
-                  ? <meshStandardMaterial color="#FFF6DC" emissive="#FFE9A8" emissiveIntensity={1.6} toneMapped={false} />
+                  ? <meshStandardMaterial color="#FFF6DC" emissive="#FFE9A8" emissiveIntensity={3.2} toneMapped={false} />
                   : <meshLambertMaterial color="#F4F1E6" />}
               </mesh>
             ))}
@@ -1251,10 +1305,11 @@ function PostFX() {
     const composer = new EffectComposer(gl);
     composer.addPass(new RenderPass(scene, camera));
     // Bloom limited to the explicitly emissive lens meshes (toneMapped={false}
-    // pushes them above the 1.05 threshold). Sun-lit walls/floor stay below
-    // threshold so they don't bleed.
+    // pushes them to emissiveIntensity 3.2–4.0, above the 2.3 threshold). Sun-lit
+    // walls/floor peak ~2.0 — including bright corner junctions where two lit walls
+    // overlap — so they stay below threshold and don't bleed or flicker.
     // (resolution, strength, radius, threshold)
-    const bloom = new UnrealBloomPass(new THREE.Vector2(size.width, size.height), 0.6, 0.6, 1.05);
+    const bloom = new UnrealBloomPass(new THREE.Vector2(size.width, size.height), 0.6, 0.6, 2.3);
     composer.addPass(bloom);
     composer.addPass(new OutputPass());
     composerRef.current = composer;
@@ -1464,6 +1519,7 @@ export default function TestFit3D({
             cx={cx} cz={cz} pxPerFoot={pxPerFoot} ceilingHeight={w.ceilingHeight ?? ceilingHeight}
             onSelect={safeSelect} selectedId={effSelectedId} selType={effSelType} showDims={show3dDims} style3d={style3d} interactive={interactive} />
         ))}
+        <CornerPosts walls={walls} nodes={nodes} cx={cx} cz={cz} pxPerFoot={pxPerFoot} ceilingHeight={ceilingHeight} style3d={style3d} />
         {columns.map(col => (
           <Column3D key={col.id} col={col} cx={cx} cz={cz} pxPerFoot={pxPerFoot} ceilingHeight={ceilingHeight}
             onSelect={safeSelect} isSelected={effSelectedId === col.id && effSelType === "column"} style3d={style3d} interactive={interactive} />

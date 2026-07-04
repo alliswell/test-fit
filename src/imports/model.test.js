@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   sn, dst, ptSeg, polyArea, polyCentroid, pointInPoly, orthoSnap,
   isLightComponent, parseDimInput, migrateProjectData, PROJECT_VERSION, dedupeWalls,
+  splitWallAtNode, mergeNode, splitWallThroughNodes, weldWallCrossings,
 } from "./model";
 
 describe("geometry", () => {
@@ -81,6 +82,107 @@ describe("dedupeWalls", () => {
   it("migrateProjectData dedupes walls", () => {
     const m = migrateProjectData({ walls: [{ id: "a", n1: "p", n2: "q" }, { id: "b", n1: "q", n2: "p" }] });
     expect(m.walls.length).toBe(1);
+  });
+});
+
+describe("splitWallAtNode", () => {
+  const ids = (() => { let i = 0; return () => "id" + (++i); })();
+  it("splits a wall into two halves sharing the junction, copying props", () => {
+    const walls = [{ id: "w", n1: "a", n2: "b", kind: "existing", material: "Brick" }];
+    const out = splitWallAtNode(walls, "w", "j", ids);
+    expect(out).toHaveLength(2);
+    expect(out[0]).toMatchObject({ n1: "a", n2: "j", kind: "existing", material: "Brick" });
+    expect(out[1]).toMatchObject({ n1: "j", n2: "b", kind: "existing", material: "Brick" });
+    expect(out[0].id).not.toBe(out[1].id);     // fresh ids
+    expect(out.find(w => w.id === "w")).toBeUndefined(); // original replaced
+  });
+  it("is a no-op when the junction is already an endpoint, or the wall is missing", () => {
+    const walls = [{ id: "w", n1: "a", n2: "b" }];
+    expect(splitWallAtNode(walls, "w", "a")).toBe(walls);
+    expect(splitWallAtNode(walls, "nope", "j")).toBe(walls);
+  });
+});
+
+describe("splitWallThroughNodes", () => {
+  // "m" is on w's span and used by another wall; "orphan" is on the span but unused;
+  // "far" is used but off the line.
+  const nodes = [
+    { id: "a", x: 0, y: 0 }, { id: "b", x: 100, y: 0 },
+    { id: "m", x: 60, y: 0 }, { id: "far", x: 50, y: 30 }, { id: "orphan", x: 40, y: 0 },
+  ];
+  const base = [
+    { id: "w", n1: "a", n2: "b", kind: "existing", material: "Brick" },
+    { id: "other", n1: "m", n2: "far" },
+  ];
+  it("splits at a mid-span node, copying props; skips orphan and off-line nodes", () => {
+    const out = splitWallThroughNodes(base, nodes, "w");
+    expect(out).toHaveLength(3);
+    const segs = out.filter(x => x.id !== "other");
+    expect(segs[0]).toMatchObject({ n1: "a", n2: "m", kind: "existing", material: "Brick" });
+    expect(segs[1]).toMatchObject({ n1: "m", n2: "b", kind: "existing", material: "Brick" });
+    expect(out.some(x => x.n1 === "orphan" || x.n2 === "orphan")).toBe(false);
+  });
+  it("no-op (same identity) when nothing qualifies or the wall is missing", () => {
+    const solo = [{ id: "w", n1: "a", n2: "b" }]; // "m" unused here → no split
+    expect(splitWallThroughNodes(solo, nodes, "w")).toBe(solo);
+    expect(splitWallThroughNodes(base, nodes, "nope")).toBe(base);
+  });
+  it("splits through multiple nodes in span order", () => {
+    const ns = [{ id: "a", x: 0, y: 0 }, { id: "b", x: 100, y: 0 }, { id: "p", x: 70, y: 0 }, { id: "q", x: 30, y: 0 }];
+    const ws = [{ id: "w", n1: "a", n2: "b" }, { id: "x1", n1: "p", n2: "q" }];
+    const chain = splitWallThroughNodes(ws, ns, "w").filter(x => x.id !== "x1").map(x => x.n1 + ">" + x.n2);
+    expect(chain).toEqual(["a>q", "q>p", "p>b"]);
+  });
+});
+
+describe("weldWallCrossings", () => {
+  it("X-crossing: adds a node at the intersection and splits the crossed wall", () => {
+    const nodes = [
+      { id: "a", x: 0, y: 50 }, { id: "b", x: 100, y: 50 },   // horizontal (the new wall)
+      { id: "c", x: 60, y: 0 }, { id: "d", x: 60, y: 100 },   // vertical (crossed)
+    ];
+    const walls = [{ id: "H", n1: "a", n2: "b" }, { id: "V", n1: "c", n2: "d" }];
+    const out = weldWallCrossings(nodes, walls, "H");
+    expect(out.nodes).toHaveLength(5);
+    const j = out.nodes[4];
+    expect([j.x, j.y]).toEqual([60, 50]);
+    // V split into c–j and j–d; H untouched here (caller splits it through j)
+    const vSegs = out.walls.filter(w => w.id !== "H");
+    expect(vSegs.map(w => w.n1 + ">" + w.n2)).toEqual(["c>" + j.id, j.id + ">d"]);
+    // then the standard through-nodes pass splits H at j
+    const final = splitWallThroughNodes(out.walls, out.nodes, "H");
+    expect(final).toHaveLength(4);
+  });
+  it("skips walls sharing a node, parallel walls, and end-touching (T) contacts", () => {
+    const nodes = [
+      { id: "a", x: 0, y: 50 }, { id: "b", x: 100, y: 50 },
+      { id: "p", x: 0, y: 80 }, { id: "q", x: 100, y: 80 },  // parallel
+      { id: "t", x: 40, y: 50 }, { id: "u", x: 40, y: 120 }, // T: touches H's line at its own END
+    ];
+    const walls = [
+      { id: "H", n1: "a", n2: "b" },
+      { id: "corner", n1: "b", n2: "q" },  // shares node b
+      { id: "par", n1: "p", n2: "q" },
+      { id: "tee", n1: "t", n2: "u" },
+    ];
+    const out = weldWallCrossings(nodes, walls, "H");
+    expect(out.nodes).toBe(nodes);
+    expect(out.walls).toBe(walls);
+  });
+});
+
+describe("mergeNode", () => {
+  it("re-points walls from src to tgt, drops the src node, and collapses degenerate/dup walls", () => {
+    const nodes = [{ id: "a" }, { id: "b" }, { id: "c" }];
+    const walls = [
+      { id: "1", n1: "a", n2: "c" }, // becomes b–c
+      { id: "2", n1: "a", n2: "b" }, // becomes b–b → dropped (zero length)
+      { id: "3", n1: "b", n2: "c" }, // duplicate of remapped #1 → deduped
+    ];
+    const out = mergeNode(nodes, walls, "a", "b");
+    expect(out.nodes.map(n => n.id)).toEqual(["b", "c"]);
+    expect(out.walls).toHaveLength(1);
+    expect(out.walls[0]).toMatchObject({ n1: "b", n2: "c" });
   });
 });
 
