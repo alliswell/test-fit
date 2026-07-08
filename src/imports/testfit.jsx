@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect, useMemo, lazy, Suspense } from "react";
-import { MousePointer2, X, Plus, DoorOpen, Ruler, Box, LayoutDashboard, RotateCcw, RotateCw, Undo2, Redo2, Tag, Settings, ChevronDown, ChevronRight, ChevronLeft, Trash2, GitBranch, Columns2, PanelLeft, PanelLeftClose, Camera, Eye, EyeOff, Lock, Unlock } from "lucide-react";
+import { MousePointer2, X, Plus, DoorOpen, Ruler, Box, LayoutDashboard, RotateCcw, RotateCw, Undo2, Redo2, Tag, Settings, ChevronDown, ChevronRight, ChevronLeft, Trash2, GitBranch, Columns2, PanelLeft, PanelLeftClose, PanelTop, Camera, Check, Eye, EyeOff, Lock, Unlock } from "lucide-react";
 import ZONE_LIBRARY_DEFAULTS from "../data/zone-library.json";
 import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "../app/components/ui/tooltip";
 // Lazy-loaded so three.js / r3f / drei (a large bundle) only download when a 3D pane is shown.
@@ -10,6 +10,9 @@ import { useViewStore } from "../store/viewStore";
 import { useLayersStore } from "../store/layersStore";
 import { useSelectionStore } from "../store/selectionStore";
 import { useGeometryStore } from "../store/geometryStore";
+import { useDocsStore, DEFAULT_DOC_SETTINGS } from "../store/docsStore";
+import DocsView, { PrintDeck } from "../components/DocsView";
+import { sheetDims, sheetInches, sheetBodyDims, fitRectToViewport, fitStandardScale, scaledRectCam, defaultSlideName, viewTitle } from "../utils/docs";
 import { useInteractionStore } from "../store/interactionStore";
 import { useCanvasEvents } from "./useCanvasEvents";
 // Extracted modules — see CLAUDE.md → "Code structure" for what belongs where.
@@ -47,6 +50,34 @@ export default function TestfitTool() {
     guideDraft, setGuideDraft, addingLeaderToId, setAddingLeaderToId,
     panning, setPanning, panSt, setPanSt, spaceHeld, setSpaceHeld,
   } = useInteractionStore();
+  // Docs stage: slide deck + sheet settings (project-level artifact, like snapshots).
+  const {
+    slides, setSlides, docSettings, setDocSettings, activeSlideId, setActiveSlideId,
+    addSlide, updateSlide, removeSlide, moveSlide,
+  } = useDocsStore();
+  const [printing, setPrinting] = useState(false);   // print root mounted while true
+  const docsCaptureRef = useRef(null);               // capture() for the docs-editor 3D instance
+  const docs3dControlsRef = useRef(null);            // OrbitControls of the docs-editor 3D (separate from panes)
+  const pendingPlanFitRef = useRef(null);            // slide rect to frame after "Edit model" returns to the plan
+  // "Edit view" on Docs slides: cameras/crops are locked until explicitly unlocked.
+  // 3D uses OrbitControls (docsCamEdit gates `enabled`); plan/elevation edit a working
+  // copy of the slide's crop rect (docsEditRect) via a pan/wheel overlay — Save persists,
+  // Reset reverts, and rendering re-snaps to the nearest true standard scale on save.
+  const [docsCamEdit, setDocsCamEdit] = useState(false);
+  const [docsEditRect, setDocsEditRect] = useState(null);
+  const docsPanRef = useRef(null); // { sx, sy, rect, k } while dragging the crop
+  useEffect(() => { setDocsCamEdit(false); setDocsEditRect(null); }, [activeSlideId]); // lock on slide switch
+  useEffect(() => {
+    const mv = (e) => {
+      const p = docsPanRef.current; if (!p || !p.k) return;
+      const dx = (e.clientX - p.sx) / p.k, dy = (e.clientY - p.sy) / p.k;
+      setDocsEditRect({ ...p.rect, x: p.rect.x - dx, y: p.rect.y - dy });
+    };
+    const up = () => { docsPanRef.current = null; };
+    window.addEventListener("mousemove", mv);
+    window.addEventListener("mouseup", up);
+    return () => { window.removeEventListener("mousemove", mv); window.removeEventListener("mouseup", up); };
+  }, []);
   const [floorMaterial, setFloorMaterial] = useState("Wood"); // project default floor: Wood | Concrete | Vinyl | Carpet
   const [peekGuides, setPeekGuides] = useState(false); // true while hovering an edge rail → reveal placed guides
   const [hoverGuideId, setHoverGuideId] = useState(null); // guide the cursor is near (reveal it so it's grabbable)
@@ -231,11 +262,11 @@ export default function TestfitTool() {
   // so existing `view3d`/`splitView` reads keep working: plan is always visible.
   const view3d = false;
   const splitView = panes.length > 1;
-  const show3d = panes.some(p => p.view === "3d");
   const [ceilingHeight, setCeilingHeight] = useState(108); // 9'-0" in inches
   const controls3dRef = useRef(null);
   const [show3dLabels, setShow3dLabels] = useState(false);
   const [show3dDims,   setShow3dDims]   = useState(false);
+  const [show3dCeiling, setShow3dCeiling] = useState(true); // session-only, like the toggles above
   const [style3d, setStyle3d] = useState("clay"); // "clay" | "xray" | "detailed"
   const [doorWidth, setDoorWidth] = useState(36);
   const [windowWidth, setWindowWidth] = useState(36);
@@ -269,7 +300,10 @@ export default function TestfitTool() {
   const [pasteOffset, setPasteOffset] = useState(0); // increments each paste
   const [lastCopyInfo, setLastCopyInfo] = useState(null); // { srcItems:[{id,type,x,y}], dx, dy } for "/" repeat-distribute
   const [repeatInput, setRepeatInput] = useState(null); // null = inactive; string = digits typed after "/"
-  const [mode, setMode] = useState("build"); // build, zone, itmep, budget
+  const [mode, setMode] = useState("build"); // build, zone, itmep, budget, docs
+  const activeDocsSlide = slides.find(s => s.id === activeSlideId) || slides[0] || null;
+  // 3D scene data is also needed when a Docs 3D slide is open (panes are unmounted there).
+  const show3d = panes.some(p => p.view === "3d") || (mode === "docs" && activeDocsSlide?.view === "3d");
 
   // Wall drawing: click-to-place sequential mode
   const [cursorPos, setCursorPos] = useState(null);
@@ -304,6 +338,9 @@ export default function TestfitTool() {
 
   // ── Project management ─────────────────────────────────────────────
   // captureModel: the full live model WITHOUT snapshot meta (used as a snapshot's data).
+  // Docs slides/docSettings are deliberately EXCLUDED — they're a deck artifact like
+  // `snapshots`; including them would clobber the deck on snapshot switch and bloat
+  // every snapshot's data blob.
   const captureModel = useCallback(() => ({
     projectName, nodes, walls, zones, markers, doors, windows, columns, dims, labels, revClouds, flowPaths, floorRegions, guides, floorMaterial,
     elevAnnotations,
@@ -311,10 +348,10 @@ export default function TestfitTool() {
     version: PROJECT_VERSION,
   }), [projectName, nodes, walls, zones, markers, doors, windows, columns, dims, labels, revClouds, flowPaths, floorRegions, guides, floorMaterial, elevAnnotations, bgOpacity, bgScale, bgOffset, pxPerFoot, showDims, zoneLibrary]);
 
-  // getProjectData: full file payload — model + snapshot library + view layout.
+  // getProjectData: full file payload — model + snapshot library + view layout + deck.
   const getProjectData = useCallback(() => ({
-    ...captureModel(), snapshots, activeSnapshotId, panes, splitPos, splitPosV, lockedLayers,
-  }), [captureModel, snapshots, activeSnapshotId, panes, splitPos, splitPosV, lockedLayers]);
+    ...captureModel(), snapshots, activeSnapshotId, panes, splitPos, splitPosV, lockedLayers, slides, docSettings,
+  }), [captureModel, snapshots, activeSnapshotId, panes, splitPos, splitPosV, lockedLayers, slides, docSettings]);
 
   const exportProject = useCallback(() => {
     const data = getProjectData();
@@ -344,6 +381,7 @@ export default function TestfitTool() {
       setSnapshots(m.snapshots); setActiveSnapshotId(m.activeSnapshotId);
       setPanes(m.panes); setSplitPos(m.splitPos); setSplitPosV(m.splitPosV);
       setLockedLayers(m.lockedLayers);
+      setSlides(m.slides || []); setDocSettings(m.docSettings || { ...DEFAULT_DOC_SETTINGS }); setActiveSlideId(null);
       setBgImage(null); setSelectedId(null); setSelType(null);
     }
     historyRef.current = []; historyIdxRef.current = -1;
@@ -363,7 +401,7 @@ export default function TestfitTool() {
       const saved = localStorage.getItem(AUTOSAVE_KEY);
       if (saved) {
         const m = migrateProjectData(JSON.parse(saved));
-        if (m.nodes.length || m.walls.length || m.zones.length || m.markers.length || m.snapshots.length) {
+        if (m.nodes.length || m.walls.length || m.zones.length || m.markers.length || m.snapshots.length || m.slides.length) {
           applyProjectData(m, true);
         }
       }
@@ -510,6 +548,7 @@ export default function TestfitTool() {
     localStorage.removeItem("testfit-zone-library");
     localStorage.removeItem(AUTOSAVE_KEY);
     setPhases(DEFAULT_PHASES); setActivePhase("existing"); setSnapshots([]); setActiveSnapshotId(null);
+    setSlides([]); setDocSettings({ ...DEFAULT_DOC_SETTINGS }); setActiveSlideId(null);
   }, []);
 
   const fitAll = useCallback((ns = nodes) => {
@@ -1248,7 +1287,11 @@ export default function TestfitTool() {
       if (e.key === "2") { setMode("itmep");  setT("select"); setSelectedId(null); setSelType(null); setSelectedIds([]); setShowModeMenu(false); return; }
       if (e.key === "3") { setMode("zone");   setT("select"); setSelectedId(null); setSelType(null); setSelectedIds([]); setShowModeMenu(false); return; }
       if (e.key === "4") { setMode("budget"); setT("select"); setSelectedId(null); setSelType(null); setSelectedIds([]); setShowModeMenu(false); return; }
-      if (k === "V" || k === "H") { setT(k === "V" ? "select" : "pan"); }
+      if (e.key === "5") { setMode("docs");   setT("select"); setSelectedId(null); setSelType(null); setSelectedIds([]); setShowModeMenu(false); return; }
+      // Docs mode has its own lightweight tools inside DocsView — the plan-canvas tool
+      // shortcuts don't apply there.
+      if (mode === "docs") { /* fall through to Escape / arrows / undo below */ }
+      else if (k === "V" || k === "H") { setT(k === "V" ? "select" : "pan"); }
       else if (mode === "build" && { W: "wall", C: "column" }[k]) { setT({ W: "wall", C: "column" }[k]); }
       // R = rect-room tool — but R also flips a selected door's hinge / rotates a selected
       // window or directional marker, so only when nothing R-sensitive is selected.
@@ -1829,11 +1872,192 @@ export default function TestfitTool() {
     activeComponentType, activePhase, activeSpecLayer, activeZoneType, bgImage, bgOffset, canvasRotation, columnLabel, columnNotes, columnShape, columnSize, commitWallSegment, cvs, cvsContainer, doorFlipped, doorHingeRight, doorType, doorWidth, findDimSnap, findNear, findProxHover, floorMaterial, gn, htrackAngle, inToPx, isWallTool, lastCopyInfo, layerLocked, lightingIsNew, lightingType, markerFinish, markerLocked, markerNotes, markerVisible, mode, outletIsNew, outletType, phaseVisible, proxHover, pxPerFoot, resolveDimEndpoints, resolveLeaderTip, resolvePoints, resolvePos, s2c, setBgOffset, setCursorPos, setDimInput, setEditingLabelId, setEditingLabelText, setGuideScrub, setHoverGuideId, setLastCopyInfo, setProxHover, setSmartGuides, setT, setTool, setViewOff, setZoneEdge, snapGrid, snapGuide, snapLabelAnchor, snapToWall, themeMode, tool, viewOff, wallKind, wc, windowHeight, windowSill, windowType, windowWidth, zoneEdge, zoneLibrary, zoneNotes, zonePaintColor, zonePaintFinish, zoom,
   });
 
+  // ── Docs stage plumbing ─────────────────────────────────────────────
+  // renderSlideBody: the render prop DocsView uses to draw a slide's model content.
+  // Slides render the LIVE model at the slide's saved crop — planning edits show up
+  // automatically. (renderPlanCanvas is defined later in the component body; this
+  // closure only runs at DocsView render time, after initialization.)
+  // Largest standard architectural scale the slide's crop can print at — the sheet then
+  // renders at EXACTLY that scale, so the title-block note is true on paper.
+  const slideStdScale = (slide, w, h) => (slide.view === "3d" || !slide.rect) ? null
+    : fitStandardScale(slide.rect, w, h, pxPerFoot);
+  const slideAutoScale = (slide) => {
+    const body = sheetBodyDims(docSettings);
+    return slideStdScale(slide, body.w, body.h)?.label ?? null;
+  };
+  // Shared "Edit view / Reset / Save view" chrome for slide cameras.
+  const camBtnStyle = (accent) => ({ display: "flex", alignItems: "center", gap: 5, padding: "5px 10px", borderRadius: 6, border: "1px solid " + (accent ? T.brand : T.border), background: accent ? T.brand + "22" : T.panelBg, color: accent ? T.textBright : T.textMuted, fontFamily: font, fontSize: 10, fontWeight: 600, cursor: "pointer", backdropFilter: "blur(8px)", boxShadow: T.panelShadow });
+  const slideCamControls = ({ editing, onEdit, onReset, onSave }) => (
+    <div style={{ position: "absolute", top: 10, right: 10, zIndex: 10, display: "flex", gap: 6 }}>
+      {!editing
+        ? <button data-testid="slide-cam-edit" style={camBtnStyle(false)} onClick={onEdit}>
+            <Camera size={11} /> Edit view
+          </button>
+        : <>
+            <button data-testid="slide-cam-reset" style={camBtnStyle(false)} onClick={onReset}>
+              <RotateCcw size={11} /> Reset
+            </button>
+            <button data-testid="slide-cam-save" style={camBtnStyle(true)} onClick={onSave}>
+              <Check size={11} /> Save view
+            </button>
+          </>}
+    </div>
+  );
+  const renderSlideBody = (slide, { width, height, forPrint = false, sheetScale = 1 } = {}) => {
+    // Plan + elevation share the crop-editing model: while editing, a working copy of the
+    // slide's rect is panned (drag) and zoomed (wheel); Save persists it and rendering
+    // re-snaps to the nearest true standard scale.
+    const rectEditing = !forPrint && docsCamEdit && docsEditRect && slide.view !== "3d";
+    const rectControls = () => slideCamControls({
+      editing: rectEditing,
+      onEdit: () => { setDocsCamEdit(true); setDocsEditRect({ ...slide.rect }); },
+      onReset: () => setDocsEditRect({ ...slide.rect }),
+      onSave: () => { updateSlide(slide.id, { rect: docsEditRect }); setDocsCamEdit(false); setDocsEditRect(null); },
+    });
+    const dragLayer = (dispZoom) => (
+      <div
+        onMouseDown={(e) => { e.stopPropagation(); e.preventDefault(); docsPanRef.current = { sx: e.clientX, sy: e.clientY, rect: docsEditRect, k: dispZoom * sheetScale }; }}
+        onWheel={() => {}}
+        onWheelCapture={(e) => {
+          setDocsEditRect(r => {
+            if (!r) return r;
+            const f = e.deltaY > 0 ? 1.1 : 1 / 1.1;
+            const w = Math.max(20, Math.min(200000, r.w * f));
+            const h = r.h * (w / r.w);
+            return { x: r.x + (r.w - w) / 2, y: r.y + (r.h - h) / 2, w, h };
+          });
+        }}
+        style={{ position: "absolute", inset: 0, zIndex: 5, cursor: "grab", background: "transparent" }} />
+    );
+    if (slide.view === "plan") {
+      const std = rectEditing ? null : slideStdScale(slide, width, height);
+      const rect = rectEditing ? docsEditRect : slide.rect;
+      const cam = std ? scaledRectCam(rect, width, height, std.zoom) : fitRectToViewport(rect, width, height, 8);
+      const body = renderPlanCanvas({ zoom: cam.zoom, viewOff: cam.viewOff, width, height, interactive: false });
+      if (forPrint) return body;
+      return (
+        <div style={{ width, height, position: "relative", pointerEvents: rectEditing ? "auto" : "none" }}>
+          {body}
+          {rectEditing && dragLayer(cam.zoom)}
+          <div style={{ pointerEvents: "auto" }}>{rectControls()}</div>
+        </div>
+      );
+    }
+    if (slide.view !== "3d") {
+      // Elevation slide: read-only ElevationView at the saved u/v crop; shows the live
+      // elevation annotations + section cut, same as the planning pane.
+      const dir = slide.view;
+      const cut = guides.find(g => g.dir === dir);
+      const std = rectEditing ? null : slideStdScale(slide, width, height);
+      const rect = rectEditing ? docsEditRect : slide.rect;
+      const dispZoom = fitRectToViewport(rect, width, height, 8).zoom; // matches ElevationView's contain-fit
+      return (
+        <div key={width + "x" + height} style={{ width, height, background: T.canvas, position: "relative", pointerEvents: rectEditing ? "auto" : "none" }}>
+          <ElevationView dir={dir} nodes={nodes} walls={walls} doors={doors} windows={windows} columns={columns}
+            markers={visibleITMEP ? markers : []}
+            ceilingHeight={ceilingHeight} pxPerFoot={pxPerFoot} T={T} ft={ft} tool="select"
+            cut={cut ? cut.pos : null} scrub={null} onView={null} panU={null}
+            selectedId={null} selType={null} onSelect={() => {}}
+            anno={elevAnnotations[dir] || { dims: [], labels: [], revClouds: [] }}
+            readonly fixedRect={rect} fixedZoom={std?.zoom} />
+          {!forPrint && rectEditing && dragLayer(dispZoom)}
+          {!forPrint && <div style={{ pointerEvents: "auto" }}>{rectControls()}</div>}
+        </div>
+      );
+    }
+    // 3D slide. Print/strip use the captured image; the open Docs slide renders live
+    // WebGL (the only mounted 3D — planning panes are unmounted in Docs mode) and stays
+    // orbit-able: gesture end persists the new pose AND refreshes the capture.
+    const placeholder = (msg) => (
+      <div style={{ width, height, display: "flex", alignItems: "center", justifyContent: "center", color: T.textDim, fontSize: 11, fontFamily: font, border: "1px dashed " + T.border, textAlign: "center", padding: 12, boxSizing: "border-box" }}>{msg}</div>
+    );
+    if (forPrint) {
+      return slide.image
+        ? <img src={slide.image} alt={slide.name} style={{ width, height, objectFit: "contain", display: "block" }} />
+        : placeholder("3D view not captured yet — open this slide in Docs first.");
+    }
+    if (!data3d) return placeholder("Loading 3D…");
+    // Camera is LOCKED by default: orbiting only while "Edit view" is active. Save
+    // persists the pose + refreshes the deck/print capture; Reset reverts to the saved
+    // pose without saving.
+    const applyPose = (pose) => {
+      const c = docs3dControlsRef.current;
+      if (!c || !pose) return;
+      c.object.position.set(...pose.position);
+      c.target.set(...pose.target);
+      c.update();
+    };
+    const saveView = () => {
+      const c = docs3dControlsRef.current;
+      if (c) {
+        const cam3d = { position: c.object.position.toArray(), target: c.target.toArray(), style3d: slide.cam3d?.style3d || "clay" };
+        const image = docsCaptureRef.current ? docsCaptureRef.current() : slide.image;
+        updateSlide(slide.id, { cam3d, image });
+      }
+      setDocsCamEdit(false);
+    };
+    return (
+      <div style={{ width, height, position: "relative", pointerEvents: "auto" }}>
+        <Suspense fallback={placeholder("Loading 3D…")}>
+          <TestFit3D key={slide.id}
+            walls={data3d.walls} nodes={data3d.nodes} doors={data3d.doors} windows={data3d.windows}
+            columns={data3d.columns} zones={data3d.zones} markers={data3d.markers} dims={dims}
+            pxPerFoot={pxPerFoot} ceilingHeight={ceilingHeight} T={T} themeMode={themeMode}
+            controlsRef={docs3dControlsRef} mode={mode} selectedId={null} selType={null}
+            show3dLabels={show3dLabels} setShow3dLabels={setShow3dLabels}
+            show3dDims={show3dDims} setShow3dDims={setShow3dDims}
+            style3d={slide.cam3d?.style3d || "clay"} floorMaterial={floorMaterial} floorRegions={data3d.floorRegions}
+            zoneLibrary={zoneLibrary} visibleLayers={visibleLayers}
+            visibleBuildElectrical={visibleBuildElectrical} visibleBuildLighting={visibleBuildLighting}
+            onSelect={() => {}}
+            initialCamera={slide.cam3d} preserveBuffer captureRef={docsCaptureRef}
+            controlsEnabled={docsCamEdit}
+          />
+        </Suspense>
+        {!forPrint && slideCamControls({
+          editing: docsCamEdit,
+          onEdit: () => setDocsCamEdit(true),
+          onReset: () => applyPose(slide.cam3d),
+          onSave: saveView,
+        })}
+      </div>
+    );
+  };
+  // Edit model: jump from a slide back into planning, framing the slide's view.
+  // Plan restores the exact crop (camera applied once the canvas remounts); elevation/3D
+  // open in a split pane and auto-fit (camera restore is best-effort in v1).
+  const editModelFromSlide = (slide) => {
+    setMode("build"); setT("select");
+    if (slide.view === "plan") { setLayout(1); pendingPlanFitRef.current = slide.rect; }
+    else { setLayout(2); setPaneView(1, slide.view === "3d" ? "3d" : slide.view); }
+  };
+  useEffect(() => {
+    if (mode === "docs" || !pendingPlanFitRef.current) return;
+    const el = cvs.current; if (!el) return;
+    const r = el.getBoundingClientRect(); if (!r.width) return;
+    const cam = fitRectToViewport(pendingPlanFitRef.current, r.width, r.height, 24);
+    pendingPlanFitRef.current = null;
+    setZoom(cam.zoom); setViewOff(cam.viewOff);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode]);
+
+  // Print lifecycle: mount the print root, give it two frames to lay out, open the
+  // dialog; unmount when the dialog closes (afterprint).
+  useEffect(() => {
+    if (!printing) return;
+    let cancelled = false;
+    requestAnimationFrame(() => requestAnimationFrame(() => { if (!cancelled) window.print(); }));
+    const done = () => setPrinting(false);
+    window.addEventListener("afterprint", done);
+    return () => { cancelled = true; window.removeEventListener("afterprint", done); };
+  }, [printing]);
+
   const MODES = {
     build:  { name: "Build",  num: 1, color: "#9A9488",    desc: "Walls, doors, windows, columns" },
     itmep:  { name: "IT/MEP", num: 2, color: "#4080E0",    desc: "Power, data, mechanical markers" },
     zone:   { name: "Zones",  num: 3, color: "#50A070",    desc: "Program areas & square footage" },
     budget: { name: "Budget", num: 4, color: T.uiBudget,   desc: "Cost rollup & assumptions" },
+    docs:   { name: "Docs",   num: 5, color: "#8E5AA8",    desc: "Presentation sheets & printing" },
   };
 
   const S = {
@@ -1975,10 +2199,37 @@ export default function TestfitTool() {
   const onElevView = useCallback((dir, v) => {
     setElevViews(prev => {
       const p = prev[dir];
-      if (p && Math.abs(p.uMin - v.uMin) < 0.5 && Math.abs(p.uMax - v.uMax) < 0.5) return prev;
+      // Compare v (vertical) too — Docs slide capture uses the full u/v rect, so a
+      // vertical-only pan must not be swallowed by the change guard.
+      if (p && Math.abs(p.uMin - v.uMin) < 0.5 && Math.abs(p.uMax - v.uMax) < 0.5 && Math.abs((p.vMin ?? 0) - (v.vMin ?? 0)) < 0.5) return prev;
       return { ...prev, [dir]: v };
     });
   }, []);
+
+  // ── Save a pane's current view into the Docs deck ──────────────────────────
+  const [savedFlashPane, setSavedFlashPane] = useState(null);
+  const saveViewToDocs = useCallback((i) => {
+    const view = panes[i]?.view;
+    if (!view) return;
+    let rect = null, cam3d = null;
+    if (view === "plan") {
+      const r = cvs.current?.getBoundingClientRect();
+      if (!r) return;
+      // canvasRotation is deliberately ignored — slides render the plan unrotated.
+      rect = { x: -viewOff.x / zoom, y: -viewOff.y / zoom, w: r.width / zoom, h: r.height / zoom };
+    } else if (view === "3d") {
+      const c = controls3dRef.current;
+      if (!c) return;
+      cam3d = { position: c.object.position.toArray(), target: c.target.toArray(), style3d };
+    } else {
+      const v = elevViews[view];
+      if (!v) return;
+      rect = { x: v.uMin, y: v.vMin ?? -50, w: v.uMax - v.uMin, h: (v.vMax ?? 350) - (v.vMin ?? -50) };
+    }
+    addSlide({ name: defaultSlideName(view, slides.length), view, rect, cam3d, image: null });
+    setSavedFlashPane(i);
+    setTimeout(() => setSavedFlashPane(null), 1000);
+  }, [panes, viewOff, zoom, style3d, elevViews, slides.length, addSlide]);
 
   // Drag the camera marker along its ruler to pan that elevation. The cursor's position
   // along the edge → projected-u → the elevation centers there (handled via the panU prop).
@@ -2105,6 +2356,7 @@ export default function TestfitTool() {
         controlsRef={controls3dRef} mode={mode} selectedId={selectedId} selType={selType}
         show3dLabels={show3dLabels} setShow3dLabels={setShow3dLabels}
         show3dDims={show3dDims} setShow3dDims={setShow3dDims}
+        show3dCeiling={show3dCeiling}
         style3d={style3d} floorMaterial={floorMaterial} floorRegions={data3d.floorRegions}
         zoneLibrary={zoneLibrary} visibleLayers={visibleLayers}
         visibleBuildElectrical={visibleBuildElectrical} visibleBuildLighting={visibleBuildLighting}
@@ -2119,6 +2371,10 @@ export default function TestfitTool() {
           </button>
         ))}
       </div>
+      <button onClick={() => setShow3dCeiling(v => !v)} title="Ceiling"
+        style={{ position: "absolute", bottom: 12, right: 52, zIndex: 10, display: "flex", alignItems: "center", justifyContent: "center", padding: "6px 8px", borderRadius: 6, border: "1px solid " + T.border, background: show3dCeiling ? T.accent : T.panelBg, color: show3dCeiling ? "#fff" : T.textMuted, cursor: "pointer", backdropFilter: "blur(8px)", boxShadow: T.panelShadow }}>
+        <PanelTop size={14} />
+      </button>
       <button onClick={() => controls3dRef.current?.reset()} title="Reset camera"
         style={{ position: "absolute", bottom: 12, right: 12, zIndex: 10, display: "flex", alignItems: "center", justifyContent: "center", padding: "6px 8px", borderRadius: 6, border: "1px solid " + T.border, background: T.panelBg, color: T.textMuted, cursor: "pointer", backdropFilter: "blur(8px)", boxShadow: T.panelShadow }}>
         <RotateCcw size={14} />
@@ -2154,14 +2410,32 @@ export default function TestfitTool() {
   // Per-pane view selector chip (top-left of each pane). Plan pane is fixed.
   const PaneChip = ({ i }) => {
     const view = panes[i]?.view;
+    const saved = savedFlashPane === i;
+    const camBtn = (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button data-testid={"save-to-docs-" + i} onClick={() => saveViewToDocs(i)}
+            style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: "3px 7px", borderRadius: 6, background: saved ? "#50C87822" : T.panelBg, border: "1px solid " + (saved ? "#50C878" : T.border), color: saved ? "#50C878" : T.textMuted, cursor: "pointer", backdropFilter: "blur(8px)" }}>
+            {saved ? <Check size={12} /> : <Camera size={12} />}
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="bottom" sideOffset={6}>Save view to Docs</TooltipContent>
+      </Tooltip>
+    );
     // Multi-pane: pane 0 is locked to Plan so there's always a drawable canvas.
-    if (i === 0 && panes.length > 1) return <div style={{ position: "absolute", top: 8, left: 8, zIndex: 50, padding: "3px 9px", borderRadius: 6, background: T.panelBg, border: "1px solid " + T.border, color: T.textMuted, fontSize: 10, fontWeight: 600, fontFamily: "inherit", backdropFilter: "blur(8px)", pointerEvents: "none" }}>Plan</div>;
-    return <select value={view} onChange={e => setPaneView(i, e.target.value)}
-      style={{ position: "absolute", top: 8, left: 8, zIndex: 50, padding: "3px 6px", borderRadius: 6, background: T.panelBg, border: "1px solid " + T.border, color: T.textBright, fontSize: 10, fontWeight: 600, fontFamily: "inherit", backdropFilter: "blur(8px)", cursor: "pointer", outline: "none" }}>
-      {i === 0 && <option value="plan">Plan</option>}
-      <option value="3d">3D</option>
-      {ELEV_DIRS.map(d => <option key={d} value={d}>{PANE_VIEW_LABEL[d]}</option>)}
-    </select>;
+    if (i === 0 && panes.length > 1) return <div style={{ position: "absolute", top: 8, left: 8, zIndex: 50, display: "flex", gap: 5 }}>
+      <div style={{ padding: "3px 9px", borderRadius: 6, background: T.panelBg, border: "1px solid " + T.border, color: T.textMuted, fontSize: 10, fontWeight: 600, fontFamily: "inherit", backdropFilter: "blur(8px)" }}>Plan</div>
+      {camBtn}
+    </div>;
+    return <div style={{ position: "absolute", top: 8, left: 8, zIndex: 50, display: "flex", gap: 5 }}>
+      <select value={view} onChange={e => setPaneView(i, e.target.value)}
+        style={{ padding: "3px 6px", borderRadius: 6, background: T.panelBg, border: "1px solid " + T.border, color: T.textBright, fontSize: 10, fontWeight: 600, fontFamily: "inherit", backdropFilter: "blur(8px)", cursor: "pointer", outline: "none" }}>
+        {i === 0 && <option value="plan">Plan</option>}
+        <option value="3d">3D</option>
+        {ELEV_DIRS.map(d => <option key={d} value={d}>{PANE_VIEW_LABEL[d]}</option>)}
+      </select>
+      {camBtn}
+    </div>;
   };
   const VDivider = () => (
     <div style={{ width: 5, flexShrink: 0, background: T.border, cursor: "col-resize", zIndex: 15, position: "relative" }}
@@ -2184,841 +2458,19 @@ export default function TestfitTool() {
     </div>
   );
 
-  return (
-    <TooltipProvider>
-    <div style={S.root}>
-      {/* ── Top Mode Bar ──────────────────────────────────────────── */}
-      <TopBar $={$} MODES={MODES} S={S} T={T} activeSnapshotId={activeSnapshotId} canRedo={canRedo} canUndo={canUndo} cost={cost} deleteSnapshot={deleteSnapshot} display={display} exportPdf={exportPdf} exportPng={exportPng} exportProject={exportProject} font={font} importProject={importProject} liveDirty={liveDirty} loadRef={loadRef} markers={markers} mode={mode} modeMenuRect={modeMenuRect} newProject={newProject} newSnapMode={newSnapMode} redo={redo} renameSnapshot={renameSnapshot} renamingSnapId={renamingSnapId} saveMenuRect={saveMenuRect} setMode={setMode} setModeMenuRect={setModeMenuRect} setNewSnapMode={setNewSnapMode} setRenamingSnapId={setRenamingSnapId} setSaveMenuRect={setSaveMenuRect} setShowModeMenu={setShowModeMenu} setShowSaveMenu={setShowSaveMenu} setShowSettings={setShowSettings} setShowSnapMenu={setShowSnapMenu} setSidebarOpen={setSidebarOpen} setSnapDraftName={setSnapDraftName} setSnapMenuRect={setSnapMenuRect} setT={setT} setThemeMode={setThemeMode} showModeMenu={showModeMenu} showSaveMenu={showSaveMenu} showSnapMenu={showSnapMenu} sidebarOpen={sidebarOpen} snapDraftName={snapDraftName} snapMenuRect={snapMenuRect} snapshot={snapshot} snapshots={snapshots} switchSnapshot={switchSnapshot} takeSnapshot={takeSnapshot} themeMode={themeMode} undo={undo} updateSnapshot={updateSnapshot} walls={walls} zones={zones} panes={panes} setLayout={setLayout} setSelType={setSelType} setSelectedId={setSelectedId} setSelectedIds={setSelectedIds} />
-
-      <div style={S.main}>
-        {/* ── Sidebar ──────────────────────────────────────────────── */}
-        <div style={S.side}>
-          <div style={{ padding: "14px 16px", borderBottom: "1px solid " + T.bg3, background: T.bg0 }}>
-            <div style={{ fontSize: 9, color: T.textDim, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 4, fontWeight: 600 }}>Project</div>
-            <input data-testid="project-name" style={{ background: "none", border: "none", color: T.textBright, fontSize: 14, fontFamily: "inherit", fontWeight: 600, width: "100%", outline: "none" }} value={projectName} onChange={e => setProjectName(e.target.value)} />
-          </div>
-          <div style={S.body}>
-
-            {/* ── BUILD ─────────────────────────────────────────── */}
-            {mode === "build" && <>
-              <div style={S.sec}>
-                <div style={S.sh}>Reference Image</div>
-                <button onClick={() => fRef.current?.click()} style={{ ...S.inp, cursor: "pointer", textAlign: "center", color: bgImage ? T.textBright : T.textMuted, fontSize: 10, fontWeight: 500 }}>
-                  {bgImage ? "Replace Image" : "Upload Floorplan"}
-                </button>
-                <input ref={fRef} type="file" accept="image/*" style={{ display: "none" }} onChange={e => { const f = e.target.files?.[0]; if (f) { const r = new FileReader(); r.onload = ev => setBgImage(ev.target.result); r.readAsDataURL(f); } }} />
-                {bgImage && <>
-                  <div style={{ marginTop: 10 }}><div style={S.lbl}>Opacity</div><input type="range" min="0" max="100" value={bgOpacity * 100} onChange={e => setBgOpacity(e.target.value / 100)} style={{ width: "100%", accentColor: "#9A9488", height: 4 }} /></div>
-                  <div style={{ marginTop: 8 }}><div style={S.lbl}>Scale</div><input type="range" min="20" max="300" value={bgScale * 100} onChange={e => setBgScale(e.target.value / 100)} style={{ width: "100%", accentColor: "#9A9488", height: 4 }} /></div>
-                  <div style={{ fontSize: 9, color: T.textDim, marginTop: 6, fontStyle: "italic" }}>Alt + drag to reposition</div>
-                  <button onClick={() => { setBgImage(null); setBgOpacity(0.35); setBgScale(1); setBgOffset({ x: 0, y: 0 }); }} style={{ ...S.del, marginTop: 10, width: "100%", textAlign: "center" }}>Delete Reference Image</button>
-                </>}
-              </div>
-              {bgImage && calibrationLine && calibrationLine.p1 && calibrationLine.p2 && (
-                <div style={S.sec}>
-                  <div style={S.sh}>Calibrate Scale</div>
-                  <div style={{ marginBottom: 8 }}>
-                    <div style={S.lbl}>Known Distance (feet)</div>
-                    <input 
-                      style={S.inp} 
-                      type="number" 
-                      value={calibrationFeet} 
-                      onChange={e => setCalibrationFeet(e.target.value)} 
-                      placeholder="10"
-                      step="0.5"
-                    />
-                  </div>
-                  <button 
-                    style={{ ...S.inp, cursor: "pointer", textAlign: "center", color: T.uiConduit, fontSize: 10, fontWeight: 500, marginBottom: 6 }}
-                    onClick={() => {
-                      const feet = parseFloat(calibrationFeet);
-                      if (feet > 0 && calibrationLine.p1 && calibrationLine.p2) {
-                        const pixelDist = Math.sqrt(
-                          Math.pow(calibrationLine.p2.x - calibrationLine.p1.x, 2) + 
-                          Math.pow(calibrationLine.p2.y - calibrationLine.p1.y, 2)
-                        );
-                        const targetPixels = feet * pxPerFoot;
-                        const newScale = targetPixels / pixelDist;
-                        setBgScale(prevScale => prevScale * newScale);
-                        setCalibrationLine(null);
-                        setT("select");
-                      }
-                    }}
-                  >
-                    Apply Calibration
-                  </button>
-                  <button 
-                    style={{ ...S.inp, cursor: "pointer", textAlign: "center", color: T.textMuted, fontSize: 10, fontWeight: 500 }}
-                    onClick={() => setCalibrationLine(null)}
-                  >
-                    Clear Line
-                  </button>
-                </div>
-              )}
-              {/* Drawing Scale — hidden, state + functionality preserved */}
-              <div style={S.sec}>
-                <div style={S.sh}>Summary</div>
-                {Object.entries(cost.wallFt).map(([k, v]) => <div key={k} style={S.cr}><span style={{ color: v.color, fontWeight: 500 }}>{v.label}</span><span style={{ fontWeight: 500 }}>{ft(v.ft)}</span></div>)}
-                {Object.keys(cost.wallFt).length === 0 && <div style={{ color: T.textFaint, fontSize: 10, padding: "8px 0", fontStyle: "italic" }}>No walls yet</div>}
-                <div style={{ ...S.cr, color: T.accent, borderBottom: "none" }}><span>Doors</span><span>{doors.length}</span></div>
-                <div style={{ ...S.cr, color: T.accent, borderBottom: "none" }}><span>Windows</span><span>{windows.length}</span></div>
-                <div style={{ ...S.cr, color: T.accent, borderBottom: "none", paddingBottom: 0 }}><span>Columns</span><span>{columns.length}</span></div>
-                {(() => {
-                  const pm = markers.filter(m => m.layer === "power");
-                  if (!pm.length) return null;
-
-                  // Group by componentType + isNew
-                  const groups = {};
-                  pm.forEach(m => {
-                    const compData = SPEC_COMPONENTS.power[m.componentType];
-                    if (!compData) return;
-                    const isLighting = m.componentType?.startsWith("light_") || m.componentType?.startsWith("htrack_") || m.componentType === "sconce_prewire" || m.componentType === "pendent_prewire";
-                    const key = m.componentType + (m.isNew ? "_new" : "_ab");
-                    if (!groups[key]) groups[key] = { name: compData.name, isNew: !!m.isNew, isLighting, color: isLighting ? T.uiLighting : T.uiElec, ids: [] };
-                    groups[key].ids.push(m.id);
-                  });
-
-                  const elecGroups = Object.values(groups).filter(g => !g.isLighting);
-                  const ltGroups   = Object.values(groups).filter(g =>  g.isLighting);
-
-                  const SummaryRow = ({ group }) => {
-                    const isGroupSel = group.ids.length > 0 && group.ids.every(id => selectedIds.includes(id));
-                    const rowColor = group.isNew ? "#50A0E0" : group.color;
-                    return <div
-                      style={{ ...S.cr, cursor: "pointer", background: isGroupSel ? T.selBg : "transparent", borderRadius: 4, transition: "all 0.12s ease" }}
-                      onClick={() => { setSelectedIds(group.ids); setSelectedId(group.ids[0]); setSelType("marker"); setT("select"); }}>
-                      <span style={{ color: rowColor, fontWeight: 500 }}>{group.ids.length}× {group.name}</span>
-                      <span style={{ fontSize: 9, color: group.isNew ? "#50A0E0" : T.textMuted, fontStyle: "italic" }}>{group.isNew ? "new" : "existing"}</span>
-                    </div>;
-                  };
-
-                  return <>
-                    {elecGroups.length > 0 && <>
-                      <div style={{ marginTop: 6, paddingTop: 6, borderTop: "1px solid " + T.border, fontSize: 8, color: T.textMuted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 4, fontWeight: 600 }}>Electrical</div>
-                      {elecGroups.map((g, i) => <SummaryRow key={i} group={g} />)}
-                    </>}
-                    {ltGroups.length > 0 && <>
-                      <div style={{ marginTop: 6, paddingTop: 6, borderTop: "1px solid " + T.border, fontSize: 8, color: T.textMuted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 4, fontWeight: 600 }}>Lighting</div>
-                      {ltGroups.map((g, i) => <SummaryRow key={i} group={g} />)}
-                    </>}
-                  </>;
-                })()}
-              </div>
-            </>}
-
-            {/* ── ZONE ────��──────────────────────────────────────── */}
-            {mode === "zone" && <>
-              <div style={S.sec}>
-                <div style={S.sh}>Zone Types</div>
-              </div>
-              <div style={S.sec}>
-                <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                  {Object.entries(zoneLibrary).map(([k, z]) => <button key={k} style={S.btn(activeZoneType === k, z.color)}
-                    onClick={() => { setActiveZoneType(k); if (tool !== "zone") setT("zone"); }}>
-                    <span style={S.dot(z.color)} />{z.name}
-                  </button>)}
-                </div>
-              </div>
-              <div style={S.sec}>
-                <div style={S.sh}>Placed Zones ({zones.length})</div>
-                {zones.length === 0 && <div style={{ color: T.textFaint, fontSize: 10, padding: "8px 0", fontStyle: "italic" }}>No zones placed yet</div>}
-                {zones.map(z => <div key={z.id} style={{ padding: "6px 10px", background: selectedId === z.id ? T.selBg : "transparent", borderRadius: 5, cursor: "pointer", display: "flex", alignItems: "center", gap: 8, fontSize: 10, marginBottom: 3, border: selectedId === z.id ? "1.5px solid " + T.selBorder : "1.5px solid transparent", transition: "all 0.12s ease" }}
-                  onClick={() => { setSelectedId(z.id); setSelType("zone"); setT("select"); }}>
-                  <span style={S.dot(zoneLibrary[z.type].color)} />
-                  <span style={{ flex: 1, fontWeight: selectedId === z.id ? 500 : 400 }}>{z.label}</span>
-                  <span style={{ color: T.accentDim, fontSize: 9 }}>{z.points ? Math.round(polyArea(z.points) / (pxPerFoot * pxPerFoot)) + " sf" : ft(z.w) + "×" + ft(z.h)}</span>
-                </div>)}
-                {cost.totalSf > 0 && <div style={{ ...S.cr, fontWeight: 600, marginTop: 8, borderTop: "1.5px solid " + T.selBorder, paddingTop: 8, borderBottom: "none" }}><span>Total Area</span><span>{cost.totalSf} sf</span></div>}
-              </div>
-            </>}
-
-            {/* ── IT / MEP ───────────────────────────────────────── */}
-            {mode === "itmep" && <>
-              <div style={S.sec}>
-                <div style={S.sh}>Component Layers</div>
-                {Object.entries(SPEC_LAYERS).filter(([k]) => k !== "power").map(([k, l]) => <div key={k} style={{
-                  ...S.lr, 
-                  background: activeSpecLayer === k ? uiColor(l.color) + "20" : "transparent",
-                  border: activeSpecLayer === k ? "2px solid " + uiColor(l.color) + "60" : "2px solid transparent",
-                  borderRadius: "6px",
-                  padding: "8px 6px",
-                  margin: "2px 0",
-                  transition: "all 0.15s ease"
-                }} onClick={() => { setActiveSpecLayer(k); const firstComp = Object.keys(SPEC_COMPONENTS[k])[0]; setActiveComponentType(firstComp); setT("marker"); }}>
-                  <div style={{ width: 10, height: 10, borderRadius: "50%", background: uiColor(l.color), opacity: visibleLayers[k] ? 1 : 0.3, flexShrink: 0 }} />
-                  <span style={{ color: activeSpecLayer === k ? T.textBright : T.accent, flex: 1, fontWeight: activeSpecLayer === k ? 600 : 400 }}>{l.name}</span>
-                  <span style={{ color: activeSpecLayer === k ? uiColor(l.color) : T.accentDim, fontSize: 10, fontWeight: 500 }}>{markers.filter(p => p.layer === k).length}</span>
-                </div>)}
-              </div>
-              <div style={S.sec}>
-                <div style={S.sh}>Placed Components ({markers.length})</div>
-                {markers.length === 0 && <div style={{ color: T.textFaint, fontSize: 10, padding: "8px 0", fontStyle: "italic" }}>No components placed yet</div>}
-                {Object.entries(SPEC_LAYERS).filter(([k]) => k !== "power").map(([layerKey, layer]) => {
-                  const layerMarkers = markers.filter(m => m.layer === layerKey);
-                  if (layerMarkers.length === 0) return null;
-                  // Group by componentType + finish so white/black list separately.
-                  const groups = {};
-                  layerMarkers.forEach(m => {
-                    const gkey = `${m.componentType}|${m.finish || ""}`;
-                    if (!groups[gkey]) groups[gkey] = [];
-                    groups[gkey].push(m);
-                  });
-                  return <div key={layerKey} style={{ marginBottom: 12 }}>
-                    <div style={{ fontSize: 9, color: layer.color, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 4, fontWeight: 600 }}>{layer.name}</div>
-                    {Object.entries(groups).map(([gkey, groupMarkers]) => {
-                      const [compType, finish] = gkey.split("|");
-                      const compData = SPEC_COMPONENTS[layerKey]?.[compType];
-                      const fin = finish && FINISH_COLORS[finish];
-                      const swFill = fin ? fin.fill : (compData?.color || layer.color);
-                      const swLine = fin ? fin.line : (compData?.color || layer.color);
-                      const finLabel = finish ? ` (${finish[0].toUpperCase() + finish.slice(1)})` : "";
-                      const groupIds = groupMarkers.map(m => m.id);
-                      const isGroupSelected = groupIds.some(id => selectedId === id || selectedIds.includes(id));
-                      return <div key={gkey} style={{ padding: "4px 8px", background: isGroupSelected ? T.selBg : "transparent", borderRadius: 4, cursor: "pointer", display: "flex", alignItems: "center", gap: 7, fontSize: 10, marginBottom: 2, border: isGroupSelected ? "1.5px solid " + T.selBorder : "1.5px solid transparent", transition: "all 0.12s ease" }}
-                        onClick={() => { setSelectedId(null); setSelType(null); setSelectedIds(groupIds); setTool("select"); }}>
-                        <span style={{ width: 12, height: 12, borderRadius: compData?.symbol === "rack" ? 2 : 6, background: swFill, border: "1.5px solid " + swLine, flexShrink: 0 }} />
-                        <span style={{ flex: 1, fontWeight: isGroupSelected ? 500 : 400 }}>{(compData?.name || compType) + finLabel}</span>
-                        {groupMarkers.length > 1 && <span style={{ color: layer.color, fontSize: 9, fontWeight: 600, background: layer.color + "18", padding: "1px 5px", borderRadius: 8 }}>{groupMarkers.length}</span>}
-                      </div>;
-                    })}
-                  </div>;
-                })}
-              </div>
-            </>}
-
-            {/* ── BUDGET ─────────────────────────────────────────── */}
-            {mode === "budget" && <>
-              <div style={S.sec}>
-                <div style={S.sh}>Cost Breakdown</div>
-                {Object.entries(cost.wallFt).map(([k, v]) => {
-                  const matchingWalls = walls.filter(w => (w.kind || "existing") === k);
-                  const isSelected = matchingWalls.length > 0 && matchingWalls.every(w => selectedIds.includes(w.id));
-                  return <div key={k} style={{ ...S.cr, cursor: "pointer", transition: "all 0.12s ease", background: isSelected ? T.selBg : "transparent" }}
-                    onClick={() => {
-                      const wallIds = matchingWalls.map(w => w.id);
-                      setSelectedIds(wallIds);
-                      if (wallIds.length > 0) {
-                        setSelectedId(wallIds[0]);
-                        setSelType("wall");
-                      }
-                    }}
-                  >
-                    <span style={{ color: v.color, fontWeight: 500 }}>{v.label} wall</span><span style={{ fontWeight: 500 }}>{ft(v.ft)}</span>
-                  </div>;
-                })}
-                {cost.zones.map(z => <div key={z.id} style={{ ...S.cr, cursor: "pointer", transition: "all 0.12s ease", background: selectedId === z.id ? T.selBg : "transparent" }}
-                  onClick={() => {
-                    setSelectedId(z.id);
-                    setSelType("zone");
-                    setSelectedIds([z.id]);
-                  }}
-                >
-                  <span style={{ display: "flex", alignItems: "center", gap: 6 }}><span style={S.dot(zoneLibrary[z.type].color)} />{z.label}</span>
-                  <span style={{ fontWeight: 500 }}>{$(z.total)}</span>
-                </div>)}
-                {Object.entries(cost.markers).map(([k, p]) => {
-                  const [layer, componentType, finish] = k.split('|');
-                  const matchingMarkers = markers.filter(m => m.layer === layer && m.componentType === componentType && (m.finish || "") === (finish || ""));
-                  const isSelected = matchingMarkers.length > 0 && matchingMarkers.every(m => selectedIds.includes(m.id));
-                  return <div key={k} style={{ ...S.cr, cursor: "pointer", transition: "all 0.12s ease", background: isSelected ? T.selBg : "transparent" }}
-                    onClick={() => {
-                      const markerIds = matchingMarkers.map(m => m.id);
-                      setSelectedIds(markerIds);
-                      if (markerIds.length > 0) {
-                        setSelectedId(markerIds[0]);
-                        setSelType("marker");
-                      }
-                    }}
-                  >
-                    <span>{p.count}× {p.name}</span><span style={{ fontWeight: 500 }}>{$(p.count * p.unitCost)}</span>
-                  </div>;
-                })}
-                {cost.totalSf > 0 && <div style={S.cr}><span>Total area</span><span style={{ fontWeight: 500 }}>{cost.totalSf} sf</span></div>}
-                <div style={S.ct}><span>Total Estimate</span><span>{$(cost.total)}</span></div>
-                <button style={{ ...S.inp, cursor: "pointer", textAlign: "center", color: T.uiBudget, marginTop: 10, fontSize: 10, fontWeight: 500 }}
-                  onClick={() => {
-                    const lines = [`${projectName} — Testfit Summary`, ""];
-                    if (Object.keys(cost.wallFt).length) {
-                      lines.push("WALLS");
-                      Object.entries(cost.wallFt).forEach(([k, v]) => lines.push(`  ${v.label}: ${ft(v.ft)}`));
-                      // Wall details
-                      const wallsWithInfo = walls.filter(w => w.material || w.paintFinish || w.notes);
-                      if (wallsWithInfo.length) {
-                        lines.push("  —");
-                        wallsWithInfo.forEach(w => {
-                          const wk = wallKinds[w.kind || "existing"];
-                          const parts = [`${wk.label} · ${ft(wl(w))}`];
-                          if (w.material) parts.push(w.material);
-                          if (w.paintFinish) parts.push(`Paint: ${w.paintFinish}`);
-                          if (w.notes) parts.push(`(${w.notes})`);
-                          lines.push(`  ${parts.join(" · ")}`);
-                        });
-                      }
-                      lines.push("");
-                    }
-                    if (cost.zones.length) {
-                      lines.push("ZONES");
-                      cost.zones.forEach(z => lines.push(`  ${z.label} — ${z.sf} sf — ${$(z.total)}`));
-                      lines.push(`  Total: ${cost.totalSf} sf`);
-                      lines.push("");
-                    }
-                    const markerEntries = Object.entries(cost.markers);
-                    if (markerEntries.length) {
-                      lines.push("MARKERS");
-                      markerEntries.forEach(([k, p]) => lines.push(`  ${p.count}× ${p.name} — ${$(p.count * p.unitCost)}`));
-                      lines.push("");
-                    }
-                    if (doors.length) lines.push(`DOORS: ${doors.length}`);
-                    if (windows.length) lines.push(`WINDOWS: ${windows.length}`);
-                    lines.push(""); lines.push(`TOTAL ESTIMATE: ${$(cost.total)}`);
-                    
-                    // Fallback clipboard copy with error handling
-                    const text = lines.join("\n");
-                    if (navigator.clipboard && navigator.clipboard.writeText) {
-                      navigator.clipboard.writeText(text).catch(() => {
-                        // Fallback: create a temporary textarea
-                        const textarea = document.createElement("textarea");
-                        textarea.value = text;
-                        textarea.style.position = "fixed";
-                        textarea.style.opacity = "0";
-                        document.body.appendChild(textarea);
-                        textarea.select();
-                        try {
-                          document.execCommand("copy");
-                        } catch (err) {
-                          console.error("Copy failed:", err);
-                        }
-                        document.body.removeChild(textarea);
-                      });
-                    } else {
-                      // Fallback for browsers without clipboard API
-                      const textarea = document.createElement("textarea");
-                      textarea.value = text;
-                      textarea.style.position = "fixed";
-                      textarea.style.opacity = "0";
-                      document.body.appendChild(textarea);
-                      textarea.select();
-                      try {
-                        document.execCommand("copy");
-                      } catch (err) {
-                        console.error("Copy failed:", err);
-                      }
-                      document.body.removeChild(textarea);
-                    }
-                  }}>Copy Summary to Clipboard</button>
-              </div>
-            </>}
-          </div>
-          {/* ── Visibility panel — all modes ── */}
-          {(() => {
-            const isLightComp = isLightComponent;
-            const rows = [
-              // Universal items (lockable = items can be locked from selection/editing)
-              { key: "grid",       label: "Grid",           color: T.textMuted,            visible: showGrid,              toggle: () => setShowGrid(v => !v),              count: null, lockable: false },
-              { key: "zones",      label: "Zones",          color: T.uiZone ?? "#6A9BCC", visible: visibleZones,          toggle: () => setVisibleZones(v => !v),          count: zones.length, lockable: true },
-              { key: "dims",       label: "Dimensions",     color: T.dimText,              visible: visibleDims,           toggle: () => setVisibleDims(v => !v),           count: dims.length, lockable: true },
-              { key: "labels",     label: "Labels",         color: T.textBright,           visible: visibleLabels,         toggle: () => setVisibleLabels(v => !v),         count: labels.length, lockable: true },
-              { key: "revClouds",  label: "Rev Clouds",     color: "#E05252",              visible: visibleRevClouds,      toggle: () => setVisibleRevClouds(v => !v),      count: revClouds.length, lockable: true },
-              { key: "flowPaths",  label: "Flow Paths",     color: "#4A90D9",              visible: visibleFlowPaths,      toggle: () => setVisibleFlowPaths(v => !v),      count: flowPaths.length, lockable: true },
-              { key: "floorRegions", label: "Floors",       color: "#7A9E5A",              visible: visibleFloorRegions,   toggle: () => setVisibleFloorRegions(v => !v),   count: floorRegions.length, lockable: true },
-              { key: "guides",     label: "Elevation Rulers", color: "#2E8BE6",            visible: visibleGuides,         toggle: () => setVisibleGuides(v => !v),         count: guides.length, lockable: true },
-              { key: "itmep",      label: "IT / MEP",       color: T.uiElec ?? "#E0A030",  visible: visibleITMEP,          toggle: () => setVisibleITMEP(v => !v),          count: markers.length, lockable: true },
-              // ITMEP-specific per-layer toggles (only inside IT/MEP mode, and only when the master is on)
-              ...(mode === "itmep" && visibleITMEP ? [
-                { key: "elec",   label: "Electrical", color: T.uiElec,     visible: visibleBuildElectrical, toggle: () => setVisibleBuildElectrical(v => !v), count: markers.filter(m => m.layer === "power" && !isLightComp(m.componentType)).length, lockable: true },
-                { key: "light",  label: "Lighting",   color: T.uiLighting, visible: visibleBuildLighting,   toggle: () => setVisibleBuildLighting(v => !v),   count: markers.filter(m => m.layer === "power" && isLightComp(m.componentType)).length, lockable: true },
-              ] : []),
-              // ITMEP spec layers
-              ...(mode === "itmep" && visibleITMEP ? Object.entries(SPEC_LAYERS).filter(([k]) => k !== "power").map(([k, l]) => ({
-                key: k, label: l.name, color: uiColor(l.color), visible: visibleLayers[k],
-                toggle: () => setVisibleLayers(v => ({ ...v, [k]: !v[k] })),
-                count: markers.filter(m => m.layer === k).length, lockable: true,
-              })) : []),
-            ];
-            const toggleLock = (key) => {
-              const locking = !lockedLayers[key];
-              setLockedLayers(v => ({ ...v, [key]: !v[key] }));
-              // Locking drops the current selection so a pre-selected item on a now-locked
-              // layer can't still be nudged / deleted / edited via the inspector.
-              if (locking) { setSelectedId(null); setSelType(null); setSelectedIds([]); }
-            };
-            return (
-              <div style={{ borderTop: "1px solid " + T.bg3, padding: "10px 12px", background: T.bg1, flexShrink: 0 }}>
-                <div style={{ fontSize: 9, color: T.textDim, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6, fontWeight: 600 }}>Layers</div>
-                {[...rows].sort((a, b) => a.label.localeCompare(b.label)).map(({ key, label, color, visible, toggle, count, lockable }) => {
-                  const locked = lockable && layerLocked(key);
-                  return (
-                  <div key={key} style={{ ...S.lr, padding: "4px 4px", borderRadius: 6, marginBottom: 1 }}>
-                    <span style={{ width: 10, height: 10, borderRadius: 3, background: color, opacity: visible ? 1 : 0.3, flexShrink: 0 }} />
-                    <span style={{ color: locked ? T.textDim : visible ? T.accent : T.textMuted, flex: 1, fontSize: 11 }}>{label}</span>
-                    {count != null && <span style={{ color: visible ? color : T.accentDim, fontSize: 10, fontWeight: 500 }}>{count}</span>}
-                    <span style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
-                      <span onClick={toggle} title={visible ? "Hide layer" : "Show layer"}
-                        style={{ cursor: "pointer", display: "flex", alignItems: "center", color: visible ? color : T.textFaint }}>
-                        {visible ? <Eye size={15} /> : <EyeOff size={15} />}
-                      </span>
-                      {lockable
-                        ? <span onClick={() => toggleLock(key)} title={locked ? "Locked — click to unlock" : "Lock layer"}
-                            style={{ cursor: "pointer", display: "flex", alignItems: "center", color: locked ? T.brand : T.textFaint, userSelect: "none" }}>
-                            {locked ? <Lock size={13} /> : <Unlock size={13} />}
-                          </span>
-                        : <span style={{ width: 13 }} />}
-                    </span>
-                  </div>
-                  );
-                })}
-              </div>
-            );
-          })()}
-        </div>
-
-        {/* ── Left tool rail (all modes) ── */}
-          <div style={S.toolRail}>
-
-            {/* ── Universal tools (Select · Dim · Label · RevCloud) ── */}
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <button style={S.toolBtn(tool === "select")} onClick={() => setT("select")}>
-                  <MousePointer2 size={20} />
-                </button>
-              </TooltipTrigger>
-              <TooltipContent side="right" sideOffset={8}>Select (V)</TooltipContent>
-            </Tooltip>
-
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <button style={S.toolBtn(tool === "dim", T.dimText)} onClick={() => setT("dim")}>
-                  <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-                    <line x1="3" y1="10" x2="17" y2="10" stroke={T.dimText} strokeWidth="1" />
-                    <line x1="3" y1="6" x2="3" y2="14" stroke={T.dimText} strokeWidth="1.5" />
-                    <line x1="17" y1="6" x2="17" y2="14" stroke={T.dimText} strokeWidth="1.5" />
-                    <line x1="3" y1="7" x2="5.5" y2="10" stroke={T.dimText} strokeWidth="1" />
-                    <line x1="3" y1="13" x2="5.5" y2="10" stroke={T.dimText} strokeWidth="1" />
-                    <line x1="17" y1="7" x2="14.5" y2="10" stroke={T.dimText} strokeWidth="1" />
-                    <line x1="17" y1="13" x2="14.5" y2="10" stroke={T.dimText} strokeWidth="1" />
-                  </svg>
-                </button>
-              </TooltipTrigger>
-              <TooltipContent side="right" sideOffset={8}>Dimension (M)</TooltipContent>
-            </Tooltip>
-
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <button style={S.toolBtn(tool === "label", T.textBright)} onClick={() => setT("label")}>
-                  <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-                    <text x="10" y="15" textAnchor="middle" fontSize="15" fontWeight="700"
-                      fill={tool === "label" ? T.textBright : T.textMuted} fontFamily="sans-serif">T</text>
-                  </svg>
-                </button>
-              </TooltipTrigger>
-              <TooltipContent side="right" sideOffset={8}>Label / Callout (T)</TooltipContent>
-            </Tooltip>
-
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <button style={S.toolBtn(tool === "revcloud", "#E05252")} onClick={() => setT("revcloud")}>
-                  <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-                    <path d="M10 16 A3 3 0 0 1 4 16 A3 3 0 0 1 2 11 A3 3 0 0 1 5 6 A3 3 0 0 1 10 5 A3 3 0 0 1 15 6 A3 3 0 0 1 18 11 A3 3 0 0 1 16 16 Z"
-                      stroke={tool === "revcloud" ? "#E05252" : T.textMuted} strokeWidth="1.5" strokeLinejoin="round" />
-                  </svg>
-                </button>
-              </TooltipTrigger>
-              <TooltipContent side="right" sideOffset={8}>Revision Cloud (N)</TooltipContent>
-            </Tooltip>
-
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <button style={S.toolBtn(tool === "flowPath", "#4A90D9")} onClick={() => setT("flowPath")}>
-                  <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-                    <path d="M3 15 L8 7 L13 12 L17 5" stroke={tool === "flowPath" ? "#4A90D9" : T.textMuted} strokeWidth="3.5" strokeOpacity="0.3" strokeLinecap="round" strokeLinejoin="round" />
-                    <path d="M3 15 L8 7 L13 12 L17 5" stroke={tool === "flowPath" ? "#4A90D9" : T.textMuted} strokeWidth="1" strokeDasharray="2 2" strokeLinecap="round" strokeLinejoin="round" />
-                  </svg>
-                </button>
-              </TooltipTrigger>
-              <TooltipContent side="right" sideOffset={8}>Flow Path (K)</TooltipContent>
-            </Tooltip>
-
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <button style={S.toolBtn(tool === "floorRegion", "#7A9E5A")} onClick={() => setT("floorRegion")}>
-                  <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-                    <rect x="3" y="3" width="14" height="14" rx="1.5" stroke={tool === "floorRegion" ? "#7A9E5A" : T.textMuted} strokeWidth="1.5" />
-                    <line x1="3" y1="8"  x2="17" y2="8"  stroke={tool === "floorRegion" ? "#7A9E5A" : T.textMuted} strokeWidth="0.8" opacity="0.6" />
-                    <line x1="3" y1="12" x2="17" y2="12" stroke={tool === "floorRegion" ? "#7A9E5A" : T.textMuted} strokeWidth="0.8" opacity="0.6" />
-                  </svg>
-                </button>
-              </TooltipTrigger>
-              <TooltipContent side="right" sideOffset={8}>Floor Region (A)</TooltipContent>
-            </Tooltip>
-
-            {/* ── Build-mode tools ───────────────────────────────────── */}
-            {mode === "build" && <>
-              <div style={S.toolSepH} />
-
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button style={S.toolBtn(tool === "wall", wallKinds[wallKind].color)} onClick={() => setT("wall")}>
-                    <WallIcon />
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent side="right" sideOffset={8}>Wall <kbd style={{ background:"#333", border:"1px solid #555", borderRadius:3, padding:"1px 4px", fontSize:10 }}>W</kbd></TooltipContent>
-              </Tooltip>
-
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button style={S.toolBtn(tool === "rect", wallKinds[wallKind].color)} onClick={() => setT("rect")}>
-                    <RectRoomIcon />
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent side="right" sideOffset={8}>Rect Room <kbd style={{ background:"#333", border:"1px solid #555", borderRadius:3, padding:"1px 4px", fontSize:10 }}>R</kbd></TooltipContent>
-              </Tooltip>
-
-              <div style={S.toolSepH} />
-
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button style={S.toolBtn(tool === "door")} onClick={() => setT("door")}>
-                    <DoorOpen size={20} />
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent side="right" sideOffset={8}>Door</TooltipContent>
-              </Tooltip>
-
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button style={S.toolBtn(tool === "window")} onClick={() => setT("window")}>
-                    <WindowIcon />
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent side="right" sideOffset={8}>Window</TooltipContent>
-              </Tooltip>
-
-              <div style={S.toolSepH} />
-
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button style={S.toolBtn(tool === "column")} onClick={() => setT("column")}>
-                    <ColumnIcon />
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent side="right" sideOffset={8}>Column (C)</TooltipContent>
-              </Tooltip>
-
-              {bgImage && <>
-                <div style={S.toolSepH} />
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button style={S.toolBtn(tool === "calibrate", T.uiConduit)} onClick={() => setT("calibrate")}>
-                      <Ruler size={20} />
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent side="right" sideOffset={8}>Calibrate Scale</TooltipContent>
-                </Tooltip>
-              </>}
-            </>}
-
-            {/* ── ITMEP-mode tools ── */}
-            {mode === "itmep" && <>
-              <div style={S.toolSepH} />
-
-              {/* Power layer: Outlet + Lighting */}
-              {activeSpecLayer === "power" && <>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button style={S.toolBtn(tool === "outlet", T.uiElec)} onClick={() => setT("outlet")}>
-                      <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-                        <circle cx="10" cy="10" r="7" stroke="#50C878" strokeWidth="1.5" />
-                        <line x1="3" y1="10" x2="17" y2="10" stroke="#50C878" strokeWidth="2" />
-                        <text x="10" y="9" textAnchor="middle" fontSize="5.5" fill="#50C878" fontWeight="bold">D</text>
-                      </svg>
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent side="right" sideOffset={8}>Outlet (E)</TooltipContent>
-                </Tooltip>
-
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button style={S.toolBtn(tool === "lighting", T.uiLighting)} onClick={() => setT("lighting")}>
-                      <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-                        <circle cx="10" cy="10" r="5" stroke={T.uiLighting} strokeWidth="1.5" />
-                        <circle cx="10" cy="10" r="2" fill={T.uiLighting} />
-                        <line x1="10" y1="1" x2="10" y2="4" stroke={T.uiLighting} strokeWidth="1.5" />
-                        <line x1="10" y1="16" x2="10" y2="19" stroke={T.uiLighting} strokeWidth="1.5" />
-                        <line x1="1" y1="10" x2="4" y2="10" stroke={T.uiLighting} strokeWidth="1.5" />
-                        <line x1="16" y1="10" x2="19" y2="10" stroke={T.uiLighting} strokeWidth="1.5" />
-                      </svg>
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent side="right" sideOffset={8}>Lighting (L)</TooltipContent>
-                </Tooltip>
-              </>}
-
-              {/* AV / IT / MEP / Security — data-driven from the catalog, real symbols */}
-              {activeSpecLayer !== "power" && Object.entries(SPEC_COMPONENTS[activeSpecLayer] || {}).map(([key, c]) => (
-                <Tooltip key={key}>
-                  <TooltipTrigger asChild>
-                    <button style={S.toolBtn(tool === "marker" && activeComponentType === key, SPEC_LAYERS[activeSpecLayer].color)}
-                      onClick={() => { setActiveComponentType(key); setT("marker"); }}>
-                      <svg width="24" height="24" viewBox="0 0 28 28" style={{ overflow: "visible" }}>
-                        <MarkerSymbol marker={{ x: 14, y: 14, layer: activeSpecLayer, componentType: key, finish: c.finish ? markerFinish : undefined, angle: -Math.PI / 2 }} selected={false} />
-                      </svg>
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent side="right" sideOffset={8}>{c.name}</TooltipContent>
-                </Tooltip>
-              ))}
-            </>}
-
-          </div>
-
-        {/* ── Canvas area — configurable panes (plan + elevations + 3D) ── */}
-        <div ref={splitContainerRef} style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", position: "relative" }}>
-        {/* Row 1 (plan + aux pane 1) */}
-        <div style={{ display: "flex", minHeight: 0, flex: panes.length === 4 ? "none" : 1, height: panes.length === 4 ? `${splitPosV * 100}%` : undefined }}>
-        <div ref={cvsContainer} style={panes.length > 1
-          ? { ...S.cv, flex: "none", width: `${splitPos * 100}%` }
-          : S.cv}>
-          <PaneChip i={0} />
-          {/* Elevation guide edge rails — plan canvas active + Select tool, so they don't
-              intercept drawing near the canvas edges */}
-          {(panes.length > 1 || panes[0].view === "plan") && tool === "select" && visibleGuides && !layerLocked("guides") && guideRails()}
-          {/* Camera markers on the edge rulers — where each open elevation is currently looking */}
-          {(panes.length > 1 || panes[0].view === "plan") && visibleGuides && cameraIndicators()}
-          {/* Single-pane non-plan view: overlay the aux view on top of the dormant plan canvas.
-              The chip stays clickable (zIndex 50 > 40) so the user can swap back. */}
-          {panes.length === 1 && panes[0].view !== "plan" && (
-            <div style={{ position: "absolute", inset: 0, zIndex: 40, background: T.canvas }}>
-              {renderAuxPane(0)}
-            </div>
-          )}
-          {/* 2D plan controls — bottom-right */}
-          <div style={{ position: "absolute", bottom: 40, right: 12, zIndex: 20, display: "flex", alignItems: "center", justifyContent: "flex-end", flexWrap: "wrap", gap: 4, maxWidth: "calc(100vw - 24px)" }}>
-            {view3d && (<>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button onClick={() => setShow3dLabels(v => !v)} style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: "6px 8px", borderRadius: 6, border: "1px solid " + T.border, background: show3dLabels ? T.accent : T.panelBg, color: show3dLabels ? "#fff" : T.textMuted, cursor: "pointer", backdropFilter: "blur(8px)", boxShadow: T.panelShadow, userSelect: "none" }}>
-                    <Tag size={14} />
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent side="top" sideOffset={8}>Zone labels</TooltipContent>
-              </Tooltip>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button onClick={() => setShow3dDims(v => !v)} style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: "6px 8px", borderRadius: 6, border: "1px solid " + T.border, background: show3dDims ? T.accent : T.panelBg, color: show3dDims ? "#fff" : T.textMuted, cursor: "pointer", backdropFilter: "blur(8px)", boxShadow: T.panelShadow, userSelect: "none" }}>
-                    <Ruler size={14} />
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent side="top" sideOffset={8}>Wall dimensions</TooltipContent>
-              </Tooltip>
-              <div style={{ width: 1, height: 20, background: T.border, margin: "0 2px" }} />
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button onClick={() => controls3dRef.current?.reset()} style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: "6px 8px", borderRadius: 6, border: "1px solid " + T.border, background: T.panelBg, color: T.textMuted, cursor: "pointer", backdropFilter: "blur(8px)", boxShadow: T.panelShadow, userSelect: "none" }}>
-                    <RotateCcw size={14} />
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent side="top" sideOffset={8}>Reset camera</TooltipContent>
-              </Tooltip>
-              <div style={{ width: 1, height: 20, background: T.border, margin: "0 2px" }} />
-            </>)}
-            {!view3d && <>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button onClick={() => setCanvasRotation(r => { const n = r - 45; return n < -360 ? 0 : n; })}
-                    style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: "6px 8px", borderRadius: 6, border: "1px solid " + T.border, background: T.panelBg, color: T.textMuted, cursor: "pointer", backdropFilter: "blur(8px)", boxShadow: T.panelShadow, userSelect: "none" }}>
-                    <RotateCcw size={14} />
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent side="top" sideOffset={8}>Rotate view −45°</TooltipContent>
-              </Tooltip>
-              <button onClick={() => setCanvasRotation(0)}
-                style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: "4px 7px", borderRadius: 6, border: "1px solid " + T.border, background: canvasRotation !== 0 ? T.accent + "22" : T.panelBg, color: canvasRotation !== 0 ? T.accent : T.textMuted, cursor: canvasRotation !== 0 ? "pointer" : "default", backdropFilter: "blur(8px)", boxShadow: T.panelShadow, userSelect: "none", fontSize: 10, fontFamily: "inherit", fontWeight: 600, minWidth: 32 }}>
-                {canvasRotation !== 0 ? `${canvasRotation}°` : "0°"}
-              </button>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button onClick={() => setCanvasRotation(r => { const n = r + 45; return n > 360 ? 0 : n; })}
-                    style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: "6px 8px", borderRadius: 6, border: "1px solid " + T.border, background: T.panelBg, color: T.textMuted, cursor: "pointer", backdropFilter: "blur(8px)", boxShadow: T.panelShadow, userSelect: "none" }}>
-                    <RotateCw size={14} />
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent side="top" sideOffset={8}>Rotate view +45°</TooltipContent>
-              </Tooltip>
-              <div style={{ width: 1, height: 20, background: T.border, margin: "0 2px" }} />
-            </>}
-          </div>
-
-          {view3d && !splitView && data3d && (
-            <Suspense fallback={<div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", color: T.textMuted, fontSize: 11, fontFamily: font }}>Loading 3D…</div>}>
-            <TestFit3D
-              walls={data3d.walls}
-              nodes={data3d.nodes}
-              doors={data3d.doors}
-              windows={data3d.windows}
-              columns={data3d.columns}
-              zones={data3d.zones}
-              markers={data3d.markers}
-              dims={dims}
-              pxPerFoot={pxPerFoot} ceilingHeight={ceilingHeight} T={T} themeMode={themeMode}
-              controlsRef={controls3dRef} mode={mode}
-              selectedId={selectedId} selType={selType}
-              show3dLabels={show3dLabels} setShow3dLabels={setShow3dLabels}
-              show3dDims={show3dDims}     setShow3dDims={setShow3dDims}
-              style3d={style3d}
-              floorMaterial={floorMaterial}
-              floorRegions={data3d.floorRegions}
-              zoneLibrary={zoneLibrary}
-              visibleLayers={visibleLayers}
-              visibleBuildElectrical={visibleBuildElectrical}
-              visibleBuildLighting={visibleBuildLighting}
-              onSelect={(id, type) => { setSelectedId(id); setSelType(type); setSelectedIds(id ? [id] : []); }}
-            />
-            </Suspense>
-          )}
-
-          {/* 3D style switcher — only in full 3D mode (not split; split shows it in the 3D pane) */}
-          {view3d && !splitView && (
-            <div style={{ position: "absolute", bottom: 112, left: "50%", transform: "translateX(-50%)",
-              display: "flex", gap: 4, background: T.panelBg, border: "1px solid " + T.border,
-              borderRadius: 8, padding: 4, backdropFilter: "blur(12px)", zIndex: 10 }}>
-              {[["clay","Clay"],["xray","X-Ray"],["detailed","Detailed"]].map(([k, label]) => (
-                <button key={k} onClick={() => setStyle3d(k)}
-                  style={{ padding: "5px 14px", borderRadius: 5, border: "none", cursor: "pointer",
-                    background: style3d === k ? T.accent + "40" : "transparent",
-                    color: style3d === k ? T.textBright : T.textMuted,
-                    fontSize: 11, fontFamily: "inherit", fontWeight: style3d === k ? 600 : 400,
-                    outline: style3d === k ? "1px solid " + T.accent : "none" }}>
-                  {label}
-                </button>
-              ))}
-            </div>
-          )}
-
-          {repeatInput !== null && (
-            <div style={{ position: "absolute", top: 12, left: "50%", transform: "translateX(-50%)", display: "flex", alignItems: "center", gap: 8, background: T.panelBg, border: "1px solid " + T.accent + "88", borderRadius: 20, padding: "5px 16px", fontSize: 11, color: T.textBright, fontWeight: 600, zIndex: 25, backdropFilter: "blur(12px)", boxShadow: T.panelShadow, letterSpacing: "0.02em" }}>
-              <span style={{ color: T.accent }}>/</span>
-              <span style={{ minWidth: 20, textAlign: "center" }}>{repeatInput || "…"}</span>
-              <span style={{ color: T.textMuted, fontSize: 10, fontWeight: 400 }}>copies · Enter to place · Esc to cancel</span>
-            </div>
-          )}
-
-          {drawChain && !view3d && <div style={{ position: "absolute", top: "16px", left: "50%", transform: "translateX(-50%)", background: T.panelBg, border: "1px solid " + T.border, borderRadius: "6px", padding: "6px 14px", fontSize: "10px", color: MODES[mode].color, zIndex: 10, backdropFilter: "blur(12px)", boxShadow: T.panelShadow, fontWeight: 500 }}>
-            Click to place · Double-click to finish · Shift: 45° snap · Type length to lock
-          </div>}
-          
-          <style>{`@keyframes _blink{0%,100%{opacity:1}50%{opacity:0}}`}</style>
-          {dimInput !== "" && cursorPos && (
-            <div style={{ position: "absolute", pointerEvents: "none", zIndex: 20, whiteSpace: "nowrap",
-              left: cursorPos.x * zoom + viewOff.x + 18, top: cursorPos.y * zoom + viewOff.y + 18,
-              background: "#1A1814EE", border: "1px solid #C8B98A", borderRadius: 5,
-              padding: "3px 9px", fontSize: 12, fontFamily: "'SF Mono','Consolas','Monaco',monospace",
-              fontWeight: 600, color: "#C8B98A", boxShadow: "0 2px 8px rgba(0,0,0,.5)" }}>
-              {dimInput}
-              <span style={{ display: "inline-block", width: 1, height: 12, background: "#C8B98A",
-                marginLeft: 2, verticalAlign: "middle", animation: "_blink 1s step-end infinite" }} />
-            </div>
-          )}
-          {tool === "calibrate" && (!calibrationLine || !calibrationLine.p2) && <div style={{ position: "absolute", top: "16px", left: "50%", transform: "translateX(-50%)", background: T.panelBg, border: "1px solid " + T.border, borderRadius: "6px", padding: "6px 14px", fontSize: "10px", color: T.uiConduit, zIndex: 10, backdropFilter: "blur(12px)", boxShadow: T.panelShadow, fontWeight: 500 }}>
-            {!calibrationLine ? "Click to set first point" : "Click to set second point"}
-          </div>}
-
-          {tool === "label" && !editingLabelId && (
-            <div style={{ position: "absolute", top: "16px", left: "50%", transform: "translateX(-50%)", background: T.panelBg, border: "1px solid " + T.border, borderRadius: "6px", padding: "6px 14px", fontSize: "10px", color: T.textBright, zIndex: 10, backdropFilter: "blur(12px)", boxShadow: T.panelShadow, fontWeight: 500, pointerEvents: "none" }}>
-              Click to place · Click + drag for callout with leader line
-            </div>
-          )}
-          {tool === "revcloud" && (
-            <div style={{ position: "absolute", top: "16px", left: "50%", transform: "translateX(-50%)", background: T.panelBg, border: "1px solid " + T.border, borderRadius: 6, padding: "6px 14px", fontSize: 10, color: "#E05252", zIndex: 10, backdropFilter: "blur(12px)", boxShadow: T.panelShadow, fontWeight: 500, pointerEvents: "none" }}>
-              {!drawRevCloud ? "Click to start revision cloud"
-                : drawRevCloud.points.length < 3
-                  ? `${drawRevCloud.points.length} point${drawRevCloud.points.length > 1 ? "s" : ""} — need at least 3 to close`
-                  : "Click to add points · Click first point to close"}
-            </div>
-          )}
-          {tool === "flowPath" && (
-            <div style={{ position: "absolute", top: "16px", left: "50%", transform: "translateX(-50%)", background: T.panelBg, border: "1px solid " + T.border, borderRadius: 6, padding: "6px 14px", fontSize: 10, color: "#4A90D9", zIndex: 10, backdropFilter: "blur(12px)", boxShadow: T.panelShadow, fontWeight: 500, pointerEvents: "none" }}>
-              {!drawFlowPath ? "Click to start flow path"
-                : `${drawFlowPath.points.length} point${drawFlowPath.points.length > 1 ? "s" : ""} · click to add · Enter or double-click to finish`}
-            </div>
-          )}
-          {tool === "floorRegion" && (
-            <div style={{ position: "absolute", top: "16px", left: "50%", transform: "translateX(-50%)", background: T.panelBg, border: "1px solid " + T.border, borderRadius: 6, padding: "6px 14px", fontSize: 10, color: "#7A9E5A", zIndex: 10, backdropFilter: "blur(12px)", boxShadow: T.panelShadow, fontWeight: 500, pointerEvents: "none" }}>
-              {!drawFloorRegion ? "Click to start floor region"
-                : drawFloorRegion.points.length < 3
-                  ? `${drawFloorRegion.points.length} point${drawFloorRegion.points.length > 1 ? "s" : ""} — need at least 3 to close`
-                  : "Click to add points · Click first point to close"}
-            </div>
-          )}
-          {addingLeaderToId && (
-            <div style={{ position: "absolute", top: "16px", left: "50%", transform: "translateX(-50%)", background: T.panelBg, border: "1px solid " + T.accent + "88", borderRadius: "6px", padding: "6px 14px", fontSize: "10px", color: T.accent, zIndex: 10, backdropFilter: "blur(12px)", boxShadow: T.panelShadow, fontWeight: 500, pointerEvents: "none" }}>
-              Click any object or point to attach leader · Esc to cancel
-            </div>
-          )}
-
-          {/* Inline label text editor */}
-          {editingLabelId && (() => {
-            const lbl = labels.find(l => l.id === editingLabelId);
-            if (!lbl) return null;
-            const screenX = lbl.x * zoom + viewOff.x;
-            const screenY = lbl.y * zoom + viewOff.y;
-            const lineCount = wrapLabelLines(editingLabelText, lbl.fontSize).length;
-            return <textarea
-              autoFocus
-              style={{
-                position: "absolute",
-                left: screenX,
-                top: screenY,
-                transform: "translate(-50%, -50%)",
-                background: T.bg2 + "EE",
-                border: "1.5px solid " + T.accent,
-                borderRadius: 4,
-                color: lbl.color,
-                fontSize: Math.max(10, lbl.fontSize * zoom),
-                fontWeight: lbl.bold ? 700 : 400,
-                fontStyle: lbl.italic ? "italic" : "normal",
-                fontFamily: "inherit",
-                padding: "4px 8px",
-                minWidth: 80,
-                maxWidth: LABEL_MAX_W * zoom,
-                width: LABEL_MAX_W * zoom,
-                resize: "none",
-                outline: "none",
-                textAlign: "center",
-                zIndex: 30,
-                lineHeight: 1.4,
-                overflow: "hidden",
-                whiteSpace: "pre-wrap",
-                wordBreak: "break-word",
-              }}
-              rows={lineCount}
-              value={editingLabelText}
-              onChange={e => setEditingLabelText(e.target.value)}
-              onBlur={() => {
-                const t = editingLabelText.trim();
-                setLabels(p => t
-                  ? p.map(l => l.id === editingLabelId ? { ...l, text: t } : l)
-                  : p.filter(l => l.id !== editingLabelId || l.text));
-                setEditingLabelId(null);
-              }}
-              onKeyDown={ev => {
-                if (ev.key === "Escape") {
-                  setLabels(p => p.filter(l => l.id !== editingLabelId || l.text));
-                  setEditingLabelId(null);
-                } else if (ev.key === "Enter" && !ev.shiftKey) {
-                  ev.preventDefault();
-                  const t = editingLabelText.trim();
-                  setLabels(p => t
-                    ? p.map(l => l.id === editingLabelId ? { ...l, text: t } : l)
-                    : p.filter(l => l.id !== editingLabelId || l.text));
-                  setEditingLabelId(null);
-                }
-              }}
-            />;
-          })()}
-
-          <svg ref={cvs} data-testid="plan-canvas" width="100%" height="100%"
-            style={{ cursor: (panning || spaceHeld) ? "grabbing" : resize ? ({ n:"ns-resize",s:"ns-resize",e:"ew-resize",w:"ew-resize",ne:"nesw-resize",sw:"nesw-resize",nw:"nwse-resize",se:"nwse-resize" }[resize.edge] || "nwse-resize") : (drag?.type === "zone-edge" && drag.cursor) ? drag.cursor : (drag?.type === "revcloud-edge" && drag.cursor) ? drag.cursor : (drag?.type === "floorRegion-edge" && drag.cursor) ? drag.cursor : zoneEdge ? zoneEdge.cursor : cadCrosshair(T.crosshairColor), userSelect: "none", display: (view3d && !splitView) ? "none" : undefined, transform: canvasRotation ? `rotate(${canvasRotation}deg)` : undefined, transformOrigin: "center", transition: canvasRotNoTransition ? "none" : "transform 0.25s cubic-bezier(0.4,0,0.2,1)" }}
-            onMouseDown={onDown} onMouseMove={onMove} onMouseUp={onUp} onMouseLeave={onUp} onWheel={onWheel}>
+  // ── Plan canvas renderer ────────────────────────────────────────────────────
+  // Wraps the (large) plan SVG so it can render twice: the interactive editor
+  // canvas AND read-only Docs slides. The destructured `zoom`/`viewOff` params
+  // SHADOW the component state of the same names, so the body below serves both
+  // callers unchanged. Editor overlays (marquee, ghosts, selection) key off
+  // interaction state that is null outside the editor, so readonly renders clean.
+  const renderPlanCanvas = ({ zoom, viewOff, width = null, height = null, interactive = true }) => (
+          <svg ref={interactive ? cvs : undefined} data-testid={interactive ? "plan-canvas" : "docs-slide-canvas"}
+            width={interactive ? "100%" : width} height={interactive ? "100%" : height}
+            style={interactive
+              ? { cursor: (panning || spaceHeld) ? "grabbing" : resize ? ({ n:"ns-resize",s:"ns-resize",e:"ew-resize",w:"ew-resize",ne:"nesw-resize",sw:"nesw-resize",nw:"nwse-resize",se:"nwse-resize" }[resize.edge] || "nwse-resize") : (drag?.type === "zone-edge" && drag.cursor) ? drag.cursor : (drag?.type === "revcloud-edge" && drag.cursor) ? drag.cursor : (drag?.type === "floorRegion-edge" && drag.cursor) ? drag.cursor : zoneEdge ? zoneEdge.cursor : cadCrosshair(T.crosshairColor), userSelect: "none", display: (view3d && !splitView) ? "none" : undefined, transform: canvasRotation ? `rotate(${canvasRotation}deg)` : undefined, transformOrigin: "center", transition: canvasRotNoTransition ? "none" : "transform 0.25s cubic-bezier(0.4,0,0.2,1)" }
+              : { pointerEvents: "none", display: "block", background: T.canvas }}
+            onMouseDown={interactive ? onDown : undefined} onMouseMove={interactive ? onMove : undefined} onMouseUp={interactive ? onUp : undefined} onMouseLeave={interactive ? onUp : undefined} onWheel={interactive ? onWheel : undefined}>
             <defs>
               <filter id="glow-budget" x="-50%" y="-50%" width="200%" height="200%">
                 <feGaussianBlur stdDeviation="4" result="coloredBlur"/>
@@ -3115,8 +2567,8 @@ export default function TestfitTool() {
             <g transform={`translate(${viewOff.x},${viewOff.y}) scale(${zoom})`}>
               {showGrid && (() => {
                 // Clamp grid to visible viewport for performance
-                const rect = cvs.current?.getBoundingClientRect();
-                const vw = rect?.width || 2000, vh = rect?.height || 1200;
+                const rect = interactive ? cvs.current?.getBoundingClientRect() : null;
+                const vw = width ?? (rect?.width || 2000), vh = height ?? (rect?.height || 1200);
                 const pad = pxPerFoot * 2;
                 const minX = -viewOff.x / zoom - pad, maxX = (-viewOff.x + vw) / zoom + pad;
                 const minY = -viewOff.y / zoom - pad, maxY = (-viewOff.y + vh) / zoom + pad;
@@ -3784,8 +3236,8 @@ export default function TestfitTool() {
 
               {/* Elevation cut guides (+ live draft while pulling from an edge) */}
               {visibleGuides && (guides.length > 0 || guideDraft) && (() => {
-                const rect = cvs.current?.getBoundingClientRect();
-                const vw = rect?.width || 2000, vh = rect?.height || 1200;
+                const rect = interactive ? cvs.current?.getBoundingClientRect() : null;
+                const vw = width ?? (rect?.width || 2000), vh = height ?? (rect?.height || 1200);
                 const minX = -viewOff.x / zoom, maxX = (-viewOff.x + vw) / zoom;
                 const minY = -viewOff.y / zoom, maxY = (-viewOff.y + vh) / zoom;
                 const fs = 9 / zoom, ph = 14 / zoom, pad = 6 / zoom;
@@ -3987,6 +3439,868 @@ export default function TestfitTool() {
               )}
             </g>
           </svg>
+  );
+
+  return (
+    <TooltipProvider>
+    <div className="tf-app-root" style={S.root}>
+      {/* ── Top Mode Bar ──────────────────────────────────────────── */}
+      <TopBar $={$} MODES={MODES} S={S} T={T} activeSnapshotId={activeSnapshotId} canRedo={canRedo} canUndo={canUndo} cost={cost} deleteSnapshot={deleteSnapshot} display={display} exportPdf={exportPdf} exportPng={exportPng} exportProject={exportProject} font={font} importProject={importProject} liveDirty={liveDirty} loadRef={loadRef} markers={markers} mode={mode} modeMenuRect={modeMenuRect} newProject={newProject} newSnapMode={newSnapMode} redo={redo} renameSnapshot={renameSnapshot} renamingSnapId={renamingSnapId} saveMenuRect={saveMenuRect} setMode={setMode} setModeMenuRect={setModeMenuRect} setNewSnapMode={setNewSnapMode} setRenamingSnapId={setRenamingSnapId} setSaveMenuRect={setSaveMenuRect} setShowModeMenu={setShowModeMenu} setShowSaveMenu={setShowSaveMenu} setShowSettings={setShowSettings} setShowSnapMenu={setShowSnapMenu} setSidebarOpen={setSidebarOpen} setSnapDraftName={setSnapDraftName} setSnapMenuRect={setSnapMenuRect} setT={setT} setThemeMode={setThemeMode} showModeMenu={showModeMenu} showSaveMenu={showSaveMenu} showSnapMenu={showSnapMenu} sidebarOpen={sidebarOpen} snapDraftName={snapDraftName} snapMenuRect={snapMenuRect} snapshot={snapshot} snapshots={snapshots} switchSnapshot={switchSnapshot} takeSnapshot={takeSnapshot} themeMode={themeMode} undo={undo} updateSnapshot={updateSnapshot} walls={walls} zones={zones} panes={panes} setLayout={setLayout} setSelType={setSelType} setSelectedId={setSelectedId} setSelectedIds={setSelectedIds} slidesCount={slides.length} />
+
+      <div style={S.main}>
+        {/* ── Sidebar ──────────────────────────────────────────────── */}
+        <div style={S.side}>
+          <div style={{ padding: "14px 16px", borderBottom: "1px solid " + T.bg3, background: T.bg0 }}>
+            <div style={{ fontSize: 9, color: T.textDim, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 4, fontWeight: 600 }}>Project</div>
+            <input data-testid="project-name" style={{ background: "none", border: "none", color: T.textBright, fontSize: 14, fontFamily: "inherit", fontWeight: 600, width: "100%", outline: "none" }} value={projectName} onChange={e => setProjectName(e.target.value)} />
+          </div>
+          <div style={S.body}>
+
+            {/* ── BUILD ─────────────────────────────────────────── */}
+            {mode === "build" && <>
+              <div style={S.sec}>
+                <div style={S.sh}>Reference Image</div>
+                <button onClick={() => fRef.current?.click()} style={{ ...S.inp, cursor: "pointer", textAlign: "center", color: bgImage ? T.textBright : T.textMuted, fontSize: 10, fontWeight: 500 }}>
+                  {bgImage ? "Replace Image" : "Upload Floorplan"}
+                </button>
+                <input ref={fRef} type="file" accept="image/*" style={{ display: "none" }} onChange={e => { const f = e.target.files?.[0]; if (f) { const r = new FileReader(); r.onload = ev => setBgImage(ev.target.result); r.readAsDataURL(f); } }} />
+                {bgImage && <>
+                  <div style={{ marginTop: 10 }}><div style={S.lbl}>Opacity</div><input type="range" min="0" max="100" value={bgOpacity * 100} onChange={e => setBgOpacity(e.target.value / 100)} style={{ width: "100%", accentColor: "#9A9488", height: 4 }} /></div>
+                  <div style={{ marginTop: 8 }}><div style={S.lbl}>Scale</div><input type="range" min="20" max="300" value={bgScale * 100} onChange={e => setBgScale(e.target.value / 100)} style={{ width: "100%", accentColor: "#9A9488", height: 4 }} /></div>
+                  <div style={{ fontSize: 9, color: T.textDim, marginTop: 6, fontStyle: "italic" }}>Alt + drag to reposition</div>
+                  <button onClick={() => { setBgImage(null); setBgOpacity(0.35); setBgScale(1); setBgOffset({ x: 0, y: 0 }); }} style={{ ...S.del, marginTop: 10, width: "100%", textAlign: "center" }}>Delete Reference Image</button>
+                </>}
+              </div>
+              {bgImage && calibrationLine && calibrationLine.p1 && calibrationLine.p2 && (
+                <div style={S.sec}>
+                  <div style={S.sh}>Calibrate Scale</div>
+                  <div style={{ marginBottom: 8 }}>
+                    <div style={S.lbl}>Known Distance (feet)</div>
+                    <input 
+                      style={S.inp} 
+                      type="number" 
+                      value={calibrationFeet} 
+                      onChange={e => setCalibrationFeet(e.target.value)} 
+                      placeholder="10"
+                      step="0.5"
+                    />
+                  </div>
+                  <button 
+                    style={{ ...S.inp, cursor: "pointer", textAlign: "center", color: T.uiConduit, fontSize: 10, fontWeight: 500, marginBottom: 6 }}
+                    onClick={() => {
+                      const feet = parseFloat(calibrationFeet);
+                      if (feet > 0 && calibrationLine.p1 && calibrationLine.p2) {
+                        const pixelDist = Math.sqrt(
+                          Math.pow(calibrationLine.p2.x - calibrationLine.p1.x, 2) + 
+                          Math.pow(calibrationLine.p2.y - calibrationLine.p1.y, 2)
+                        );
+                        const targetPixels = feet * pxPerFoot;
+                        const newScale = targetPixels / pixelDist;
+                        setBgScale(prevScale => prevScale * newScale);
+                        setCalibrationLine(null);
+                        setT("select");
+                      }
+                    }}
+                  >
+                    Apply Calibration
+                  </button>
+                  <button 
+                    style={{ ...S.inp, cursor: "pointer", textAlign: "center", color: T.textMuted, fontSize: 10, fontWeight: 500 }}
+                    onClick={() => setCalibrationLine(null)}
+                  >
+                    Clear Line
+                  </button>
+                </div>
+              )}
+              {/* Drawing Scale — hidden, state + functionality preserved */}
+              <div style={S.sec}>
+                <div style={S.sh}>Summary</div>
+                {Object.entries(cost.wallFt).map(([k, v]) => <div key={k} style={S.cr}><span style={{ color: v.color, fontWeight: 500 }}>{v.label}</span><span style={{ fontWeight: 500 }}>{ft(v.ft)}</span></div>)}
+                {Object.keys(cost.wallFt).length === 0 && <div style={{ color: T.textFaint, fontSize: 10, padding: "8px 0", fontStyle: "italic" }}>No walls yet</div>}
+                <div style={{ ...S.cr, color: T.accent, borderBottom: "none" }}><span>Doors</span><span>{doors.length}</span></div>
+                <div style={{ ...S.cr, color: T.accent, borderBottom: "none" }}><span>Windows</span><span>{windows.length}</span></div>
+                <div style={{ ...S.cr, color: T.accent, borderBottom: "none", paddingBottom: 0 }}><span>Columns</span><span>{columns.length}</span></div>
+                {(() => {
+                  const pm = markers.filter(m => m.layer === "power");
+                  if (!pm.length) return null;
+
+                  // Group by componentType + isNew
+                  const groups = {};
+                  pm.forEach(m => {
+                    const compData = SPEC_COMPONENTS.power[m.componentType];
+                    if (!compData) return;
+                    const isLighting = m.componentType?.startsWith("light_") || m.componentType?.startsWith("htrack_") || m.componentType === "sconce_prewire" || m.componentType === "pendent_prewire";
+                    const key = m.componentType + (m.isNew ? "_new" : "_ab");
+                    if (!groups[key]) groups[key] = { name: compData.name, isNew: !!m.isNew, isLighting, color: isLighting ? T.uiLighting : T.uiElec, ids: [] };
+                    groups[key].ids.push(m.id);
+                  });
+
+                  const elecGroups = Object.values(groups).filter(g => !g.isLighting);
+                  const ltGroups   = Object.values(groups).filter(g =>  g.isLighting);
+
+                  const SummaryRow = ({ group }) => {
+                    const isGroupSel = group.ids.length > 0 && group.ids.every(id => selectedIds.includes(id));
+                    const rowColor = group.isNew ? "#50A0E0" : group.color;
+                    return <div
+                      style={{ ...S.cr, cursor: "pointer", background: isGroupSel ? T.selBg : "transparent", borderRadius: 4, transition: "all 0.12s ease" }}
+                      onClick={() => { setSelectedIds(group.ids); setSelectedId(group.ids[0]); setSelType("marker"); setT("select"); }}>
+                      <span style={{ color: rowColor, fontWeight: 500 }}>{group.ids.length}× {group.name}</span>
+                      <span style={{ fontSize: 9, color: group.isNew ? "#50A0E0" : T.textMuted, fontStyle: "italic" }}>{group.isNew ? "new" : "existing"}</span>
+                    </div>;
+                  };
+
+                  return <>
+                    {elecGroups.length > 0 && <>
+                      <div style={{ marginTop: 6, paddingTop: 6, borderTop: "1px solid " + T.border, fontSize: 8, color: T.textMuted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 4, fontWeight: 600 }}>Electrical</div>
+                      {elecGroups.map((g, i) => <SummaryRow key={i} group={g} />)}
+                    </>}
+                    {ltGroups.length > 0 && <>
+                      <div style={{ marginTop: 6, paddingTop: 6, borderTop: "1px solid " + T.border, fontSize: 8, color: T.textMuted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 4, fontWeight: 600 }}>Lighting</div>
+                      {ltGroups.map((g, i) => <SummaryRow key={i} group={g} />)}
+                    </>}
+                  </>;
+                })()}
+              </div>
+            </>}
+
+            {/* ── ZONE ────��──────────────────────────────────────── */}
+            {mode === "zone" && <>
+              <div style={S.sec}>
+                <div style={S.sh}>Zone Types</div>
+              </div>
+              <div style={S.sec}>
+                <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                  {Object.entries(zoneLibrary).map(([k, z]) => <button key={k} style={S.btn(activeZoneType === k, z.color)}
+                    onClick={() => { setActiveZoneType(k); if (tool !== "zone") setT("zone"); }}>
+                    <span style={S.dot(z.color)} />{z.name}
+                  </button>)}
+                </div>
+              </div>
+              <div style={S.sec}>
+                <div style={S.sh}>Placed Zones ({zones.length})</div>
+                {zones.length === 0 && <div style={{ color: T.textFaint, fontSize: 10, padding: "8px 0", fontStyle: "italic" }}>No zones placed yet</div>}
+                {zones.map(z => <div key={z.id} style={{ padding: "6px 10px", background: selectedId === z.id ? T.selBg : "transparent", borderRadius: 5, cursor: "pointer", display: "flex", alignItems: "center", gap: 8, fontSize: 10, marginBottom: 3, border: selectedId === z.id ? "1.5px solid " + T.selBorder : "1.5px solid transparent", transition: "all 0.12s ease" }}
+                  onClick={() => { setSelectedId(z.id); setSelType("zone"); setT("select"); }}>
+                  <span style={S.dot(zoneLibrary[z.type].color)} />
+                  <span style={{ flex: 1, fontWeight: selectedId === z.id ? 500 : 400 }}>{z.label}</span>
+                  <span style={{ color: T.accentDim, fontSize: 9 }}>{z.points ? Math.round(polyArea(z.points) / (pxPerFoot * pxPerFoot)) + " sf" : ft(z.w) + "×" + ft(z.h)}</span>
+                </div>)}
+                {cost.totalSf > 0 && <div style={{ ...S.cr, fontWeight: 600, marginTop: 8, borderTop: "1.5px solid " + T.selBorder, paddingTop: 8, borderBottom: "none" }}><span>Total Area</span><span>{cost.totalSf} sf</span></div>}
+              </div>
+            </>}
+
+            {/* ── IT / MEP ───────────────────────────────────────── */}
+            {mode === "itmep" && <>
+              <div style={S.sec}>
+                <div style={S.sh}>Component Layers</div>
+                {Object.entries(SPEC_LAYERS).filter(([k]) => k !== "power").map(([k, l]) => <div key={k} style={{
+                  ...S.lr, 
+                  background: activeSpecLayer === k ? uiColor(l.color) + "20" : "transparent",
+                  border: activeSpecLayer === k ? "2px solid " + uiColor(l.color) + "60" : "2px solid transparent",
+                  borderRadius: "6px",
+                  padding: "8px 6px",
+                  margin: "2px 0",
+                  transition: "all 0.15s ease"
+                }} onClick={() => { setActiveSpecLayer(k); const firstComp = Object.keys(SPEC_COMPONENTS[k])[0]; setActiveComponentType(firstComp); setT("marker"); }}>
+                  <div style={{ width: 10, height: 10, borderRadius: "50%", background: uiColor(l.color), opacity: visibleLayers[k] ? 1 : 0.3, flexShrink: 0 }} />
+                  <span style={{ color: activeSpecLayer === k ? T.textBright : T.accent, flex: 1, fontWeight: activeSpecLayer === k ? 600 : 400 }}>{l.name}</span>
+                  <span style={{ color: activeSpecLayer === k ? uiColor(l.color) : T.accentDim, fontSize: 10, fontWeight: 500 }}>{markers.filter(p => p.layer === k).length}</span>
+                </div>)}
+              </div>
+              <div style={S.sec}>
+                <div style={S.sh}>Placed Components ({markers.length})</div>
+                {markers.length === 0 && <div style={{ color: T.textFaint, fontSize: 10, padding: "8px 0", fontStyle: "italic" }}>No components placed yet</div>}
+                {Object.entries(SPEC_LAYERS).filter(([k]) => k !== "power").map(([layerKey, layer]) => {
+                  const layerMarkers = markers.filter(m => m.layer === layerKey);
+                  if (layerMarkers.length === 0) return null;
+                  // Group by componentType + finish so white/black list separately.
+                  const groups = {};
+                  layerMarkers.forEach(m => {
+                    const gkey = `${m.componentType}|${m.finish || ""}`;
+                    if (!groups[gkey]) groups[gkey] = [];
+                    groups[gkey].push(m);
+                  });
+                  return <div key={layerKey} style={{ marginBottom: 12 }}>
+                    <div style={{ fontSize: 9, color: layer.color, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 4, fontWeight: 600 }}>{layer.name}</div>
+                    {Object.entries(groups).map(([gkey, groupMarkers]) => {
+                      const [compType, finish] = gkey.split("|");
+                      const compData = SPEC_COMPONENTS[layerKey]?.[compType];
+                      const fin = finish && FINISH_COLORS[finish];
+                      const swFill = fin ? fin.fill : (compData?.color || layer.color);
+                      const swLine = fin ? fin.line : (compData?.color || layer.color);
+                      const finLabel = finish ? ` (${finish[0].toUpperCase() + finish.slice(1)})` : "";
+                      const groupIds = groupMarkers.map(m => m.id);
+                      const isGroupSelected = groupIds.some(id => selectedId === id || selectedIds.includes(id));
+                      return <div key={gkey} style={{ padding: "4px 8px", background: isGroupSelected ? T.selBg : "transparent", borderRadius: 4, cursor: "pointer", display: "flex", alignItems: "center", gap: 7, fontSize: 10, marginBottom: 2, border: isGroupSelected ? "1.5px solid " + T.selBorder : "1.5px solid transparent", transition: "all 0.12s ease" }}
+                        onClick={() => { setSelectedId(null); setSelType(null); setSelectedIds(groupIds); setTool("select"); }}>
+                        <span style={{ width: 12, height: 12, borderRadius: compData?.symbol === "rack" ? 2 : 6, background: swFill, border: "1.5px solid " + swLine, flexShrink: 0 }} />
+                        <span style={{ flex: 1, fontWeight: isGroupSelected ? 500 : 400 }}>{(compData?.name || compType) + finLabel}</span>
+                        {groupMarkers.length > 1 && <span style={{ color: layer.color, fontSize: 9, fontWeight: 600, background: layer.color + "18", padding: "1px 5px", borderRadius: 8 }}>{groupMarkers.length}</span>}
+                      </div>;
+                    })}
+                  </div>;
+                })}
+              </div>
+            </>}
+
+            {/* ── BUDGET ─────────────────────────────────────────── */}
+            {mode === "docs" && <>
+              <div style={S.sec}>
+                <div style={S.sh}>Documentation</div>
+                <div style={S.cr}><span>Slides</span><span style={{ fontWeight: 500 }}>{slides.length}</span></div>
+                <div style={S.cr}><span>Sheet</span><span style={{ fontWeight: 500, textTransform: "capitalize" }}>{docSettings.size} · {docSettings.orientation}</span></div>
+                <div style={{ fontSize: 9, color: T.textMuted, lineHeight: 1.6, marginTop: 8 }}>
+                  Slides live-render the current model — edits in stages 1–4 update the deck automatically. Use the camera button on any pane to add a slide.
+                </div>
+              </div>
+            </>}
+            {mode === "budget" && <>
+              <div style={S.sec}>
+                <div style={S.sh}>Cost Breakdown</div>
+                {Object.entries(cost.wallFt).map(([k, v]) => {
+                  const matchingWalls = walls.filter(w => (w.kind || "existing") === k);
+                  const isSelected = matchingWalls.length > 0 && matchingWalls.every(w => selectedIds.includes(w.id));
+                  return <div key={k} style={{ ...S.cr, cursor: "pointer", transition: "all 0.12s ease", background: isSelected ? T.selBg : "transparent" }}
+                    onClick={() => {
+                      const wallIds = matchingWalls.map(w => w.id);
+                      setSelectedIds(wallIds);
+                      if (wallIds.length > 0) {
+                        setSelectedId(wallIds[0]);
+                        setSelType("wall");
+                      }
+                    }}
+                  >
+                    <span style={{ color: v.color, fontWeight: 500 }}>{v.label} wall</span><span style={{ fontWeight: 500 }}>{ft(v.ft)}</span>
+                  </div>;
+                })}
+                {cost.zones.map(z => <div key={z.id} style={{ ...S.cr, cursor: "pointer", transition: "all 0.12s ease", background: selectedId === z.id ? T.selBg : "transparent" }}
+                  onClick={() => {
+                    setSelectedId(z.id);
+                    setSelType("zone");
+                    setSelectedIds([z.id]);
+                  }}
+                >
+                  <span style={{ display: "flex", alignItems: "center", gap: 6 }}><span style={S.dot(zoneLibrary[z.type].color)} />{z.label}</span>
+                  <span style={{ fontWeight: 500 }}>{$(z.total)}</span>
+                </div>)}
+                {Object.entries(cost.markers).map(([k, p]) => {
+                  const [layer, componentType, finish] = k.split('|');
+                  const matchingMarkers = markers.filter(m => m.layer === layer && m.componentType === componentType && (m.finish || "") === (finish || ""));
+                  const isSelected = matchingMarkers.length > 0 && matchingMarkers.every(m => selectedIds.includes(m.id));
+                  return <div key={k} style={{ ...S.cr, cursor: "pointer", transition: "all 0.12s ease", background: isSelected ? T.selBg : "transparent" }}
+                    onClick={() => {
+                      const markerIds = matchingMarkers.map(m => m.id);
+                      setSelectedIds(markerIds);
+                      if (markerIds.length > 0) {
+                        setSelectedId(markerIds[0]);
+                        setSelType("marker");
+                      }
+                    }}
+                  >
+                    <span>{p.count}× {p.name}</span><span style={{ fontWeight: 500 }}>{$(p.count * p.unitCost)}</span>
+                  </div>;
+                })}
+                {cost.totalSf > 0 && <div style={S.cr}><span>Total area</span><span style={{ fontWeight: 500 }}>{cost.totalSf} sf</span></div>}
+                <div style={S.ct}><span>Total Estimate</span><span>{$(cost.total)}</span></div>
+                <button style={{ ...S.inp, cursor: "pointer", textAlign: "center", color: T.uiBudget, marginTop: 10, fontSize: 10, fontWeight: 500 }}
+                  onClick={() => {
+                    const lines = [`${projectName} — Testfit Summary`, ""];
+                    if (Object.keys(cost.wallFt).length) {
+                      lines.push("WALLS");
+                      Object.entries(cost.wallFt).forEach(([k, v]) => lines.push(`  ${v.label}: ${ft(v.ft)}`));
+                      // Wall details
+                      const wallsWithInfo = walls.filter(w => w.material || w.paintFinish || w.notes);
+                      if (wallsWithInfo.length) {
+                        lines.push("  —");
+                        wallsWithInfo.forEach(w => {
+                          const wk = wallKinds[w.kind || "existing"];
+                          const parts = [`${wk.label} · ${ft(wl(w))}`];
+                          if (w.material) parts.push(w.material);
+                          if (w.paintFinish) parts.push(`Paint: ${w.paintFinish}`);
+                          if (w.notes) parts.push(`(${w.notes})`);
+                          lines.push(`  ${parts.join(" · ")}`);
+                        });
+                      }
+                      lines.push("");
+                    }
+                    if (cost.zones.length) {
+                      lines.push("ZONES");
+                      cost.zones.forEach(z => lines.push(`  ${z.label} — ${z.sf} sf — ${$(z.total)}`));
+                      lines.push(`  Total: ${cost.totalSf} sf`);
+                      lines.push("");
+                    }
+                    const markerEntries = Object.entries(cost.markers);
+                    if (markerEntries.length) {
+                      lines.push("MARKERS");
+                      markerEntries.forEach(([k, p]) => lines.push(`  ${p.count}× ${p.name} — ${$(p.count * p.unitCost)}`));
+                      lines.push("");
+                    }
+                    if (doors.length) lines.push(`DOORS: ${doors.length}`);
+                    if (windows.length) lines.push(`WINDOWS: ${windows.length}`);
+                    lines.push(""); lines.push(`TOTAL ESTIMATE: ${$(cost.total)}`);
+                    
+                    // Fallback clipboard copy with error handling
+                    const text = lines.join("\n");
+                    if (navigator.clipboard && navigator.clipboard.writeText) {
+                      navigator.clipboard.writeText(text).catch(() => {
+                        // Fallback: create a temporary textarea
+                        const textarea = document.createElement("textarea");
+                        textarea.value = text;
+                        textarea.style.position = "fixed";
+                        textarea.style.opacity = "0";
+                        document.body.appendChild(textarea);
+                        textarea.select();
+                        try {
+                          document.execCommand("copy");
+                        } catch (err) {
+                          console.error("Copy failed:", err);
+                        }
+                        document.body.removeChild(textarea);
+                      });
+                    } else {
+                      // Fallback for browsers without clipboard API
+                      const textarea = document.createElement("textarea");
+                      textarea.value = text;
+                      textarea.style.position = "fixed";
+                      textarea.style.opacity = "0";
+                      document.body.appendChild(textarea);
+                      textarea.select();
+                      try {
+                        document.execCommand("copy");
+                      } catch (err) {
+                        console.error("Copy failed:", err);
+                      }
+                      document.body.removeChild(textarea);
+                    }
+                  }}>Copy Summary to Clipboard</button>
+              </div>
+            </>}
+          </div>
+          {/* ── Visibility panel — all modes ── */}
+          {(() => {
+            const isLightComp = isLightComponent;
+            const rows = [
+              // Universal items (lockable = items can be locked from selection/editing)
+              { key: "grid",       label: "Grid",           color: T.textMuted,            visible: showGrid,              toggle: () => setShowGrid(v => !v),              count: null, lockable: false },
+              { key: "zones",      label: "Zones",          color: T.uiZone ?? "#6A9BCC", visible: visibleZones,          toggle: () => setVisibleZones(v => !v),          count: zones.length, lockable: true },
+              { key: "dims",       label: "Dimensions",     color: T.dimText,              visible: visibleDims,           toggle: () => setVisibleDims(v => !v),           count: dims.length, lockable: true },
+              { key: "labels",     label: "Labels",         color: T.textBright,           visible: visibleLabels,         toggle: () => setVisibleLabels(v => !v),         count: labels.length, lockable: true },
+              { key: "revClouds",  label: "Rev Clouds",     color: "#E05252",              visible: visibleRevClouds,      toggle: () => setVisibleRevClouds(v => !v),      count: revClouds.length, lockable: true },
+              { key: "flowPaths",  label: "Flow Paths",     color: "#4A90D9",              visible: visibleFlowPaths,      toggle: () => setVisibleFlowPaths(v => !v),      count: flowPaths.length, lockable: true },
+              { key: "floorRegions", label: "Floors",       color: "#7A9E5A",              visible: visibleFloorRegions,   toggle: () => setVisibleFloorRegions(v => !v),   count: floorRegions.length, lockable: true },
+              { key: "guides",     label: "Elevation Rulers", color: "#2E8BE6",            visible: visibleGuides,         toggle: () => setVisibleGuides(v => !v),         count: guides.length, lockable: true },
+              { key: "itmep",      label: "IT / MEP",       color: T.uiElec ?? "#E0A030",  visible: visibleITMEP,          toggle: () => setVisibleITMEP(v => !v),          count: markers.length, lockable: true },
+              // ITMEP-specific per-layer toggles (only inside IT/MEP mode, and only when the master is on)
+              ...(mode === "itmep" && visibleITMEP ? [
+                { key: "elec",   label: "Electrical", color: T.uiElec,     visible: visibleBuildElectrical, toggle: () => setVisibleBuildElectrical(v => !v), count: markers.filter(m => m.layer === "power" && !isLightComp(m.componentType)).length, lockable: true },
+                { key: "light",  label: "Lighting",   color: T.uiLighting, visible: visibleBuildLighting,   toggle: () => setVisibleBuildLighting(v => !v),   count: markers.filter(m => m.layer === "power" && isLightComp(m.componentType)).length, lockable: true },
+              ] : []),
+              // ITMEP spec layers
+              ...(mode === "itmep" && visibleITMEP ? Object.entries(SPEC_LAYERS).filter(([k]) => k !== "power").map(([k, l]) => ({
+                key: k, label: l.name, color: uiColor(l.color), visible: visibleLayers[k],
+                toggle: () => setVisibleLayers(v => ({ ...v, [k]: !v[k] })),
+                count: markers.filter(m => m.layer === k).length, lockable: true,
+              })) : []),
+            ];
+            const toggleLock = (key) => {
+              const locking = !lockedLayers[key];
+              setLockedLayers(v => ({ ...v, [key]: !v[key] }));
+              // Locking drops the current selection so a pre-selected item on a now-locked
+              // layer can't still be nudged / deleted / edited via the inspector.
+              if (locking) { setSelectedId(null); setSelType(null); setSelectedIds([]); }
+            };
+            return (
+              <div style={{ borderTop: "1px solid " + T.bg3, padding: "10px 12px", background: T.bg1, flexShrink: 0 }}>
+                <div style={{ fontSize: 9, color: T.textDim, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6, fontWeight: 600 }}>Layers</div>
+                {[...rows].sort((a, b) => a.label.localeCompare(b.label)).map(({ key, label, color, visible, toggle, count, lockable }) => {
+                  const locked = lockable && layerLocked(key);
+                  return (
+                  <div key={key} style={{ ...S.lr, padding: "4px 4px", borderRadius: 6, marginBottom: 1 }}>
+                    <span style={{ width: 10, height: 10, borderRadius: 3, background: color, opacity: visible ? 1 : 0.3, flexShrink: 0 }} />
+                    <span style={{ color: locked ? T.textDim : visible ? T.accent : T.textMuted, flex: 1, fontSize: 11 }}>{label}</span>
+                    {count != null && <span style={{ color: visible ? color : T.accentDim, fontSize: 10, fontWeight: 500 }}>{count}</span>}
+                    <span style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+                      <span onClick={toggle} title={visible ? "Hide layer" : "Show layer"}
+                        style={{ cursor: "pointer", display: "flex", alignItems: "center", color: visible ? color : T.textFaint }}>
+                        {visible ? <Eye size={15} /> : <EyeOff size={15} />}
+                      </span>
+                      {lockable
+                        ? <span onClick={() => toggleLock(key)} title={locked ? "Locked — click to unlock" : "Lock layer"}
+                            style={{ cursor: "pointer", display: "flex", alignItems: "center", color: locked ? T.brand : T.textFaint, userSelect: "none" }}>
+                            {locked ? <Lock size={13} /> : <Unlock size={13} />}
+                          </span>
+                        : <span style={{ width: 13 }} />}
+                    </span>
+                  </div>
+                  );
+                })}
+              </div>
+            );
+          })()}
+        </div>
+
+        {/* ── Left tool rail (planning modes — Docs has its own slide tools) ── */}
+          {mode !== "docs" && <div style={S.toolRail}>
+
+            {/* ── Universal tools (Select · Dim · Label · RevCloud) ── */}
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button style={S.toolBtn(tool === "select")} onClick={() => setT("select")}>
+                  <MousePointer2 size={20} />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="right" sideOffset={8}>Select (V)</TooltipContent>
+            </Tooltip>
+
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button style={S.toolBtn(tool === "dim", T.dimText)} onClick={() => setT("dim")}>
+                  <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                    <line x1="3" y1="10" x2="17" y2="10" stroke={T.dimText} strokeWidth="1" />
+                    <line x1="3" y1="6" x2="3" y2="14" stroke={T.dimText} strokeWidth="1.5" />
+                    <line x1="17" y1="6" x2="17" y2="14" stroke={T.dimText} strokeWidth="1.5" />
+                    <line x1="3" y1="7" x2="5.5" y2="10" stroke={T.dimText} strokeWidth="1" />
+                    <line x1="3" y1="13" x2="5.5" y2="10" stroke={T.dimText} strokeWidth="1" />
+                    <line x1="17" y1="7" x2="14.5" y2="10" stroke={T.dimText} strokeWidth="1" />
+                    <line x1="17" y1="13" x2="14.5" y2="10" stroke={T.dimText} strokeWidth="1" />
+                  </svg>
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="right" sideOffset={8}>Dimension (M)</TooltipContent>
+            </Tooltip>
+
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button style={S.toolBtn(tool === "label", T.textBright)} onClick={() => setT("label")}>
+                  <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                    <text x="10" y="15" textAnchor="middle" fontSize="15" fontWeight="700"
+                      fill={tool === "label" ? T.textBright : T.textMuted} fontFamily="sans-serif">T</text>
+                  </svg>
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="right" sideOffset={8}>Label / Callout (T)</TooltipContent>
+            </Tooltip>
+
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button style={S.toolBtn(tool === "revcloud", "#E05252")} onClick={() => setT("revcloud")}>
+                  <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                    <path d="M10 16 A3 3 0 0 1 4 16 A3 3 0 0 1 2 11 A3 3 0 0 1 5 6 A3 3 0 0 1 10 5 A3 3 0 0 1 15 6 A3 3 0 0 1 18 11 A3 3 0 0 1 16 16 Z"
+                      stroke={tool === "revcloud" ? "#E05252" : T.textMuted} strokeWidth="1.5" strokeLinejoin="round" />
+                  </svg>
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="right" sideOffset={8}>Revision Cloud (N)</TooltipContent>
+            </Tooltip>
+
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button style={S.toolBtn(tool === "flowPath", "#4A90D9")} onClick={() => setT("flowPath")}>
+                  <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                    <path d="M3 15 L8 7 L13 12 L17 5" stroke={tool === "flowPath" ? "#4A90D9" : T.textMuted} strokeWidth="3.5" strokeOpacity="0.3" strokeLinecap="round" strokeLinejoin="round" />
+                    <path d="M3 15 L8 7 L13 12 L17 5" stroke={tool === "flowPath" ? "#4A90D9" : T.textMuted} strokeWidth="1" strokeDasharray="2 2" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="right" sideOffset={8}>Flow Path (K)</TooltipContent>
+            </Tooltip>
+
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button style={S.toolBtn(tool === "floorRegion", "#7A9E5A")} onClick={() => setT("floorRegion")}>
+                  <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                    <rect x="3" y="3" width="14" height="14" rx="1.5" stroke={tool === "floorRegion" ? "#7A9E5A" : T.textMuted} strokeWidth="1.5" />
+                    <line x1="3" y1="8"  x2="17" y2="8"  stroke={tool === "floorRegion" ? "#7A9E5A" : T.textMuted} strokeWidth="0.8" opacity="0.6" />
+                    <line x1="3" y1="12" x2="17" y2="12" stroke={tool === "floorRegion" ? "#7A9E5A" : T.textMuted} strokeWidth="0.8" opacity="0.6" />
+                  </svg>
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="right" sideOffset={8}>Floor Region (A)</TooltipContent>
+            </Tooltip>
+
+            {/* ── Build-mode tools ───────────────────────────────────── */}
+            {mode === "build" && <>
+              <div style={S.toolSepH} />
+
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button style={S.toolBtn(tool === "wall", wallKinds[wallKind].color)} onClick={() => setT("wall")}>
+                    <WallIcon />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="right" sideOffset={8}>Wall <kbd style={{ background:"#333", border:"1px solid #555", borderRadius:3, padding:"1px 4px", fontSize:10 }}>W</kbd></TooltipContent>
+              </Tooltip>
+
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button style={S.toolBtn(tool === "rect", wallKinds[wallKind].color)} onClick={() => setT("rect")}>
+                    <RectRoomIcon />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="right" sideOffset={8}>Rect Room <kbd style={{ background:"#333", border:"1px solid #555", borderRadius:3, padding:"1px 4px", fontSize:10 }}>R</kbd></TooltipContent>
+              </Tooltip>
+
+              <div style={S.toolSepH} />
+
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button style={S.toolBtn(tool === "door")} onClick={() => setT("door")}>
+                    <DoorOpen size={20} />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="right" sideOffset={8}>Door</TooltipContent>
+              </Tooltip>
+
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button style={S.toolBtn(tool === "window")} onClick={() => setT("window")}>
+                    <WindowIcon />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="right" sideOffset={8}>Window</TooltipContent>
+              </Tooltip>
+
+              <div style={S.toolSepH} />
+
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button style={S.toolBtn(tool === "column")} onClick={() => setT("column")}>
+                    <ColumnIcon />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="right" sideOffset={8}>Column (C)</TooltipContent>
+              </Tooltip>
+
+              {bgImage && <>
+                <div style={S.toolSepH} />
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button style={S.toolBtn(tool === "calibrate", T.uiConduit)} onClick={() => setT("calibrate")}>
+                      <Ruler size={20} />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="right" sideOffset={8}>Calibrate Scale</TooltipContent>
+                </Tooltip>
+              </>}
+            </>}
+
+            {/* ── ITMEP-mode tools ── */}
+            {mode === "itmep" && <>
+              <div style={S.toolSepH} />
+
+              {/* Power layer: Outlet + Lighting */}
+              {activeSpecLayer === "power" && <>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button style={S.toolBtn(tool === "outlet", T.uiElec)} onClick={() => setT("outlet")}>
+                      <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                        <circle cx="10" cy="10" r="7" stroke="#50C878" strokeWidth="1.5" />
+                        <line x1="3" y1="10" x2="17" y2="10" stroke="#50C878" strokeWidth="2" />
+                        <text x="10" y="9" textAnchor="middle" fontSize="5.5" fill="#50C878" fontWeight="bold">D</text>
+                      </svg>
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="right" sideOffset={8}>Outlet (E)</TooltipContent>
+                </Tooltip>
+
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button style={S.toolBtn(tool === "lighting", T.uiLighting)} onClick={() => setT("lighting")}>
+                      <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                        <circle cx="10" cy="10" r="5" stroke={T.uiLighting} strokeWidth="1.5" />
+                        <circle cx="10" cy="10" r="2" fill={T.uiLighting} />
+                        <line x1="10" y1="1" x2="10" y2="4" stroke={T.uiLighting} strokeWidth="1.5" />
+                        <line x1="10" y1="16" x2="10" y2="19" stroke={T.uiLighting} strokeWidth="1.5" />
+                        <line x1="1" y1="10" x2="4" y2="10" stroke={T.uiLighting} strokeWidth="1.5" />
+                        <line x1="16" y1="10" x2="19" y2="10" stroke={T.uiLighting} strokeWidth="1.5" />
+                      </svg>
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="right" sideOffset={8}>Lighting (L)</TooltipContent>
+                </Tooltip>
+              </>}
+
+              {/* AV / IT / MEP / Security — data-driven from the catalog, real symbols */}
+              {activeSpecLayer !== "power" && Object.entries(SPEC_COMPONENTS[activeSpecLayer] || {}).map(([key, c]) => (
+                <Tooltip key={key}>
+                  <TooltipTrigger asChild>
+                    <button style={S.toolBtn(tool === "marker" && activeComponentType === key, SPEC_LAYERS[activeSpecLayer].color)}
+                      onClick={() => { setActiveComponentType(key); setT("marker"); }}>
+                      <svg width="24" height="24" viewBox="0 0 28 28" style={{ overflow: "visible" }}>
+                        <MarkerSymbol marker={{ x: 14, y: 14, layer: activeSpecLayer, componentType: key, finish: c.finish ? markerFinish : undefined, angle: -Math.PI / 2 }} selected={false} />
+                      </svg>
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="right" sideOffset={8}>{c.name}</TooltipContent>
+                </Tooltip>
+              ))}
+            </>}
+
+          </div>}
+
+        {/* ── Canvas area — Docs stage swaps the pane workspace for the slide deck ── */}
+        {mode === "docs" ? (
+          <DocsView T={T} font={font} display={display} projectName={projectName}
+            slides={slides} docSettings={docSettings} activeSlideId={activeSlideId}
+            onSelectSlide={setActiveSlideId} onUpdateSlide={updateSlide} onDeleteSlide={removeSlide}
+            onMoveSlide={moveSlide} onUpdateSettings={(p) => setDocSettings(s => ({ ...s, ...p }))}
+            onEditModel={editModelFromSlide} renderSlideBody={renderSlideBody}
+            onPrint={() => setPrinting(true)} captureRef={docsCaptureRef} autoScaleFor={slideAutoScale} />
+        ) : (
+        <div ref={splitContainerRef} style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", position: "relative" }}>
+        {/* Row 1 (plan + aux pane 1) */}
+        <div style={{ display: "flex", minHeight: 0, flex: panes.length === 4 ? "none" : 1, height: panes.length === 4 ? `${splitPosV * 100}%` : undefined }}>
+        <div ref={cvsContainer} style={panes.length > 1
+          ? { ...S.cv, flex: "none", width: `${splitPos * 100}%` }
+          : S.cv}>
+          <PaneChip i={0} />
+          {/* Elevation guide edge rails — plan canvas active + Select tool, so they don't
+              intercept drawing near the canvas edges */}
+          {(panes.length > 1 || panes[0].view === "plan") && tool === "select" && visibleGuides && !layerLocked("guides") && guideRails()}
+          {/* Camera markers on the edge rulers — where each open elevation is currently looking */}
+          {(panes.length > 1 || panes[0].view === "plan") && visibleGuides && cameraIndicators()}
+          {/* Single-pane non-plan view: overlay the aux view on top of the dormant plan canvas.
+              The chip stays clickable (zIndex 50 > 40) so the user can swap back. */}
+          {panes.length === 1 && panes[0].view !== "plan" && (
+            <div style={{ position: "absolute", inset: 0, zIndex: 40, background: T.canvas }}>
+              {renderAuxPane(0)}
+            </div>
+          )}
+          {/* 2D plan controls — bottom-right */}
+          <div style={{ position: "absolute", bottom: 40, right: 12, zIndex: 20, display: "flex", alignItems: "center", justifyContent: "flex-end", flexWrap: "wrap", gap: 4, maxWidth: "calc(100vw - 24px)" }}>
+            {view3d && (<>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button onClick={() => setShow3dLabels(v => !v)} style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: "6px 8px", borderRadius: 6, border: "1px solid " + T.border, background: show3dLabels ? T.accent : T.panelBg, color: show3dLabels ? "#fff" : T.textMuted, cursor: "pointer", backdropFilter: "blur(8px)", boxShadow: T.panelShadow, userSelect: "none" }}>
+                    <Tag size={14} />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="top" sideOffset={8}>Zone labels</TooltipContent>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button onClick={() => setShow3dDims(v => !v)} style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: "6px 8px", borderRadius: 6, border: "1px solid " + T.border, background: show3dDims ? T.accent : T.panelBg, color: show3dDims ? "#fff" : T.textMuted, cursor: "pointer", backdropFilter: "blur(8px)", boxShadow: T.panelShadow, userSelect: "none" }}>
+                    <Ruler size={14} />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="top" sideOffset={8}>Wall dimensions</TooltipContent>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button onClick={() => setShow3dCeiling(v => !v)} style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: "6px 8px", borderRadius: 6, border: "1px solid " + T.border, background: show3dCeiling ? T.accent : T.panelBg, color: show3dCeiling ? "#fff" : T.textMuted, cursor: "pointer", backdropFilter: "blur(8px)", boxShadow: T.panelShadow, userSelect: "none" }}>
+                    <PanelTop size={14} />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="top" sideOffset={8}>Ceiling</TooltipContent>
+              </Tooltip>
+              <div style={{ width: 1, height: 20, background: T.border, margin: "0 2px" }} />
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button onClick={() => controls3dRef.current?.reset()} style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: "6px 8px", borderRadius: 6, border: "1px solid " + T.border, background: T.panelBg, color: T.textMuted, cursor: "pointer", backdropFilter: "blur(8px)", boxShadow: T.panelShadow, userSelect: "none" }}>
+                    <RotateCcw size={14} />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="top" sideOffset={8}>Reset camera</TooltipContent>
+              </Tooltip>
+              <div style={{ width: 1, height: 20, background: T.border, margin: "0 2px" }} />
+            </>)}
+            {!view3d && <>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button onClick={() => setCanvasRotation(r => { const n = r - 45; return n < -360 ? 0 : n; })}
+                    style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: "6px 8px", borderRadius: 6, border: "1px solid " + T.border, background: T.panelBg, color: T.textMuted, cursor: "pointer", backdropFilter: "blur(8px)", boxShadow: T.panelShadow, userSelect: "none" }}>
+                    <RotateCcw size={14} />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="top" sideOffset={8}>Rotate view −45°</TooltipContent>
+              </Tooltip>
+              <button onClick={() => setCanvasRotation(0)}
+                style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: "4px 7px", borderRadius: 6, border: "1px solid " + T.border, background: canvasRotation !== 0 ? T.accent + "22" : T.panelBg, color: canvasRotation !== 0 ? T.accent : T.textMuted, cursor: canvasRotation !== 0 ? "pointer" : "default", backdropFilter: "blur(8px)", boxShadow: T.panelShadow, userSelect: "none", fontSize: 10, fontFamily: "inherit", fontWeight: 600, minWidth: 32 }}>
+                {canvasRotation !== 0 ? `${canvasRotation}°` : "0°"}
+              </button>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button onClick={() => setCanvasRotation(r => { const n = r + 45; return n > 360 ? 0 : n; })}
+                    style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: "6px 8px", borderRadius: 6, border: "1px solid " + T.border, background: T.panelBg, color: T.textMuted, cursor: "pointer", backdropFilter: "blur(8px)", boxShadow: T.panelShadow, userSelect: "none" }}>
+                    <RotateCw size={14} />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="top" sideOffset={8}>Rotate view +45°</TooltipContent>
+              </Tooltip>
+              <div style={{ width: 1, height: 20, background: T.border, margin: "0 2px" }} />
+            </>}
+          </div>
+
+          {view3d && !splitView && data3d && (
+            <Suspense fallback={<div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", color: T.textMuted, fontSize: 11, fontFamily: font }}>Loading 3D…</div>}>
+            <TestFit3D
+              walls={data3d.walls}
+              nodes={data3d.nodes}
+              doors={data3d.doors}
+              windows={data3d.windows}
+              columns={data3d.columns}
+              zones={data3d.zones}
+              markers={data3d.markers}
+              dims={dims}
+              pxPerFoot={pxPerFoot} ceilingHeight={ceilingHeight} T={T} themeMode={themeMode}
+              controlsRef={controls3dRef} mode={mode}
+              selectedId={selectedId} selType={selType}
+              show3dLabels={show3dLabels} setShow3dLabels={setShow3dLabels}
+              show3dDims={show3dDims}     setShow3dDims={setShow3dDims}
+              show3dCeiling={show3dCeiling}
+              style3d={style3d}
+              floorMaterial={floorMaterial}
+              floorRegions={data3d.floorRegions}
+              zoneLibrary={zoneLibrary}
+              visibleLayers={visibleLayers}
+              visibleBuildElectrical={visibleBuildElectrical}
+              visibleBuildLighting={visibleBuildLighting}
+              onSelect={(id, type) => { setSelectedId(id); setSelType(type); setSelectedIds(id ? [id] : []); }}
+            />
+            </Suspense>
+          )}
+
+          {/* 3D style switcher — only in full 3D mode (not split; split shows it in the 3D pane) */}
+          {view3d && !splitView && (
+            <div style={{ position: "absolute", bottom: 112, left: "50%", transform: "translateX(-50%)",
+              display: "flex", gap: 4, background: T.panelBg, border: "1px solid " + T.border,
+              borderRadius: 8, padding: 4, backdropFilter: "blur(12px)", zIndex: 10 }}>
+              {[["clay","Clay"],["xray","X-Ray"],["detailed","Detailed"]].map(([k, label]) => (
+                <button key={k} onClick={() => setStyle3d(k)}
+                  style={{ padding: "5px 14px", borderRadius: 5, border: "none", cursor: "pointer",
+                    background: style3d === k ? T.accent + "40" : "transparent",
+                    color: style3d === k ? T.textBright : T.textMuted,
+                    fontSize: 11, fontFamily: "inherit", fontWeight: style3d === k ? 600 : 400,
+                    outline: style3d === k ? "1px solid " + T.accent : "none" }}>
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {repeatInput !== null && (
+            <div style={{ position: "absolute", top: 12, left: "50%", transform: "translateX(-50%)", display: "flex", alignItems: "center", gap: 8, background: T.panelBg, border: "1px solid " + T.accent + "88", borderRadius: 20, padding: "5px 16px", fontSize: 11, color: T.textBright, fontWeight: 600, zIndex: 25, backdropFilter: "blur(12px)", boxShadow: T.panelShadow, letterSpacing: "0.02em" }}>
+              <span style={{ color: T.accent }}>/</span>
+              <span style={{ minWidth: 20, textAlign: "center" }}>{repeatInput || "…"}</span>
+              <span style={{ color: T.textMuted, fontSize: 10, fontWeight: 400 }}>copies · Enter to place · Esc to cancel</span>
+            </div>
+          )}
+
+          {drawChain && !view3d && <div style={{ position: "absolute", top: "16px", left: "50%", transform: "translateX(-50%)", background: T.panelBg, border: "1px solid " + T.border, borderRadius: "6px", padding: "6px 14px", fontSize: "10px", color: MODES[mode].color, zIndex: 10, backdropFilter: "blur(12px)", boxShadow: T.panelShadow, fontWeight: 500 }}>
+            Click to place · Double-click to finish · Shift: 45° snap · Type length to lock
+          </div>}
+          
+          <style>{`@keyframes _blink{0%,100%{opacity:1}50%{opacity:0}}`}</style>
+          {dimInput !== "" && cursorPos && (
+            <div style={{ position: "absolute", pointerEvents: "none", zIndex: 20, whiteSpace: "nowrap",
+              left: cursorPos.x * zoom + viewOff.x + 18, top: cursorPos.y * zoom + viewOff.y + 18,
+              background: "#1A1814EE", border: "1px solid #C8B98A", borderRadius: 5,
+              padding: "3px 9px", fontSize: 12, fontFamily: "'SF Mono','Consolas','Monaco',monospace",
+              fontWeight: 600, color: "#C8B98A", boxShadow: "0 2px 8px rgba(0,0,0,.5)" }}>
+              {dimInput}
+              <span style={{ display: "inline-block", width: 1, height: 12, background: "#C8B98A",
+                marginLeft: 2, verticalAlign: "middle", animation: "_blink 1s step-end infinite" }} />
+            </div>
+          )}
+          {tool === "calibrate" && (!calibrationLine || !calibrationLine.p2) && <div style={{ position: "absolute", top: "16px", left: "50%", transform: "translateX(-50%)", background: T.panelBg, border: "1px solid " + T.border, borderRadius: "6px", padding: "6px 14px", fontSize: "10px", color: T.uiConduit, zIndex: 10, backdropFilter: "blur(12px)", boxShadow: T.panelShadow, fontWeight: 500 }}>
+            {!calibrationLine ? "Click to set first point" : "Click to set second point"}
+          </div>}
+
+          {tool === "label" && !editingLabelId && (
+            <div style={{ position: "absolute", top: "16px", left: "50%", transform: "translateX(-50%)", background: T.panelBg, border: "1px solid " + T.border, borderRadius: "6px", padding: "6px 14px", fontSize: "10px", color: T.textBright, zIndex: 10, backdropFilter: "blur(12px)", boxShadow: T.panelShadow, fontWeight: 500, pointerEvents: "none" }}>
+              Click to place · Click + drag for callout with leader line
+            </div>
+          )}
+          {tool === "revcloud" && (
+            <div style={{ position: "absolute", top: "16px", left: "50%", transform: "translateX(-50%)", background: T.panelBg, border: "1px solid " + T.border, borderRadius: 6, padding: "6px 14px", fontSize: 10, color: "#E05252", zIndex: 10, backdropFilter: "blur(12px)", boxShadow: T.panelShadow, fontWeight: 500, pointerEvents: "none" }}>
+              {!drawRevCloud ? "Click to start revision cloud"
+                : drawRevCloud.points.length < 3
+                  ? `${drawRevCloud.points.length} point${drawRevCloud.points.length > 1 ? "s" : ""} — need at least 3 to close`
+                  : "Click to add points · Click first point to close"}
+            </div>
+          )}
+          {tool === "flowPath" && (
+            <div style={{ position: "absolute", top: "16px", left: "50%", transform: "translateX(-50%)", background: T.panelBg, border: "1px solid " + T.border, borderRadius: 6, padding: "6px 14px", fontSize: 10, color: "#4A90D9", zIndex: 10, backdropFilter: "blur(12px)", boxShadow: T.panelShadow, fontWeight: 500, pointerEvents: "none" }}>
+              {!drawFlowPath ? "Click to start flow path"
+                : `${drawFlowPath.points.length} point${drawFlowPath.points.length > 1 ? "s" : ""} · click to add · Enter or double-click to finish`}
+            </div>
+          )}
+          {tool === "floorRegion" && (
+            <div style={{ position: "absolute", top: "16px", left: "50%", transform: "translateX(-50%)", background: T.panelBg, border: "1px solid " + T.border, borderRadius: 6, padding: "6px 14px", fontSize: 10, color: "#7A9E5A", zIndex: 10, backdropFilter: "blur(12px)", boxShadow: T.panelShadow, fontWeight: 500, pointerEvents: "none" }}>
+              {!drawFloorRegion ? "Click to start floor region"
+                : drawFloorRegion.points.length < 3
+                  ? `${drawFloorRegion.points.length} point${drawFloorRegion.points.length > 1 ? "s" : ""} — need at least 3 to close`
+                  : "Click to add points · Click first point to close"}
+            </div>
+          )}
+          {addingLeaderToId && (
+            <div style={{ position: "absolute", top: "16px", left: "50%", transform: "translateX(-50%)", background: T.panelBg, border: "1px solid " + T.accent + "88", borderRadius: "6px", padding: "6px 14px", fontSize: "10px", color: T.accent, zIndex: 10, backdropFilter: "blur(12px)", boxShadow: T.panelShadow, fontWeight: 500, pointerEvents: "none" }}>
+              Click any object or point to attach leader · Esc to cancel
+            </div>
+          )}
+
+          {/* Inline label text editor */}
+          {editingLabelId && (() => {
+            const lbl = labels.find(l => l.id === editingLabelId);
+            if (!lbl) return null;
+            const screenX = lbl.x * zoom + viewOff.x;
+            const screenY = lbl.y * zoom + viewOff.y;
+            const lineCount = wrapLabelLines(editingLabelText, lbl.fontSize).length;
+            return <textarea
+              autoFocus
+              style={{
+                position: "absolute",
+                left: screenX,
+                top: screenY,
+                transform: "translate(-50%, -50%)",
+                background: T.bg2 + "EE",
+                border: "1.5px solid " + T.accent,
+                borderRadius: 4,
+                color: lbl.color,
+                fontSize: Math.max(10, lbl.fontSize * zoom),
+                fontWeight: lbl.bold ? 700 : 400,
+                fontStyle: lbl.italic ? "italic" : "normal",
+                fontFamily: "inherit",
+                padding: "4px 8px",
+                minWidth: 80,
+                maxWidth: LABEL_MAX_W * zoom,
+                width: LABEL_MAX_W * zoom,
+                resize: "none",
+                outline: "none",
+                textAlign: "center",
+                zIndex: 30,
+                lineHeight: 1.4,
+                overflow: "hidden",
+                whiteSpace: "pre-wrap",
+                wordBreak: "break-word",
+              }}
+              rows={lineCount}
+              value={editingLabelText}
+              onChange={e => setEditingLabelText(e.target.value)}
+              onBlur={() => {
+                const t = editingLabelText.trim();
+                setLabels(p => t
+                  ? p.map(l => l.id === editingLabelId ? { ...l, text: t } : l)
+                  : p.filter(l => l.id !== editingLabelId || l.text));
+                setEditingLabelId(null);
+              }}
+              onKeyDown={ev => {
+                if (ev.key === "Escape") {
+                  setLabels(p => p.filter(l => l.id !== editingLabelId || l.text));
+                  setEditingLabelId(null);
+                } else if (ev.key === "Enter" && !ev.shiftKey) {
+                  ev.preventDefault();
+                  const t = editingLabelText.trim();
+                  setLabels(p => t
+                    ? p.map(l => l.id === editingLabelId ? { ...l, text: t } : l)
+                    : p.filter(l => l.id !== editingLabelId || l.text));
+                  setEditingLabelId(null);
+                }
+              }}
+            />;
+          })()}
+
+          {renderPlanCanvas({ zoom, viewOff, interactive: true })}
 
           {/* Collapsed option-panel handle — re-expands the panel */}
           {(inspSel || inspTool) && !inspectorOpen && (
@@ -4937,7 +5251,8 @@ export default function TestfitTool() {
             <div style={{ flex: 1, position: "relative", minWidth: 0, overflow: "hidden" }}><PaneChip i={3} />{renderAuxPane(3)}</div>
           </div>
         )}
-        </div>{/* end splitContainerRef */}
+        </div>
+        )}{/* end splitContainerRef / docs swap */}
       </div>
 
       {/* ── App Status Bar — fixed footer below all panes ───────────── */}
@@ -4972,6 +5287,25 @@ export default function TestfitTool() {
         );
       })()}
     </div>
+
+    {/* ── Docs print root — sibling of the app root; @media print swaps them ── */}
+    {printing && (() => {
+      const inches = sheetInches(docSettings);
+      return (<>
+        <style>{`
+          @media screen { .docs-print-root { display: none; } }
+          @media print {
+            .tf-app-root { display: none !important; }
+            .docs-print-root { display: block; }
+            .docs-sheet-page { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+            @page { size: ${inches.w}in ${inches.h}in; margin: 0; }
+            body { margin: 0; }
+          }
+        `}</style>
+        <PrintDeck slides={slides} docSettings={docSettings} T={T} font={font} display={display}
+          projectName={projectName} renderSlideBody={renderSlideBody} autoScaleFor={slideAutoScale} />
+      </>);
+    })()}
 
     {/* ── Zone Library Settings Modal ──────────────────────────────── */}
     {showSettings && <ZoneLibraryModal

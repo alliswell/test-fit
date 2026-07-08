@@ -10,8 +10,12 @@ import { revCloudPath } from "../imports/geometry";
 import { WALL_KINDS, DOOR_TYPE_STYLES, WINDOW_TYPE_STYLES } from "../constants/theme";
 import { SPEC_COMPONENTS, DOOR_HEIGHT_IN, DOOR_KNOB_HEIGHT_IN, SNAP_R, FINISH_COLORS } from "../constants/specs";
 
+// readonly: presentation rendering (Docs slides) — no pan/zoom/annotation interaction.
+// fixedRect: {x,y,w,h} in projected u/v units — contain-fit this crop instead of the
+// content auto-fit; the camera tracks the rect, not user input.
 export default function ElevationView({ dir, nodes, walls, doors, windows, columns, markers = [], ceilingHeight, pxPerFoot, T,
-  selectedId, selType, onSelect, ft, tool, cut, scrub, onView, panU, anno, onPlaceDim, onPlaceLabel, onUpdateDim, onUpdateLabel, onDeleteLabel, onPlaceRevCloud, onUpdateRevCloud }) {
+  selectedId, selType, onSelect, ft, tool, cut, scrub, onView, panU, anno, onPlaceDim, onPlaceLabel, onUpdateDim, onUpdateLabel, onDeleteLabel, onPlaceRevCloud, onUpdateRevCloud,
+  readonly = false, fixedRect = null, fixedZoom = null }) {
   const svgRef = useRef(null);
   const [cam, setCam] = useState(null); // { tx, ty, z } — null until first auto-fit
   const panRef = useRef(null);
@@ -149,6 +153,7 @@ export default function ElevationView({ dir, nodes, walls, doors, windows, colum
   // Retries across bounds changes only until the first successful fit for this key.
   const fitKey = `${dir}:${cut ?? ""}`;
   useEffect(() => {
+    if (fixedRect) return; // slide crop drives the camera (effect below)
     if (scrub) return; // suspended while scrubbing — the cursor drives the camera (below)
     if (fittedRef.current === fitKey) return;
     const el = svgRef.current; if (!el) return;
@@ -160,6 +165,22 @@ export default function ElevationView({ dir, nodes, walls, doors, windows, colum
     setCam({ z, tx: r.width / 2 - cx * z, ty: r.height / 2 - cy * z });
     fittedRef.current = fitKey;
   }, [fitKey, scrub, bounds.uMin, bounds.uMax, bounds.vTop, bounds.vBot]);
+
+  // Slide crop camera: contain-fit fixedRect into the layout box. clientWidth/Height are
+  // used (not getBoundingClientRect) because Docs sheets are CSS-scaled — layout size is
+  // the SVG's logical coordinate space; the transform scales the result visually.
+  const rectKey = fixedRect ? [fixedRect.x, fixedRect.y, fixedRect.w, fixedRect.h, fixedZoom].join(",") : null;
+  useEffect(() => {
+    if (!fixedRect) return;
+    const el = svgRef.current; if (!el) return;
+    const W = el.clientWidth || 400, H = el.clientHeight || 300;
+    const pad = 8;
+    // fixedZoom (Docs standard-scale rendering) wins over the contain-fit.
+    const z = fixedZoom ?? Math.max(0.01, Math.min((W - pad * 2) / (fixedRect.w || 200), (H - pad * 2) / (fixedRect.h || 200), 20));
+    const cx = fixedRect.x + fixedRect.w / 2, cy = fixedRect.y + fixedRect.h / 2;
+    setCam({ z, tx: W / 2 - cx * z, ty: H / 2 - cy * z });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rectKey]);
 
   // While a section guide is being dragged, the cursor's position along the plan is the
   // elevation's camera: pan horizontally so the point under the cursor is centered (keeping
@@ -184,14 +205,18 @@ export default function ElevationView({ dir, nodes, walls, doors, windows, colum
     setCam(c => { const cc = c || { z: 1, tx: 0, ty: 0 }; return { ...cc, tx: r.width / 2 - panU * cc.z }; });
   }, [panU]);
 
-  // Report the camera's visible horizontal extent (in projected-u units) up to the plan so
-  // it can draw a "camera" marker on the matching edge ruler.
+  // Report the camera's visible extent (in projected u/v units) up to the plan: u drives
+  // the "camera" marker on the matching edge ruler; the full u/v rect is what the Docs
+  // stage captures when saving this view as a slide.
   useEffect(() => {
     if (!onView) return;
     const el = svgRef.current; if (!el) return;
     const r = el.getBoundingClientRect(); if (!r.width) return;
-    const c = cam || { tx: 0, z: 1 };
-    onView(dir, { uMin: (0 - c.tx) / c.z, uMax: (r.width - c.tx) / c.z, uCenter: (r.width / 2 - c.tx) / c.z });
+    const c = cam || { tx: 0, ty: 0, z: 1 };
+    onView(dir, {
+      uMin: (0 - c.tx) / c.z, uMax: (r.width - c.tx) / c.z, uCenter: (r.width / 2 - c.tx) / c.z,
+      vMin: (0 - c.ty) / c.z, vMax: (r.height - c.ty) / c.z,
+    });
   }, [cam, dir, onView]);
 
   const cm = cam || { tx: 0, ty: 0, z: 1 };
@@ -442,7 +467,9 @@ export default function ElevationView({ dir, nodes, walls, doors, windows, colum
 
   return (
     <div style={{ position: "relative", width: "100%", height: "100%" }}>
-    <svg ref={svgRef} width="100%" height="100%" onMouseDown={onBgDown} onMouseMove={onBgMove} onMouseLeave={() => hoverSnap && setHoverSnap(null)} onWheel={onWheel}
+    <svg ref={svgRef} width="100%" height="100%"
+      onMouseDown={readonly ? undefined : onBgDown} onMouseMove={readonly ? undefined : onBgMove}
+      onMouseLeave={readonly ? undefined : () => hoverSnap && setHoverSnap(null)} onWheel={readonly ? undefined : onWheel}
       style={{ display: "block", background: T.canvas, cursor: (tool === "dim" || tool === "label") ? "crosshair" : "grab" }}>
       {/* Floor + ceiling datum lines */}
       <line x1={0} y1={floorY} x2="100%" y2={floorY} stroke={T.textMuted} strokeWidth={1} opacity={0.6} />

@@ -61,6 +61,8 @@ src/
                        LABEL_MAX_W, DEFAULT_PHASES
   utils/
     labels.js          wrapLabelLines, labelBounds (label box layout)
+    docs.js            pure sheet math for the Docs stage: SHEET_SIZES, sheetDims/Inches,
+                       fitRectToViewport, defaultSlideName, formatSheetNo (docs.test.js)
   components/
     icons.jsx          tool-rail SVG icons (Wall/Window/Column…)
     ui.jsx             SliderInput, LabelAnnotation, AlignBtn
@@ -68,7 +70,16 @@ src/
     ZoneLibraryModal.jsx  zone catalog editor
     TopBar.jsx         props-only top chrome (wordmark, snapshot switcher, stage dropdown,
                        undo/redo, save/load/new, layout switcher, theme + settings)
-  store/               zustand stores (view/panes, layers, selection, geometry, interaction)
+    DocsView.jsx       props-only Docs stage (workflow stage 5): deck strip + printable
+                       sheet (title block, slide-local notes) + inspector; also exports
+                       PrintDeck (the @media print root). Model content arrives via the
+                       renderSlideBody render prop built in testfit.jsx — slides LIVE-render
+                       the current model (plan via renderPlanCanvas readonly, elevations via
+                       ElevationView readonly+fixedRect, 3D live in-editor with a captured
+                       JPEG for deck strip + print).
+  store/               zustand stores (view/panes, layers, selection, geometry, interaction,
+                       docs: slides + docSettings — project-level like snapshots, excluded
+                       from captureModel so snapshot switching never clobbers the deck)
                        geometryStore: persistent plan geometry (nodes/walls/zones/markers/
                        doors/windows/columns/dims/labels/revClouds/flowPaths/floorRegions/
                        guides). interactionStore: transient canvas state (draws/drag/marquee/
@@ -76,6 +87,7 @@ src/
                        steps toward extracting a useCanvasEvents hook.
   data/zone-library.json  default zone catalog
 e2e/happy-path.spec.js Playwright shell/draw/elevation tests
+e2e/docs.spec.js       Playwright Docs-stage tests (save view → slide, live render, notes)
 ```
 
 ## Refactors in progress / deferred

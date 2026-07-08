@@ -63,7 +63,7 @@ export const parseDimInput = (str, ppf) => {
 // shape; migrateProjectData() normalizes any older/partial blob (file import,
 // localStorage autosave, snapshot data) up to the current version. The seam that file
 // import, autosave, and a future database all flow through.
-export const PROJECT_VERSION = "testfit-v9";
+export const PROJECT_VERSION = "testfit-v10";
 export const AUTOSAVE_KEY = "testfit-autosave"; // localStorage key for crash-safe session restore
 const _arr = (v) => Array.isArray(v) ? v : [];
 const _obj = (v) => (v && typeof v === "object") ? v : {};
@@ -173,6 +173,25 @@ export const mergeNode = (nodes, walls, srcId, tgtId) => ({
     .filter(w => w.n1 !== w.n2)),
 });
 
+// Docs-stage slide sanitizer: whitelist the view enum, coerce field types, drop junk.
+const SLIDE_VIEWS = new Set(["plan", "front", "back", "left", "right", "3d"]);
+const _slide = (s) => {
+  if (!s || typeof s !== "object" || !SLIDE_VIEWS.has(s.view)) return null;
+  const rect = (s.rect && typeof s.rect === "object" && typeof s.rect.w === "number") ? s.rect : null;
+  const cam3d = (s.cam3d && Array.isArray(s.cam3d.position) && Array.isArray(s.cam3d.target))
+    ? { position: s.cam3d.position, target: s.cam3d.target, style3d: s.cam3d.style3d || "clay" } : null;
+  return {
+    id: s.id || uid(),
+    name: typeof s.name === "string" ? s.name : "Slide",
+    view: s.view, rect, cam3d,
+    image: typeof s.image === "string" ? s.image : null,
+    notes: _arr(s.notes),
+    title: typeof s.title === "string" ? s.title : "",
+    scaleText: typeof s.scaleText === "string" ? s.scaleText : "",
+    ts: typeof s.ts === "number" ? s.ts : Date.now(),
+  };
+};
+
 export function migrateProjectData(d) {
   if (!d || typeof d !== "object") d = {};
   // legacy: standalone `cutouts` were folded into windows as a window type
@@ -201,6 +220,12 @@ export function migrateProjectData(d) {
     splitPos: typeof d.splitPos === "number" ? d.splitPos : 0.5,
     splitPosV: typeof d.splitPosV === "number" ? d.splitPosV : 0.5,
     lockedLayers: _obj(d.lockedLayers),
+    // Docs stage (v10): slide deck + sheet settings — project-level like snapshots.
+    slides: _arr(d.slides).map(_slide).filter(Boolean),
+    docSettings: {
+      size: ["letter", "tabloid"].includes(d.docSettings?.size) ? d.docSettings.size : "letter",
+      orientation: ["landscape", "portrait"].includes(d.docSettings?.orientation) ? d.docSettings.orientation : "landscape",
+    },
     version: PROJECT_VERSION,
   };
 }

@@ -210,11 +210,94 @@ function getFloorTexture(material) {
   return t;
 }
 
+// Wall-base AO strip texture — vertical alpha ramp, dark at the wall edge fading to
+// clear. Linear (no colorSpace): it's an alpha ramp, not color data. Cached module-wide.
+let _aoStripTex = null;
+function getAOStripTex() {
+  if (_aoStripTex) return _aoStripTex;
+  const c = document.createElement("canvas");
+  c.width = 16; c.height = 64;
+  const ctx = c.getContext("2d");
+  const g = ctx.createLinearGradient(0, 0, 0, 64);
+  g.addColorStop(0, "rgba(0,0,0,0.45)");
+  g.addColorStop(0.4, "rgba(0,0,0,0.16)");
+  g.addColorStop(1, "rgba(0,0,0,0)");
+  ctx.fillStyle = g; ctx.fillRect(0, 0, 16, 64);
+  _aoStripTex = new THREE.CanvasTexture(c);
+  return _aoStripTex;
+}
+
+// Floor bump maps — relief aligned with the color maps' painted seams (same canvas
+// rows/cols, same tile size). Gray canvases, linear, RepeatWrapping like the wall bumps.
+function _grayCanvas(w, h) {
+  const c = document.createElement("canvas");
+  c.width = w; c.height = h;
+  const ctx = c.getContext("2d");
+  ctx.fillStyle = "#808080"; ctx.fillRect(0, 0, w, h);
+  return { c, ctx };
+}
+function _wrapTex(c, aniso = 4) {
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.anisotropy = aniso;
+  return t;
+}
+function _makeWoodBumpTex() {
+  const { c, ctx } = _grayCanvas(512, 64);
+  ctx.fillStyle = "#303030";           // grooves on the plank-border rows
+  ctx.fillRect(0, 0, 512, 2); ctx.fillRect(0, 62, 512, 2);
+  for (let i = 0; i < 10; i++) {       // faint grain streaks
+    const y = 6 + Math.floor(Math.random() * 52);
+    const v = 128 + Math.floor((Math.random() - 0.5) * 20);
+    ctx.fillStyle = `rgb(${v},${v},${v})`;
+    ctx.fillRect(Math.random() * 512, y, 60 + Math.random() * 200, 1);
+  }
+  return _wrapTex(c, 8);
+}
+function _makeGrayNoiseTex(speckle = 24) {
+  const { c, ctx } = _grayCanvas(256, 256);
+  const img = ctx.getImageData(0, 0, 256, 256);
+  for (let i = 0; i < img.data.length; i += 4) {
+    const v = 128 + Math.floor((Math.random() - 0.5) * 2 * speckle);
+    img.data[i] = img.data[i + 1] = img.data[i + 2] = v;
+  }
+  ctx.putImageData(img, 0, 0);
+  return _wrapTex(c);
+}
+function _makeVinylBumpTex() {
+  const { c, ctx } = _grayCanvas(256, 256);
+  const img = ctx.getImageData(0, 0, 256, 256);
+  for (let i = 0; i < img.data.length; i += 4) {
+    const v = 128 + Math.floor((Math.random() - 0.5) * 16);
+    img.data[i] = img.data[i + 1] = img.data[i + 2] = v;
+  }
+  ctx.putImageData(img, 0, 0);
+  ctx.fillStyle = "#303030";           // tile-edge grooves on the seam lines
+  ctx.fillRect(0, 0, 256, 2); ctx.fillRect(0, 254, 256, 2);
+  ctx.fillRect(0, 0, 2, 256); ctx.fillRect(254, 0, 2, 256);
+  return _wrapTex(c);
+}
+const _floorBumpCache = {};
+function getFloorBump(material) {
+  if (_floorBumpCache[material] !== undefined) return _floorBumpCache[material];
+  let b = null;
+  if (material === "Wood") b = { bumpMap: _makeWoodBumpTex(), bumpScale: 0.015 };
+  else if (material === "Concrete") b = { bumpMap: _makeGrayNoiseTex(24), bumpScale: 0.01 };
+  else if (material === "Vinyl") b = { bumpMap: _makeVinylBumpTex(), bumpScale: 0.012 };
+  _floorBumpCache[material] = b; // Carpet/unknown cache null
+  return b;
+}
+
 // Zone colors come from the editable zoneLibrary prop passed by TestFit3D.
 const zoneColor = (zone, zoneLibrary) =>
   zoneLibrary?.[zone.type]?.color ?? zone.paintColor ?? "#8B7355";
 
 const DOOR_HEIGHT_FT = 7;   // standard door height; masthead fills above
+// Painted trim (baseboards + corner plinths) — same finish family as WindowFrame,
+// already proven to stay under the 2.3 bloom threshold in detailed lighting.
+const BASE_H = 4 / 12;      // 4" baseboard height
+const BASE_D = 0.05;        // 0.6" proud of the wall face
+const TRIM_MAT = { color: "#F0EDE6", roughness: 0.5, metalness: 0.0, envMapIntensity: 0.7 };
 // Wall-mounted markers are centered at the wall centerline in world space.
 // A 7" existing wall has a half-thickness of ~0.29 ft. Push markers to both
 // wall faces so they're always visible regardless of which face is interior.
@@ -402,6 +485,45 @@ function DoorCasing({ segLenFt, heightFt, thickFt, offsetFt, style3d = "clay" })
           </mesh>
           <mesh position={[0, heightFt + cw / 2, 0]} castShadow receiveShadow>
             <boxGeometry args={[headW, cw, cd]} /><meshStandardMaterial {...matProps} />
+          </mesh>
+        </group>
+      ))}
+    </group>
+  );
+}
+
+// ─── Baseboard — painted trim along a wall segment's base ──────────────────
+// Detailed-mode only. One board proud of each wall face (DoorCasing's proud math);
+// callers skip door segments (casing meets the floor) and demo walls.
+function Baseboard({ segLenFt, thickFt, offsetFt = 0, style3d = "clay" }) {
+  if (style3d !== "detailed") return null;
+  const proud = thickFt / 2 + BASE_D / 2 + 0.001;
+  return (
+    <group position={[offsetFt, 0, 0]}>
+      {[1, -1].map(face => (
+        <mesh key={face} position={[0, BASE_H / 2, face * proud]} castShadow receiveShadow>
+          <boxGeometry args={[segLenFt, BASE_H, BASE_D]} />
+          <meshStandardMaterial {...TRIM_MAT} />
+        </mesh>
+      ))}
+    </group>
+  );
+}
+
+// ─── Wall-base AO strip — soft inner-corner shading on the floor ───────────
+// Detailed-mode only. A gradient quad along each wall face, dark edge hugging the
+// wall — the inner-corner ambient occlusion the top-down ContactShadows can't give.
+// noAutoShadow: the shadow depth pass ignores texture alpha (would cast rectangles).
+function BaseAOStrip({ segLenFt, thickFt, offsetFt = 0, widthFt = 0.6, style3d = "clay" }) {
+  if (style3d !== "detailed") return null;
+  const AO_Y = 0.008; // floor stack: base 0.001 / regions 0.004 / AO / selection 0.012
+  return (
+    <group position={[offsetFt, 0, 0]}>
+      {[1, -1].map(face => (
+        <group key={face} rotation={[0, face === 1 ? 0 : Math.PI, 0]}>
+          <mesh position={[0, AO_Y, thickFt / 2 + widthFt / 2]} rotation={[-Math.PI / 2, 0, 0]} userData={{ noAutoShadow: true }}>
+            <planeGeometry args={[segLenFt, widthFt]} />
+            <meshBasicMaterial map={getAOStripTex()} transparent depthWrite={false} />
           </mesh>
         </group>
       ))}
@@ -640,7 +762,13 @@ function Wall3D({ w, nodes, walls = [], doors, windows, cx, cz, pxPerFoot, ceili
         const extEnd    = (seg.solid && seg.t1 === 1)  ? extEndTotal   : 0;
         const segLenFt  = baseLen + extStart + extEnd;
         const offsetFt  = baseOff - extStart / 2 + extEnd / 2;
-        if (seg.solid) return <WallBox key={i} lenFt={segLenFt} heightFt={heightFt} thickFt={thickFt} yCenter={heightFt / 2} offsetFt={offsetFt} color={wk.color} material={w.material} wallId={w.id} onSelect={onSelect} isDemo={w.kind === "demo"} isSelected={wallSel && interactive} style3d={style3d} interactive={interactive} edges={false} />;
+        if (seg.solid) return <group key={i}>
+          <WallBox lenFt={segLenFt} heightFt={heightFt} thickFt={thickFt} yCenter={heightFt / 2} offsetFt={offsetFt} color={wk.color} material={w.material} wallId={w.id} onSelect={onSelect} isDemo={w.kind === "demo"} isSelected={wallSel && interactive} style3d={style3d} interactive={interactive} edges={false} />
+          {w.kind !== "demo" && <>
+            <Baseboard segLenFt={segLenFt} thickFt={thickFt} offsetFt={offsetFt} style3d={style3d} />
+            <BaseAOStrip segLenFt={segLenFt} thickFt={thickFt} offsetFt={offsetFt} style3d={style3d} />
+          </>}
+        </group>;
         if (seg.isDoor) {
           const mhH = heightFt - doorHFt;
           return (
@@ -661,6 +789,8 @@ function Wall3D({ w, nodes, walls = [], doors, windows, cx, cz, pxPerFoot, ceili
             {sillFt > 0.01 && <WallBox lenFt={segLenFt} heightFt={sillFt} thickFt={thickFt} yCenter={sillFt / 2} offsetFt={0} color={wk.color} material={w.material} wallId={w.id} onSelect={onSelect} isDemo={w.kind === "demo"} isSelected={false} style3d={style3d} interactive={interactive} edges={false} />}
             {!isCut && <WindowGlass lenFt={segLenFt} winHFt={winHFt} sillFt={sillFt} thickFt={thickFt} style3d={style3d} />}
             <WindowFrame segLenFt={segLenFt} winHFt={winHFt} sillFt={sillFt} thickFt={thickFt} style3d={style3d} />
+            {w.kind !== "demo" && sillFt > 0.4 && <Baseboard segLenFt={segLenFt} thickFt={thickFt} offsetFt={0} style3d={style3d} />}
+            {w.kind !== "demo" && sillFt > 0.05 && <BaseAOStrip segLenFt={segLenFt} thickFt={thickFt} offsetFt={0} style3d={style3d} />}
             {headerFt > 0.01 && <WallBox lenFt={segLenFt} heightFt={headerFt} thickFt={thickFt} yCenter={sillFt + winHFt + headerFt / 2} offsetFt={0} color={wk.color} material={w.material} wallId={w.id} onSelect={onSelect} isDemo={w.kind === "demo"} isSelected={false} style3d={style3d} interactive={interactive} edges={false} />}
             {style3d === "xray" && <group position={[0, sillFt + winHFt / 2, 0]}><WallEdges w={segLenFt} h={winHFt} d={thickFt} color={wk.color} /></group>}
             {winSel && <WindowGlow lenFt={segLenFt} winHFt={winHFt} sillFt={sillFt} thickFt={thickFt} />}
@@ -714,7 +844,8 @@ function CornerPosts({ walls = [], nodes = [], cx, cz, pxPerFoot, ceilingHeight,
         if (!color) color = wk.color;
         if (!material || (TEXTURED_WALL_MATERIALS.has(w.material) && !TEXTURED_WALL_MATERIALS.has(material))) material = w.material;
       }
-      out.push({ id, x: (node.x - cx) / pxPerFoot, z: (node.y - cz) / pxPerFoot, thickFt, heightFt, material, color });
+      out.push({ id, x: (node.x - cx) / pxPerFoot, z: (node.y - cz) / pxPerFoot, thickFt, heightFt, material, color,
+        trim: adj.some(w => (w.kind || "existing") !== "demo") });
     }
     return out;
   }, [walls, ni, cx, cz, pxPerFoot, ceilingHeight]);
@@ -727,6 +858,16 @@ function CornerPosts({ walls = [], nodes = [], cx, cz, pxPerFoot, ceilingHeight,
         yCenter={j.heightFt / 2} offsetFt={0} color={j.color} material={j.material}
         wallId={null} onSelect={NOOP} isDemo={false} isSelected={false} style3d={style3d}
         interactive={false} edges={false} />
+      {/* Plinth block: perpendicular baseboard runs overlap at corners with coplanar top
+          faces — a slightly taller, prouder block swallows the overlap so nothing fights. */}
+      {style3d === "detailed" && j.trim && (() => {
+        const side = j.thickFt + 2 * (PROUD + BASE_D + 0.01);
+        const h = BASE_H + 0.02;
+        return <mesh position={[0, h / 2, 0]} castShadow receiveShadow>
+          <boxGeometry args={[side, h, side]} />
+          <meshStandardMaterial {...TRIM_MAT} />
+        </mesh>;
+      })()}
     </group>
   ));
 }
@@ -1260,8 +1401,9 @@ function FloorPlane({ walls = [], nodes = [], zones, cx, cz, pxPerFoot, T, zoneL
   useEffect(() => () => regionGeos.forEach(g => g?.dispose()), [regionGeos]);
 
   const clickHandler = onSelectFloor ? (e => { e.stopPropagation(); onSelectFloor(); }) : undefined;
+  const baseBump = isDetailed ? getFloorBump(floorMaterial) : null;
   const baseMat = isDetailed
-    ? <meshStandardMaterial color={baseTex ? "#ffffff" : (baseSpec?.color ?? T.canvas)} roughness={baseSpec?.roughness ?? 0.55} metalness={baseSpec?.metalness ?? 0.05} envMapIntensity={0.8} map={baseTex} side={THREE.DoubleSide} />
+    ? <meshStandardMaterial color={baseTex ? "#ffffff" : (baseSpec?.color ?? T.canvas)} roughness={baseSpec?.roughness ?? 0.55} metalness={baseSpec?.metalness ?? 0.05} envMapIntensity={0.8} map={baseTex} bumpMap={baseBump?.bumpMap} bumpScale={baseBump?.bumpScale} side={THREE.DoubleSide} />
     : <meshLambertMaterial color={T.canvas} side={THREE.DoubleSide} />;
 
   return (
@@ -1280,14 +1422,41 @@ function FloorPlane({ walls = [], nodes = [], zones, cx, cz, pxPerFoot, T, zoneL
         const geo = regionGeos[i]; if (!geo) return null;
         const rTex = isDetailed ? getFloorTexture(fr.material) : null;
         const rSpec = FLOOR_MATERIAL_PBR[fr.material];
+        const rBump = isDetailed ? getFloorBump(fr.material) : null;
         return <mesh key={fr.id} geometry={geo} rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.004, 0]} receiveShadow={isDetailed}>
           {isDetailed
-            ? <meshStandardMaterial color={rTex ? "#ffffff" : (rSpec?.color ?? "#C8A878")} roughness={rSpec?.roughness ?? 0.55} metalness={rSpec?.metalness ?? 0.05} envMapIntensity={0.8} map={rTex} side={THREE.DoubleSide} />
+            ? <meshStandardMaterial color={rTex ? "#ffffff" : (rSpec?.color ?? "#C8A878")} roughness={rSpec?.roughness ?? 0.55} metalness={rSpec?.metalness ?? 0.05} envMapIntensity={0.8} map={rTex} bumpMap={rBump?.bumpMap} bumpScale={rBump?.bumpScale} side={THREE.DoubleSide} />
             : <meshLambertMaterial color={rSpec?.color ?? "#C8A878"} side={THREE.DoubleSide} />}
         </mesh>;
       })}
       {zones.map(z => <ZoneFloor key={z.id} zone={z} cx={cx} cz={cz} pxPerFoot={pxPerFoot} zoneLibrary={zoneLibrary} style3d={style3d} />)}
     </group>
+  );
+}
+
+// ─── Ceiling plane ──────────────────────────────────────────────────────────
+// One slab over the traced outer boundary at the global ceiling height, rendered
+// BackSide-only: visible from below (interior views read as rooms; recessed cans at
+// ceilH−0.04 sit just beneath it), automatically culled from above — bird's-eye
+// orbits see straight into the model with zero cutaway logic. Never casts/receives
+// shadows (the sun never hits an underside; noAutoShadow stops ShadowEnabler).
+// v1 limitation: single slab at the global height — per-wall ceilingHeight overrides
+// poke through (culled from above anyway) or leave a band gap in interior views.
+function CeilingPlane({ walls = [], nodes = [], cx, cz, pxPerFoot, ceilingHeight, style3d = "clay" }) {
+  const geo = useMemo(() => {
+    const boundary = traceOuterBoundary(nodes, walls);
+    return boundary ? buildFloorGeo(boundary, cx, cz, pxPerFoot, null) : null;
+  }, [nodes, walls, cx, cz, pxPerFoot]);
+  useEffect(() => () => geo?.dispose(), [geo]);
+  if (style3d === "xray" || !geo) return null; // open plan (no closed loop) → no ceiling
+  const y = ceilingHeight / 12 - 0.005; // edge dies inside the wall volume — no sky slit
+  return (
+    <mesh geometry={geo} rotation={[-Math.PI / 2, 0, 0]} position={[0, y, 0]}
+      castShadow={false} receiveShadow={false} userData={{ noAutoShadow: true }}>
+      {style3d === "detailed"
+        ? <meshStandardMaterial color="#EAE6DD" roughness={0.95} metalness={0} envMapIntensity={0.5} side={THREE.BackSide} />
+        : <meshLambertMaterial color="#D6D2C8" side={THREE.BackSide} />}
+    </mesh>
   );
 }
 
@@ -1340,6 +1509,10 @@ function ShadowEnabler({ enabled }) {
       const m = o.material;
       const isHalo = m && m.transparent && (m.side === THREE.BackSide) && m.depthWrite === false;
       if (isHalo) { o.castShadow = false; o.receiveShadow = false; return; }
+      // Opt-out for meshes that must never shadow: the ceiling (would block the sun and
+      // black out interiors) and the AO gradient strips (the shadow depth pass ignores
+      // texture alpha — they'd cast solid rectangles).
+      if (o.userData?.noAutoShadow) { o.castShadow = false; o.receiveShadow = false; return; }
       o.castShadow = enabled;
       o.receiveShadow = enabled;
     });
@@ -1351,17 +1524,20 @@ function ShadowEnabler({ enabled }) {
 // Runs inside the Canvas so it can access useThree(). Imperatively sets the
 // camera position and tells OrbitControls to treat it as the "home" state so
 // the reset button always returns to the same fit-all view.
-function CameraRig({ camDist, controlsRef }) {
+function CameraRig({ camDist, controlsRef, initialCamera }) {
   const { camera } = useThree();
   useEffect(() => {
-    const d = camDist;
-    camera.position.set(d * 0.7, d * 0.8, d * 0.7);
-    camera.lookAt(0, 0, 0);
+    // initialCamera: restore a saved pose (Docs slides) instead of the fit-all heuristic.
+    // Coordinates are feet relative to the node centroid — heavy geometry edits shift it.
+    const pos = initialCamera?.position ?? [camDist * 0.7, camDist * 0.8, camDist * 0.7];
+    const tgt = initialCamera?.target ?? [0, 0, 0];
+    camera.position.set(pos[0], pos[1], pos[2]);
+    camera.lookAt(tgt[0], tgt[1], tgt[2]);
     camera.updateProjectionMatrix();
     // Give OrbitControls one frame to initialise before saving home state.
     const id = setTimeout(() => {
       if (controlsRef?.current) {
-        controlsRef.current.target.set(0, 0, 0);
+        controlsRef.current.target.set(tgt[0], tgt[1], tgt[2]);
         controlsRef.current.update();
         controlsRef.current.saveState();
       }
@@ -1369,6 +1545,28 @@ function CameraRig({ camDist, controlsRef }) {
     return () => clearTimeout(id);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // intentionally empty — runs once per mount
+  return null;
+}
+
+// Fills `captureRef` with a capture() → JPEG dataURL of the current frame, downscaled to
+// ≤1280px wide (Docs deck thumbnails + print; keeps localStorage autosave lean). Renders a
+// fresh frame right before readback so the buffer is valid even without preserveDrawingBuffer.
+function CaptureBridge({ captureRef }) {
+  const { gl, scene, camera } = useThree();
+  useEffect(() => {
+    if (!captureRef) return;
+    captureRef.current = () => {
+      gl.render(scene, camera);
+      const src = gl.domElement;
+      const s = Math.min(1, 1280 / (src.width || 1280));
+      const c = document.createElement("canvas");
+      c.width = Math.max(1, Math.round(src.width * s));
+      c.height = Math.max(1, Math.round(src.height * s));
+      c.getContext("2d").drawImage(src, 0, 0, c.width, c.height);
+      return c.toDataURL("image/jpeg", 0.8);
+    };
+    return () => { captureRef.current = null; };
+  }, [captureRef, gl, scene, camera]);
   return null;
 }
 
@@ -1386,6 +1584,12 @@ export default function TestFit3D({
   visibleLayers = {},
   visibleBuildElectrical = true,
   visibleBuildLighting = true,
+  show3dCeiling = true,   // toggleable ceiling slab (clay + detailed; never x-ray)
+  controlsEnabled = true, // false → camera locked (Docs slides until "Edit view")
+  initialCamera = null,   // { position:[3], target:[3] } — Docs slide pose restore
+  preserveBuffer = false, // keep the drawing buffer readable (Docs capture instance)
+  captureRef = null,      // ref filled with capture() → JPEG dataURL
+  onCameraEnd = null,     // (pose) => void — fires when an orbit/pan/zoom gesture ends
 }) {
   // Detailed mode is presentation-only — no selection, no hover affordances, no selection glows.
   const interactive = style3d !== "detailed";
@@ -1436,13 +1640,18 @@ export default function TestFit3D({
 
   return (
     <div style={{ position: "absolute", inset: 0, background: bgColor }}>
-      <div style={{ position: "absolute", bottom: 12, left: 12, fontSize: 10, color: T.textFaint, zIndex: 10, userSelect: "none" }}>
+      {controlsEnabled && <div style={{ position: "absolute", bottom: 12, left: 12, fontSize: 10, color: T.textFaint, zIndex: 10, userSelect: "none" }}>
         Orbit: drag · Pan: right-drag · Zoom: scroll · Click to inspect
-      </div>
+      </div>}
 
       <Canvas
         shadows={style3d === "detailed" ? "soft" : false}
         dpr={[1, 1.5]}
+        // offsetSize: measure layout size, not getBoundingClientRect — inside the Docs
+        // sheet (CSS transform: scale) the rect is the SCALED size, which left the canvas
+        // filling only a fraction of the slide body. Pane containers are untransformed,
+        // so offset == rect there and behavior is unchanged.
+        resize={{ offsetSize: true }}
         camera={{ fov: 50, near: 0.1, far: 1000 }}
         gl={{
           antialias: true,
@@ -1450,6 +1659,7 @@ export default function TestFit3D({
           // floor-region surfaces z-fight (flicker) when zoomed out, where the
           // standard depth buffer's far-side precision is too coarse to separate them.
           logarithmicDepthBuffer: true,
+          preserveDrawingBuffer: preserveBuffer,
           toneMapping: style3d === "detailed" ? THREE.ACESFilmicToneMapping : THREE.NoToneMapping,
           toneMappingExposure: 0.95,
           outputColorSpace: THREE.SRGBColorSpace,
@@ -1489,8 +1699,10 @@ export default function TestFit3D({
           <directionalLight position={[8, 15, 8]} intensity={0.9} />
         </>}
 
-        <OrbitControls ref={controlsRef} enableDamping dampingFactor={0.08} zoomSpeed={0.5} minPolarAngle={0} maxPolarAngle={Math.PI / 2 - 0.04} target={[0, 0, 0]} />
-        <CameraRig camDist={camDist} controlsRef={controlsRef} />
+        <OrbitControls ref={controlsRef} enabled={controlsEnabled} enableDamping dampingFactor={0.08} zoomSpeed={0.5} minPolarAngle={0} maxPolarAngle={Math.PI / 2 - 0.04} target={[0, 0, 0]}
+          onEnd={onCameraEnd ? () => { const c = controlsRef?.current; if (c) onCameraEnd({ position: c.object.position.toArray(), target: c.target.toArray() }); } : undefined} />
+        <CameraRig camDist={camDist} controlsRef={controlsRef} initialCamera={initialCamera} />
+        {captureRef && <CaptureBridge captureRef={captureRef} />}
         {style3d === "detailed" && <PostFX />}
         <ShadowEnabler enabled={style3d === "detailed"} />
 
@@ -1520,6 +1732,7 @@ export default function TestFit3D({
             onSelect={safeSelect} selectedId={effSelectedId} selType={effSelType} showDims={show3dDims} style3d={style3d} interactive={interactive} />
         ))}
         <CornerPosts walls={walls} nodes={nodes} cx={cx} cz={cz} pxPerFoot={pxPerFoot} ceilingHeight={ceilingHeight} style3d={style3d} />
+        {show3dCeiling && <CeilingPlane walls={walls} nodes={nodes} cx={cx} cz={cz} pxPerFoot={pxPerFoot} ceilingHeight={ceilingHeight} style3d={style3d} />}
         {columns.map(col => (
           <Column3D key={col.id} col={col} cx={cx} cz={cz} pxPerFoot={pxPerFoot} ceilingHeight={ceilingHeight}
             onSelect={safeSelect} isSelected={effSelectedId === col.id && effSelType === "column"} style3d={style3d} interactive={interactive} />

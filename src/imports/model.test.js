@@ -276,4 +276,29 @@ describe("migrateProjectData — the persistence seam", () => {
     expect(m.bgOffset).toEqual({ x: 0, y: 0 });
     expect(m.lockedLayers).toEqual({});
   });
+
+  it("docs (v10): defaults slides to [] and docSettings to letter/landscape", () => {
+    const m = migrateProjectData({ nodes: [] }); // pre-v10 blob
+    expect(m.slides).toEqual([]);
+    expect(m.docSettings).toEqual({ size: "letter", orientation: "landscape" });
+  });
+
+  it("docs (v10): round-trips a populated slide and sanitizes junk", () => {
+    const good = {
+      id: "s1", name: "Plan 01", view: "plan", rect: { x: 0, y: 0, w: 400, h: 300 },
+      cam3d: null, image: null, notes: [{ id: "n1", text: "hi", x: 10, y: 10 }],
+      title: "Ground Floor", scaleText: "1/8\" = 1'-0\"", ts: 123,
+    };
+    const cam = { id: "s2", view: "3d", cam3d: { position: [1, 2, 3], target: [0, 0, 0], style3d: "detailed" }, image: "data:image/jpeg;base64,x" };
+    const m = migrateProjectData({
+      slides: [good, cam, { view: "sideways" }, "junk", null],
+      docSettings: { size: "a0", orientation: "diagonal" },
+    });
+    expect(m.slides).toHaveLength(2); // invalid view + junk dropped
+    expect(m.slides[0]).toMatchObject(good);
+    expect(m.slides[1]).toMatchObject({ view: "3d", rect: null, cam3d: { style3d: "detailed" }, image: "data:image/jpeg;base64,x" });
+    expect(typeof m.slides[1].ts).toBe("number");
+    // invalid enums normalized
+    expect(m.docSettings).toEqual({ size: "letter", orientation: "landscape" });
+  });
 });

@@ -5,7 +5,7 @@ import { Tooltip, TooltipTrigger, TooltipContent } from "../app/components/ui/to
 import { ChevronDown, PanelLeft, PanelLeftClose, Plus, Redo2, RotateCcw, Settings, Undo2, X } from "lucide-react";
 
 export default function TopBar({
-  $, MODES, S, T, activeSnapshotId, canRedo, canUndo, cost, deleteSnapshot, display, exportPdf, exportPng, exportProject, font, importProject, liveDirty, loadRef, markers, mode, modeMenuRect, newProject, newSnapMode, redo, renameSnapshot, renamingSnapId, saveMenuRect, setMode, setModeMenuRect, setNewSnapMode, setRenamingSnapId, setSaveMenuRect, setShowModeMenu, setShowSaveMenu, setShowSettings, setShowSnapMenu, setSidebarOpen, setSnapDraftName, setSnapMenuRect, setT, setThemeMode, showModeMenu, showSaveMenu, showSnapMenu, sidebarOpen, snapDraftName, snapMenuRect, snapshot, snapshots, switchSnapshot, takeSnapshot, themeMode, undo, updateSnapshot, walls, zones, panes, setLayout, setSelType, setSelectedId, setSelectedIds,
+  $, MODES, S, T, activeSnapshotId, canRedo, canUndo, cost, deleteSnapshot, display, exportPdf, exportPng, exportProject, font, importProject, liveDirty, loadRef, markers, mode, modeMenuRect, newProject, newSnapMode, redo, renameSnapshot, renamingSnapId, saveMenuRect, setMode, setModeMenuRect, setNewSnapMode, setRenamingSnapId, setSaveMenuRect, setShowModeMenu, setShowSaveMenu, setShowSettings, setShowSnapMenu, setSidebarOpen, setSnapDraftName, setSnapMenuRect, setT, setThemeMode, showModeMenu, showSaveMenu, showSnapMenu, sidebarOpen, slidesCount = 0, snapDraftName, snapMenuRect, snapshot, snapshots, switchSnapshot, takeSnapshot, themeMode, undo, updateSnapshot, walls, zones, panes, setLayout, setSelType, setSelectedId, setSelectedIds,
 }) {
   return (
       <div style={S.bar}>
@@ -108,7 +108,7 @@ export default function TopBar({
           const cur = MODES[mode];
           // Live per-stage content counts so the menu shows which stages have work in them
           const n = (c, w) => `${c} ${w}${c === 1 ? "" : "s"}`;
-          const HINTS = { build: n(walls.length, "wall"), itmep: n(markers.length, "marker"), zone: n(zones.length, "zone"), budget: $(cost.total) };
+          const HINTS = { build: n(walls.length, "wall"), itmep: n(markers.length, "marker"), zone: n(zones.length, "zone"), budget: $(cost.total), docs: n(slidesCount, "slide") };
           const badge = (m, active) => (
             <span style={{ width: 16, height: 16, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, fontSize: 9, fontWeight: 700, fontFamily: "inherit",
               background: active ? m.color : "transparent", color: active ? T.bg1 : T.textMuted, border: active ? "none" : "1.5px solid " + T.textFaint }}>{m.num}</span>
@@ -116,7 +116,7 @@ export default function TopBar({
           return <div style={{ position: "relative" }}>
             <button
               onClick={e => { setModeMenuRect(e.currentTarget.getBoundingClientRect()); setShowModeMenu(v => !v); }}
-              title="Workflow stage (1–4)"
+              title="Workflow stage (1–5)"
               style={{ display: "flex", alignItems: "center", gap: 7, padding: "4px 10px", background: cur.color + (showModeMenu ? "30" : "1C"), border: "1px solid " + cur.color + (showModeMenu ? "88" : "55"), borderRadius: 6, cursor: "pointer", color: T.textBright, fontWeight: 600, fontSize: 11, fontFamily: "inherit", transition: "all 0.12s ease", height: 28 }}
             >
               {badge(cur, true)}

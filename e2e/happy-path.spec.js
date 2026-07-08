@@ -21,12 +21,12 @@ async function planCenter(page) {
 
 test("shell renders: stage dropdown, tool rail, layout switcher, plan canvas", async ({ page }) => {
   await page.goto("/");
-  // The four workflow stages live in a single dropdown; the trigger shows the active stage.
-  const stageTrigger = page.getByTitle("Workflow stage (1–4)");
+  // The workflow stages live in a single dropdown; the trigger shows the active stage.
+  const stageTrigger = page.getByTitle("Workflow stage (1–5)");
   await expect(stageTrigger).toBeVisible();
   await expect(stageTrigger).toContainText("Build");
   await stageTrigger.click();
-  for (const m of ["Build", "IT/MEP", "Zones", "Budget"]) {
+  for (const m of ["Build", "IT/MEP", "Zones", "Budget", "Docs"]) {
     await expect(page.getByRole("button", { name: m, exact: true })).toBeVisible();
   }
   // switching stages from the menu updates the trigger and closes the menu
