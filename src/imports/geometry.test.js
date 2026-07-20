@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   wallResizeCursor, applySmartGuides, lineInt, wallMiterPt, revCloudPath, traceOuterBoundary,
-  insetFloorPolygon,
+  insetFloorPolygon, computeWallFootprints, junctionCapPolys,
 } from "./geometry";
 import { polyArea } from "./model";
 
@@ -149,5 +149,95 @@ describe("insetFloorPolygon — clear inside-face outline", () => {
     ];
     const out = insetFloorPolygon(square, split, nodes2, hOf);
     expect(polyArea(out)).toBeCloseTo(200 * (200 - halfT), 1); // only the top edge moved
+  });
+});
+
+describe("computeWallFootprints — mitered wall quads", () => {
+  const hOf5 = () => 5;
+  const sameSet = (A, B, tol = 1e-6) =>
+    A.length === B.length && A.every(p => B.some(q => Math.abs(p.x - q.x) < tol && Math.abs(p.y - q.y) < tol));
+
+  it("L-corner: both walls agree on the same two shared corner points", () => {
+    const nodes = [{ id: "a", x: 0, y: 0 }, { id: "j", x: 200, y: 0 }, { id: "b", x: 200, y: 200 }];
+    const walls = [{ id: "A", n1: "a", n2: "j" }, { id: "B", n1: "j", n2: "b" }];
+    const fps = computeWallFootprints(walls, nodes, { halfTOf: hOf5 });
+    const aEnd = [fps.get("A").mN2.L, fps.get("A").mN2.R];
+    const bStart = [fps.get("B").mN1.L, fps.get("B").mN1.R];
+    expect(sameSet(aEnd, bStart)).toBe(true);
+    // inner + outer diagonal pair of the 90° miter at (200,0), halfT 5
+    aEnd.forEach(p => { expect([195, 205]).toContain(Math.round(p.x)); expect([-5, 5]).toContain(Math.round(p.y)); });
+    expect(Math.round(aEnd[0].x) !== Math.round(aEnd[1].x) && Math.round(aEnd[0].y) !== Math.round(aEnd[1].y)).toBe(true);
+  });
+
+  it("45° corner and mixed thickness still yield shared points", () => {
+    const nodes = [{ id: "a", x: 0, y: 0 }, { id: "j", x: 200, y: 0 }, { id: "b", x: 340, y: 140 }];
+    const walls = [{ id: "A", n1: "a", n2: "j" }, { id: "B", n1: "j", n2: "b" }];
+    const hOf = w => (w.id === "A" ? 5 : 3); // 7"-ish meets pony-ish
+    const fps = computeWallFootprints(walls, nodes, { halfTOf: hOf });
+    const aEnd = [fps.get("A").mN2.L, fps.get("A").mN2.R];
+    const bStart = [fps.get("B").mN1.L, fps.get("B").mN1.R];
+    expect(sameSet(aEnd, bStart, 1e-4)).toBe(true);
+    aEnd.forEach(p => { expect(Number.isFinite(p.x) && Number.isFinite(p.y)).toBe(true); });
+  });
+
+  it("collinear pass-through: no miter — plain rect ends, and no junction cap", () => {
+    const nodes = [{ id: "a", x: 0, y: 0 }, { id: "j", x: 200, y: 0 }, { id: "b", x: 400, y: 0 }];
+    const walls = [{ id: "A", n1: "a", n2: "j" }, { id: "B", n1: "j", n2: "b" }];
+    const fps = computeWallFootprints(walls, nodes, { halfTOf: hOf5 });
+    const m = fps.get("A").mN2;
+    expect(Math.abs(m.L.x - 200) < 1e-6 && Math.abs(Math.abs(m.L.y) - 5) < 1e-6).toBe(true);
+    expect(Math.abs(m.R.x - 200) < 1e-6 && Math.abs(Math.abs(m.R.y) - 5) < 1e-6).toBe(true);
+    const caps = junctionCapPolys([{ id: "A", ...fps.get("A") }, { id: "B", ...fps.get("B") }]);
+    expect(caps).toHaveLength(0);
+  });
+
+  it("open end: square cap at ±halfT, flagged free", () => {
+    const nodes = [{ id: "a", x: 0, y: 0 }, { id: "b", x: 100, y: 0 }];
+    const fps = computeWallFootprints([{ id: "A", n1: "a", n2: "b" }], nodes, { halfTOf: hOf5 });
+    const m = fps.get("A").mN2;
+    expect(m.free).toBe(true);
+    expect(m.L).toEqual({ x: 100, y: 5 });
+    expect(m.R).toEqual({ x: 100, y: -5 });
+  });
+
+  it("coincident-but-unshared nodes within prox still miter", () => {
+    const nodes = [
+      { id: "a", x: 0, y: 0 }, { id: "j1", x: 200, y: 0 },
+      { id: "j2", x: 204, y: 0 }, { id: "b", x: 204, y: 200 }, // 4px away, separate node
+    ];
+    const walls = [{ id: "A", n1: "a", n2: "j1" }, { id: "B", n1: "j2", n2: "b" }];
+    const fps = computeWallFootprints(walls, nodes, { halfTOf: hOf5 });
+    expect(fps.get("A").mN2.free).toBe(false); // neighbour found by proximity
+    // mitered: at least one corner departs from the plain ±halfT rect end
+    const m = fps.get("A").mN2;
+    const plain = [{ x: 200, y: 5 }, { x: 200, y: -5 }];
+    expect(sameSet([m.L, m.R], plain)).toBe(false);
+  });
+
+  it("T-junction: finite miters and a 3-wall junction cap wedge", () => {
+    const nodes = [
+      { id: "a", x: 0, y: 0 }, { id: "j", x: 200, y: 0 },
+      { id: "b", x: 400, y: 0 }, { id: "c", x: 200, y: 200 },
+    ];
+    const walls = [
+      { id: "A", n1: "a", n2: "j" }, { id: "B", n1: "j", n2: "b" }, { id: "C", n1: "j", n2: "c" },
+    ];
+    const fps = computeWallFootprints(walls, nodes, { halfTOf: hOf5 });
+    for (const id of ["A", "B", "C"]) fps.get(id).quad.forEach(p => {
+      expect(Number.isFinite(p.x) && Number.isFinite(p.y)).toBe(true);
+    });
+    const caps = junctionCapPolys([...fps.entries()].map(([id, e]) => ({ id, ...e })));
+    const tCap = caps.find(cp => Math.abs(cp.x - 200) <= 6 && Math.abs(cp.y) <= 6);
+    expect(tCap).toBeTruthy();
+    expect(tCap.wallIds.length).toBe(3);
+    expect(tCap.pts.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it("degenerate walls (missing node, <1px) are omitted", () => {
+    const nodes = [{ id: "a", x: 0, y: 0 }, { id: "b", x: 0.5, y: 0 }];
+    const fps = computeWallFootprints(
+      [{ id: "A", n1: "a", n2: "b" }, { id: "B", n1: "a", n2: "ghost" }],
+      nodes, { halfTOf: hOf5 });
+    expect(fps.size).toBe(0);
   });
 });

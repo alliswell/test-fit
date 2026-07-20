@@ -1,5 +1,6 @@
 import { useState, useMemo, useRef, useEffect } from "react";
-import { traceOuterBoundary } from "./geometry";
+import { traceOuterBoundary, computeWallFootprints, junctionCapPolys } from "./geometry";
+import { footprintToLocal, buildWallSolidGeometry, buildCapSolidGeometry, solidEdgesGeometry, buildWallEdgeSegments } from "./wallGeo3d";
 import { DOOR_TYPE_STYLES } from "../constants/theme";
 import { DOOR_KNOB_HEIGHT_IN, FINISH_COLORS } from "../constants/specs";
 import { M3D } from "./markerMount";
@@ -404,65 +405,41 @@ function WarmGlow({ r = 0.28, intensity = 1.0, distance = 9, position = [0, 0, 0
   );
 }
 
-function WallEdges({ w, h, d, color }) {
-  const geo = useMemo(() => new THREE.EdgesGeometry(new THREE.BoxGeometry(w, h, d)), [w, h, d]);
-  return <lineSegments geometry={geo}><lineBasicMaterial color={color} /></lineSegments>;
-}
-
-// ─── Wall box ──────────────────────────────────────────────────────────────────
-function WallBox({ lenFt, heightFt, thickFt, yCenter, offsetFt = 0, color, material, wallId, onSelect, isDemo, isSelected, style3d = "clay", interactive = true, edges = true }) {
+// ─── Wall solid — one mitered-footprint extrusion per wall ────────────────────
+// Renders the geometry produced by buildWallSolidGeometry (already in the wall-local
+// frame, floor at y=0). Material branches mirror WallBox; the demo two-pass
+// depth-prepass/EqualDepth union carries over unchanged (exact footprints eliminate
+// wall-wall overlap, but junction cap solids still overlap demo quads).
+function WallSolid({ geometry, edges = null, color, material, wallId, onSelect, isDemo, isSelected, style3d = "clay", interactive = true }) {
   const [hov, setHov] = useState(false);
-  const c = (interactive && hov) ? "#ffffff" : color;
-  // Detailed mode: pull PBR settings from the chosen wall material. Demo walls
-  // keep the red kind color (washed transparent) so they stay identifiable.
   const matSpec = WALL_MATERIAL_PBR[material || "Drywall"];
-  const detailedColor = isDemo ? color : (matSpec?.color ?? color);
+  const detailedColor = matSpec?.color ?? color;
   const detailedRough = matSpec?.roughness ?? 0.92;
   const detailedMetal = matSpec?.metalness ?? 0.0;
-  // Texture set + tile size for materials that have a procedural pattern.
-  // When present, we build a custom BoxGeometry with per-face UV scaling so the
-  // pattern repeats at correct real-world size on every face of the wall.
-  const tex     = (style3d === "detailed" && !isDemo) ? getWallTextureSet(material) : null;
-  const tileFt  = (style3d === "detailed" && !isDemo) ? WALL_MATERIAL_TILE_FT[material] : null;
-  const geo = useMemo(() => {
-    const g = new THREE.BoxGeometry(lenFt, heightFt, thickFt);
-    if (tileFt) {
-      const u = g.attributes.uv;
-      const sxLen = lenFt    / tileFt.x, syHt  = heightFt / tileFt.y;
-      const sxThk = thickFt  / tileFt.x, syThk = thickFt  / tileFt.y;
-      // BoxGeometry face order: right(0), left(1), top(2), bottom(3), front(4), back(5)
-      const scale = (face, sx, sy) => {
-        for (let i = face * 4; i < face * 4 + 4; i++) u.setXY(i, u.getX(i) * sx, u.getY(i) * sy);
-      };
-      scale(0, sxThk, syHt);   // right end-cap
-      scale(1, sxThk, syHt);   // left end-cap
-      scale(2, sxLen, syThk);  // top
-      scale(3, sxLen, syThk);  // bottom
-      scale(4, sxLen, syHt);   // front face
-      scale(5, sxLen, syHt);   // back face
-      u.needsUpdate = true;
-    }
-    return g;
-  }, [lenFt, heightFt, thickFt, tileFt]);
-  useEffect(() => () => geo.dispose(), [geo]);
-  // Demo walls (clay/detailed) draw in TWO passes so the whole demo run blends exactly
-  // once per pixel: adjacent demo walls overlap at mitered corners, and stacking two 50%
-  // reds there rendered darker "pillars". Pass 1 (renderOrder 10) writes only DEPTH —
-  // after all opaque geometry, so anything solid in front still wins and demo volumes
-  // hidden inside opaque walls never register. Pass 2 (renderOrder 11) blends color only
-  // where the depth is EQUAL to that nearest-demo-surface, so overlapping boxes can't
-  // double-blend. Both passes share `geo` + transform → bit-identical depths.
+  const tex = (style3d === "detailed" && !isDemo) ? getWallTextureSet(material) : null;
+  // Outline: callers with CSG'd geometry pass procedural `edges` (T-vertices in CSG
+  // output break EdgesGeometry); plain solids (caps) fall back to solidEdgesGeometry.
+  const fallbackEdges = useMemo(
+    () => (!edges && (style3d === "xray" || isDemo)) ? solidEdgesGeometry(geometry) : null,
+    [edges, geometry, style3d, isDemo]);
+  useEffect(() => () => fallbackEdges?.dispose(), [fallbackEdges]);
+  const edgesGeo = (style3d === "xray" || isDemo) ? (edges || fallbackEdges) : null;
+  const glowBB = useMemo(() => {
+    if (!isSelected) return null;
+    geometry.computeBoundingBox();
+    return geometry.boundingBox;
+  }, [geometry, isSelected]);
   const demoUnion = isDemo && style3d !== "xray";
   return (
-    <group position={[offsetFt, yCenter, 0]}>
+    <group>
       {demoUnion && (
-        <mesh key={style3d + "-demoprep"} geometry={geo} renderOrder={10} userData={{ noAutoShadow: true }}>
+        <mesh key={style3d + "-demoprep"} geometry={geometry} renderOrder={10} userData={{ noAutoShadow: true }}>
           <meshBasicMaterial transparent colorWrite={false} depthWrite />
         </mesh>
       )}
       <mesh
         key={style3d + (demoUnion ? "-demo" : "")}
-        geometry={geo}
+        geometry={geometry}
         renderOrder={demoUnion ? 11 : undefined}
         onClick={interactive ? (e => { e.stopPropagation(); onSelect(wallId, "wall"); }) : undefined}
         onPointerOver={interactive ? (e => { e.stopPropagation(); setHov(true); }) : undefined}
@@ -471,15 +448,12 @@ function WallBox({ lenFt, heightFt, thickFt, yCenter, offsetFt = 0, color, mater
         receiveShadow={style3d === "detailed" && !isDemo}
         userData={isDemo ? { noAutoShadow: true } : undefined}
       >
-        {/* Unlit (basic) on purpose: with lambert, the corner column's nearest face is a
-            brighter-lit end cap, so the junction still read as a distinct lighter pillar.
-            Flat color → every face of the union blends identically; the red WallEdges
-            outline carries the form. */}
+        {/* Unlit (basic) demo fill on purpose — see WallBox demo notes. */}
         {demoUnion && <meshBasicMaterial
           color={(interactive && hov) ? "#ffffff" : color}
           transparent opacity={hov ? 0.7 : 0.4}
           depthWrite={false} depthFunc={THREE.EqualDepth} />}
-        {!demoUnion && style3d === "xray" && <meshBasicMaterial color={c} transparent opacity={hov ? 0.25 : 0.08} depthWrite={false} />}
+        {!demoUnion && style3d === "xray" && <meshBasicMaterial color={(interactive && hov) ? "#ffffff" : color} transparent opacity={hov ? 0.25 : 0.08} depthWrite={false} />}
         {!demoUnion && style3d === "detailed" && <meshStandardMaterial
           color={interactive && hov ? "#ffffff" : (tex ? "#ffffff" : detailedColor)}
           roughness={detailedRough}
@@ -491,10 +465,6 @@ function WallBox({ lenFt, heightFt, thickFt, yCenter, offsetFt = 0, color, mater
         />}
         {!demoUnion && style3d === "clay" && (() => {
           const claySelf = lightenHex(color, CLAY_WALL_LIGHTEN);
-          // emissive adds a light-independent floor so shaded/side faces (capped at the
-          // scene's ~0.65 ambient under pure Lambert) still read pale — closer to how real
-          // matte gypsum board bounces ambient light — while the lit faces (diffuse + this)
-          // stay brighter still, keeping the per-face shading that gives the massing depth.
           return <meshLambertMaterial
             color={(interactive && hov) ? "#ffffff" : claySelf}
             emissive={(interactive && hov) ? "#000000" : claySelf}
@@ -502,8 +472,14 @@ function WallBox({ lenFt, heightFt, thickFt, yCenter, offsetFt = 0, color, mater
             transparent={hov} opacity={hov ? 0.85 : 1} />;
         })()}
       </mesh>
-      {style3d === "xray" && edges && <WallEdges w={lenFt} h={heightFt} d={thickFt} color={color} />}
-      {isSelected && <BoxGlow w={lenFt} h={heightFt} d={thickFt} />}
+      {edgesGeo && <lineSegments geometry={edgesGeo} renderOrder={isDemo ? 12 : undefined}>
+        <lineBasicMaterial color={color} />
+      </lineSegments>}
+      {isSelected && glowBB && (
+        <group position={[(glowBB.min.x + glowBB.max.x) / 2, (glowBB.min.y + glowBB.max.y) / 2, (glowBB.min.z + glowBB.max.z) / 2]}>
+          <BoxGlow w={glowBB.max.x - glowBB.min.x} h={glowBB.max.y - glowBB.min.y} d={glowBB.max.z - glowBB.min.z} />
+        </group>
+      )}
     </group>
   );
 }
@@ -739,27 +715,11 @@ function WindowGlow({ lenFt, winHFt, sillFt, thickFt }) {
 }
 
 // ─── Wall with openings ────────────────────────────────────────────────────────
-function Wall3D({ w, nodes, walls = [], doors, windows, cx, cz, pxPerFoot, ceilingHeight, onSelect, selectedId, selType, showDims, style3d = "clay", interactive = true }) {
+function Wall3D({ w, fp, nodes, doors, windows, cx, cz, pxPerFoot, ceilingHeight, onSelect, selectedId, selType, showDims, style3d = "clay", interactive = true }) {
   const n1 = nodes.find(n => n.id === w.n1), n2 = nodes.find(n => n.id === w.n2);
-  if (!n1 || !n2) return null;
+  if (!n1 || !n2 || !fp) return null;
   const wk       = WALL_KINDS[w.kind || "existing"];
   const thickFt  = (w.kind === "pony" ? (w.ponyDepth || 6) : (wk.thickness || 5)) / 12;
-  // Mitered corner overlap — extend each end of an outer-shell wall by half the
-  // adjacent wall's thickness so they overlap cleanly at junctions instead of
-  // showing a thickness-step seam.
-  const adjThickAt = (nodeId) => {
-    let max = 0;
-    for (const ww of walls) {
-      if (ww.id === w.id) continue;
-      if (ww.n1 !== nodeId && ww.n2 !== nodeId) continue;
-      const wwk = WALL_KINDS[ww.kind || "existing"];
-      const t = (ww.kind === "pony" ? (ww.ponyDepth || 6) : (wwk.thickness || 5)) / 12;
-      if (t > max) max = t;
-    }
-    return max;
-  };
-  const extStartTotal = adjThickAt(w.n1) / 2; // ft to extend at n1 end
-  const extEndTotal   = adjThickAt(w.n2) / 2; // ft to extend at n2 end
   const ceilFt   = ceilingHeight / 12;
   const heightFt = w.kind === "pony" ? (w.ponyHeight || 42) / 12 : ceilFt;
   const x1 = n1.x, y1 = n1.y, x2 = n2.x, y2 = n2.y;
@@ -798,75 +758,65 @@ function Wall3D({ w, nodes, walls = [], doors, windows, cx, cz, pxPerFoot, ceili
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [w, doors, windows, x1, y1, dx, dy, wLen, pxPerFoot]);
 
-  // Demo walls: the whole assembly — wall AND any doors/windows in it — is coming out,
-  // so render ONE continuous translucent red volume with a crisp red outline instead of
-  // segmenting around openings. (Otherwise the door leaf/casing/window frame render as
-  // solid finished pieces standing inside a ghost wall, which reads as "these stay" —
-  // exactly backwards.) Same treatment in clay/detailed/xray so demo scope is always
-  // unmistakable, full height.
-  if (w.kind === "demo") {
-    const segLenFt = wallLenFt + extStartTotal + extEndTotal;
-    const offsetFt = -extStartTotal / 2 + extEndTotal / 2;
-    return (
-      <group position={[midX, 0, midZ]} rotation={[0, -angle, 0]}>
-        <WallBox lenFt={segLenFt} heightFt={heightFt} thickFt={thickFt} yCenter={heightFt / 2} offsetFt={offsetFt} color={wk.color} material={w.material} wallId={w.id} onSelect={onSelect} isDemo isSelected={wallSel && interactive} style3d={style3d} interactive={interactive} edges={false} />
-        <group position={[offsetFt, heightFt / 2, 0]}><WallEdges w={segLenFt} h={heightFt} d={thickFt} color={wk.color} /></group>
-        {showDims && wallLenFt > 0.5 && (
-          <Billboard position={[0, heightFt + 0.3, 0]}>
-            <Text fontSize={0.28} color="#9A9488" anchorX="center" anchorY="middle" outlineWidth={0.025} outlineColor="#000000">{ftFmtDirect(wallLenFt)}</Text>
-          </Billboard>
-        )}
-      </group>
-    );
-  }
+  // The wall body is ONE mitered-footprint extrusion with CSG-cut openings — walls tile
+  // gap-free with zero overlap at junctions by construction (shared miter points from
+  // computeWallFootprints), so there are no end extensions and no cover-up posts.
+  // Demo walls extrude uncut: the whole assembly — wall AND any doors/windows in it —
+  // is coming out, so it reads as one continuous translucent red volume (openings,
+  // casings and glass are deliberately not rendered on demo walls).
+  const isDemo = w.kind === "demo";
+  const tileFt = (style3d === "detailed" && !isDemo) ? WALL_MATERIAL_TILE_FT[w.material] : null;
+  const { solidGeo, edgeGeo } = useMemo(() => {
+    const midPx = { x: (x1 + x2) / 2, y: (y1 + y2) / 2 };
+    const localQuad = footprintToLocal(fp.quad, midPx, angle, pxPerFoot);
+    const cuts = isDemo ? [] : segs.filter(s => !s.solid).map(seg => {
+      const x0 = (seg.t0 - 0.5) * wallLenFt, x1c = (seg.t1 - 0.5) * wallLenFt;
+      if (seg.isDoor) return { x0, x1: x1c, y0: 0, y1: doorHFt };
+      const sillFt = (seg.item?.sill ?? 30) / 12, winHFt = (seg.item?.height ?? 48) / 12;
+      return { x0, x1: x1c, y0: sillFt, y1: Math.min(sillFt + winHFt, heightFt) };
+    });
+    return {
+      // cutDepth safely exceeds any miter-widened footprint (runaway cap ≤ 6×halfT per side)
+      solidGeo: buildWallSolidGeometry(localQuad, heightFt, cuts, { cutDepth: 12, tileFt }),
+      edgeGeo: buildWallEdgeSegments(localQuad, heightFt, cuts),
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fp, segs, heightFt, doorHFt, wallLenFt, angle, pxPerFoot, isDemo, tileFt, x1, y1, x2, y2]);
+  useEffect(() => () => { solidGeo.dispose(); edgeGeo.dispose(); }, [solidGeo, edgeGeo]);
 
   return (
     <group position={[midX, 0, midZ]} rotation={[0, -angle, 0]}>
-      {segs.map((seg, i) => {
-        const baseLen   = (seg.t1 - seg.t0) * wallLenFt;
-        if (baseLen < 0.001) return null;
-        const baseOff   = ((seg.t0 + seg.t1) / 2 - 0.5) * wallLenFt;
-        // Only extend solid end-cap segments — never around openings.
-        const extStart  = (seg.solid && seg.t0 === 0)  ? extStartTotal : 0;
-        const extEnd    = (seg.solid && seg.t1 === 1)  ? extEndTotal   : 0;
-        const segLenFt  = baseLen + extStart + extEnd;
-        const offsetFt  = baseOff - extStart / 2 + extEnd / 2;
+      <WallSolid geometry={solidGeo} edges={edgeGeo} color={wk.color} material={w.material} wallId={w.id}
+        onSelect={onSelect} isDemo={isDemo} isSelected={wallSel && interactive}
+        style3d={style3d} interactive={interactive} />
+      {!isDemo && segs.map((seg, i) => {
+        const segLenFt = (seg.t1 - seg.t0) * wallLenFt;
+        if (segLenFt < 0.001) return null;
+        const offsetFt = ((seg.t0 + seg.t1) / 2 - 0.5) * wallLenFt;
         if (seg.solid) return <group key={i}>
-          <WallBox lenFt={segLenFt} heightFt={heightFt} thickFt={thickFt} yCenter={heightFt / 2} offsetFt={offsetFt} color={wk.color} material={w.material} wallId={w.id} onSelect={onSelect} isDemo={w.kind === "demo"} isSelected={wallSel && interactive} style3d={style3d} interactive={interactive} edges={false} />
-          {w.kind !== "demo" && <>
-            <Baseboard segLenFt={segLenFt} thickFt={thickFt} offsetFt={offsetFt} style3d={style3d} />
-            <BaseAOStrip segLenFt={segLenFt} thickFt={thickFt} offsetFt={offsetFt} style3d={style3d} />
-          </>}
+          <Baseboard segLenFt={segLenFt} thickFt={thickFt} offsetFt={offsetFt} style3d={style3d} />
+          <BaseAOStrip segLenFt={segLenFt} thickFt={thickFt} offsetFt={offsetFt} style3d={style3d} />
         </group>;
-        if (seg.isDoor) {
-          const mhH = heightFt - doorHFt;
-          return (
-            <group key={i}>
-              <DoorSwing3D door={seg.item} segLenFt={segLenFt} heightFt={doorHFt} offsetFt={offsetFt} thickFt={thickFt} onSelect={onSelect} isSelected={selectedId === seg.item.id && selType === "door" && interactive} style3d={style3d} interactive={interactive} />
-              <DoorCasing segLenFt={segLenFt} heightFt={doorHFt} thickFt={thickFt} offsetFt={offsetFt} style3d={style3d} />
-              {mhH > 0.01 && <WallBox lenFt={segLenFt} heightFt={mhH} thickFt={thickFt} yCenter={doorHFt + mhH / 2} offsetFt={offsetFt} color={wk.color} material={w.material} wallId={w.id} onSelect={onSelect} isDemo={w.kind === "demo"} isSelected={wallSel && interactive} style3d={style3d} interactive={interactive} edges={false} />}
-              {style3d === "xray" && <group position={[offsetFt, doorHFt / 2, 0]}><WallEdges w={segLenFt} h={doorHFt} d={thickFt} color={wk.color} /></group>}
-            </group>
-          );
-        }
+        if (seg.isDoor) return (
+          <group key={i}>
+            <DoorSwing3D door={seg.item} segLenFt={segLenFt} heightFt={doorHFt} offsetFt={offsetFt} thickFt={thickFt} onSelect={onSelect} isSelected={selectedId === seg.item.id && selType === "door" && interactive} style3d={style3d} interactive={interactive} />
+            <DoorCasing segLenFt={segLenFt} heightFt={doorHFt} thickFt={thickFt} offsetFt={offsetFt} style3d={style3d} />
+          </group>
+        );
         const winSel = selectedId === seg.item.id && selType === "window" && interactive;
         const isCut = seg.item?.type === "Cut Opening";
-        const sillFt = (seg.item?.sill ?? 30) / 12, winHFt = (seg.item?.height ?? 48) / 12, headerFt = heightFt - sillFt - winHFt;
+        const sillFt = (seg.item?.sill ?? 30) / 12, winHFt = (seg.item?.height ?? 48) / 12;
         return (
           <group key={i} position={[offsetFt, 0, 0]} onClick={interactive ? (e => { e.stopPropagation(); onSelect(seg.item.id, "window"); }) : undefined}>
             <mesh position={[0, sillFt + winHFt / 2, 0]}><boxGeometry args={[segLenFt, winHFt, thickFt * 2.5]} /><meshLambertMaterial transparent opacity={0} depthWrite={false} /></mesh>
-            {sillFt > 0.01 && <WallBox lenFt={segLenFt} heightFt={sillFt} thickFt={thickFt} yCenter={sillFt / 2} offsetFt={0} color={wk.color} material={w.material} wallId={w.id} onSelect={onSelect} isDemo={w.kind === "demo"} isSelected={false} style3d={style3d} interactive={interactive} edges={false} />}
             {!isCut && <WindowGlass lenFt={segLenFt} winHFt={winHFt} sillFt={sillFt} thickFt={thickFt} style3d={style3d} />}
             <WindowFrame segLenFt={segLenFt} winHFt={winHFt} sillFt={sillFt} thickFt={thickFt} style3d={style3d} />
-            {w.kind !== "demo" && sillFt > 0.4 && <Baseboard segLenFt={segLenFt} thickFt={thickFt} offsetFt={0} style3d={style3d} />}
-            {w.kind !== "demo" && sillFt > 0.05 && <BaseAOStrip segLenFt={segLenFt} thickFt={thickFt} offsetFt={0} style3d={style3d} />}
-            {headerFt > 0.01 && <WallBox lenFt={segLenFt} heightFt={headerFt} thickFt={thickFt} yCenter={sillFt + winHFt + headerFt / 2} offsetFt={0} color={wk.color} material={w.material} wallId={w.id} onSelect={onSelect} isDemo={w.kind === "demo"} isSelected={false} style3d={style3d} interactive={interactive} edges={false} />}
-            {style3d === "xray" && <group position={[0, sillFt + winHFt / 2, 0]}><WallEdges w={segLenFt} h={winHFt} d={thickFt} color={wk.color} /></group>}
+            {sillFt > 0.4 && <Baseboard segLenFt={segLenFt} thickFt={thickFt} offsetFt={0} style3d={style3d} />}
+            {sillFt > 0.05 && <BaseAOStrip segLenFt={segLenFt} thickFt={thickFt} offsetFt={0} style3d={style3d} />}
             {winSel && <WindowGlow lenFt={segLenFt} winHFt={winHFt} sillFt={sillFt} thickFt={thickFt} />}
           </group>
         );
       })}
-      {style3d === "xray" && <group position={[0, heightFt / 2, 0]}><WallEdges w={wallLenFt} h={heightFt} d={thickFt} color={wk.color} /></group>}
       {showDims && wallLenFt > 0.5 && (
         <Billboard position={[0, heightFt + 0.3, 0]}>
           <Text fontSize={0.28} color="#9A9488" anchorX="center" anchorY="middle" outlineWidth={0.025} outlineColor="#000000">{ftFmtDirect(wallLenFt)}</Text>
@@ -885,7 +835,55 @@ function Wall3D({ w, nodes, walls = [], doors, windows, cx, cz, pxPerFoot, ceili
 // brick wraps the corner the way real masonry returns.
 const TEXTURED_WALL_MATERIALS = new Set(Object.keys(WALL_MATERIAL_TILE_FT));
 const NOOP = () => {};
-function CornerPosts({ walls = [], nodes = [], cx, cz, pxPerFoot, ceilingHeight, style3d = "clay" }) {
+
+// ─── Junction cap solids ───────────────────────────────────────────────────────
+// The per-wall mitered footprints tile exactly at 2-wall corners, but 3+-way and
+// odd-angle junctions leave a small uncovered wedge (same as the 2D plan). Extrude the
+// shared junctionCapPolys wedges as real solids in the WORLD frame. Height is the MIN
+// of the adjacent walls (a cap between a pony and a full wall must not poke above the
+// pony; the taller wall's exposed mitered end face above it is correct). All-demo
+// junctions get the demo treatment (they join the EqualDepth union); mixed junctions
+// stay solid and take their look from the first non-demo wall (textured material wins).
+function CapSolid({ poly, heightFt, material, color, allDemo, style3d }) {
+  const tileFt = (style3d === "detailed" && !allDemo) ? WALL_MATERIAL_TILE_FT[material] : null;
+  const geo = useMemo(() => buildCapSolidGeometry(poly, heightFt, { tileFt }), [poly, heightFt, tileFt]);
+  useEffect(() => () => geo?.dispose(), [geo]);
+  if (!geo) return null;
+  return <WallSolid geometry={geo} color={color} material={material} wallId={null} onSelect={NOOP}
+    isDemo={allDemo} isSelected={false} style3d={style3d} interactive={false} />;
+}
+
+function CapSolids({ fps, walls = [], cx, cz, pxPerFoot, ceilingHeight, style3d = "clay" }) {
+  const caps = useMemo(() => {
+    const entries = [...fps.entries()].map(([id, e]) => ({ id, ...e }));
+    const wallById = new Map(walls.map(w => [w.id, w]));
+    return junctionCapPolys(entries).map((cp, i) => {
+      const adj = cp.wallIds.map(id => wallById.get(id)).filter(Boolean);
+      if (!adj.length) return null;
+      const allDemo = adj.every(w => (w.kind || "existing") === "demo");
+      const pick = allDemo ? adj : adj.filter(w => (w.kind || "existing") !== "demo");
+      let heightFt = Infinity, material = null, color = null;
+      for (const w of pick) {
+        const wk = WALL_KINDS[w.kind || "existing"];
+        const h = w.kind === "pony" ? (w.ponyHeight || 42) / 12 : (w.ceilingHeight ?? ceilingHeight) / 12;
+        heightFt = Math.min(heightFt, h);
+        if (!color) color = wk.color;
+        if (!material || (TEXTURED_WALL_MATERIALS.has(w.material) && !TEXTURED_WALL_MATERIALS.has(material))) material = w.material;
+      }
+      const poly = cp.pts.map(p => ({ x: (p.x - cx) / pxPerFoot, z: (p.y - cz) / pxPerFoot }));
+      return { key: i + "_" + Math.round(cp.x) + "_" + Math.round(cp.y), poly, heightFt, material, color, allDemo };
+    }).filter(Boolean);
+  }, [fps, walls, cx, cz, pxPerFoot, ceilingHeight]);
+  return caps.map(c => <CapSolid key={c.key} poly={c.poly} heightFt={c.heightFt}
+    material={c.material} color={c.color} allDemo={c.allDemo} style3d={style3d} />);
+}
+
+// ─── Junction baseboard plinths ────────────────────────────────────────────────
+// Detailed-mode only: perpendicular baseboard runs overlap at corners with coplanar
+// top faces — a slightly taller, prouder block swallows the overlap so nothing
+// z-fights. (The old full-height corner "posts" are gone: mitered footprints make
+// walls tile exactly, so there is nothing to cover up.)
+function JunctionTrim({ walls = [], nodes = [], cx, cz, pxPerFoot, style3d = "clay" }) {
   const ni = useMemo(() => Object.fromEntries(nodes.map(n => [n.id, n])), [nodes]);
   const junctions = useMemo(() => {
     const byNode = {};
@@ -894,6 +892,7 @@ function CornerPosts({ walls = [], nodes = [], cx, cz, pxPerFoot, ceilingHeight,
     for (const [id, adj] of Object.entries(byNode)) {
       const node = ni[id];
       if (!node || adj.length < 2) continue;
+      if (!adj.some(w => (w.kind || "existing") !== "demo")) continue; // all-demo → no trim
       // Skip straight pass-throughs (two near-collinear walls): no real corner there.
       if (adj.length === 2) {
         const dir = (w) => { const o = ni[w.n1 === id ? w.n2 : w.n1]; return o ? Math.atan2(o.y - node.y, o.x - node.x) : null; };
@@ -903,42 +902,26 @@ function CornerPosts({ walls = [], nodes = [], cx, cz, pxPerFoot, ceilingHeight,
           if (Math.abs(d - Math.PI) < 0.26) continue; // within ~15° of straight
         }
       }
-      let thickFt = 0, heightFt = 0, material = null, color = null;
+      let thickFt = 0;
       for (const w of adj) {
         const wk = WALL_KINDS[w.kind || "existing"];
         const t = (w.kind === "pony" ? (w.ponyDepth || 6) : (wk.thickness || 5)) / 12;
-        const h = w.kind === "pony" ? (w.ponyHeight || 42) / 12 : (w.ceilingHeight ?? ceilingHeight) / 12;
         if (t > thickFt) thickFt = t;
-        if (h > heightFt) heightFt = h;
-        if (!color) color = wk.color;
-        if (!material || (TEXTURED_WALL_MATERIALS.has(w.material) && !TEXTURED_WALL_MATERIALS.has(material))) material = w.material;
       }
-      out.push({ id, x: (node.x - cx) / pxPerFoot, z: (node.y - cz) / pxPerFoot, thickFt, heightFt, material, color,
-        trim: adj.some(w => (w.kind || "existing") !== "demo") });
+      out.push({ id, x: (node.x - cx) / pxPerFoot, z: (node.y - cz) / pxPerFoot, thickFt });
     }
     return out;
-  }, [walls, ni, cx, cz, pxPerFoot, ceilingHeight]);
+  }, [walls, ni, cx, cz, pxPerFoot]);
 
-  if (style3d === "xray") return null; // see-through mode — corner fill isn't wanted
-  const PROUD = 0.02; // ft proud each side; clears the depth buffer like the floor grid does
-  return junctions.map(j => (
-    <group key={"post-" + j.id} position={[j.x, 0, j.z]}>
-      <WallBox lenFt={j.thickFt + PROUD * 2} thickFt={j.thickFt + PROUD * 2} heightFt={j.heightFt}
-        yCenter={j.heightFt / 2} offsetFt={0} color={j.color} material={j.material}
-        wallId={null} onSelect={NOOP} isDemo={false} isSelected={false} style3d={style3d}
-        interactive={false} edges={false} />
-      {/* Plinth block: perpendicular baseboard runs overlap at corners with coplanar top
-          faces — a slightly taller, prouder block swallows the overlap so nothing fights. */}
-      {style3d === "detailed" && j.trim && (() => {
-        const side = j.thickFt + 2 * (PROUD + BASE_D + 0.01);
-        const h = BASE_H + 0.02;
-        return <mesh position={[0, h / 2, 0]} castShadow receiveShadow>
-          <boxGeometry args={[side, h, side]} />
-          <meshStandardMaterial {...TRIM_MAT} />
-        </mesh>;
-      })()}
-    </group>
-  ));
+  if (style3d !== "detailed") return null;
+  return junctions.map(j => {
+    const side = j.thickFt + 2 * (BASE_D + 0.03);
+    const h = BASE_H + 0.02;
+    return <mesh key={"plinth-" + j.id} position={[j.x, h / 2, j.z]} castShadow receiveShadow>
+      <boxGeometry args={[side, h, side]} />
+      <meshStandardMaterial {...TRIM_MAT} />
+    </mesh>;
+  });
 }
 
 // ─── Column ────────────────────────────────────────────────────────────────────
@@ -1685,6 +1668,12 @@ export default function TestFit3D({
     return { cx: nodes.reduce((s, n) => s + n.x, 0) / nodes.length, cz: nodes.reduce((s, n) => s + n.y, 0) / nodes.length };
   }, [nodes]);
 
+  // Mitered wall footprints (plan px), shared with the 2D renderer — computed once at
+  // scene level because each wall's miters depend on ALL its neighbours.
+  const wallFps = useMemo(() => computeWallFootprints(walls, nodes, {
+    halfTOf: w => ((w.kind === "pony" ? (w.ponyDepth || 6) : (WALL_KINDS[w.kind || "existing"]?.thickness || 5)) / 12) * pxPerFoot / 2,
+  }), [walls, nodes, pxPerFoot]);
+
   const camDist = useMemo(() => {
     if (!nodes.length) return 18;
     let maxR = 0;
@@ -1796,11 +1785,12 @@ export default function TestFit3D({
         )}
 
         {walls.map(w => (
-          <Wall3D key={w.id} w={w} nodes={nodes} walls={walls} doors={doors} windows={windows}
+          <Wall3D key={w.id} w={w} fp={wallFps.get(w.id)} nodes={nodes} doors={doors} windows={windows}
             cx={cx} cz={cz} pxPerFoot={pxPerFoot} ceilingHeight={w.ceilingHeight ?? ceilingHeight}
             onSelect={safeSelect} selectedId={effSelectedId} selType={effSelType} showDims={show3dDims} style3d={style3d} interactive={interactive} />
         ))}
-        <CornerPosts walls={walls} nodes={nodes} cx={cx} cz={cz} pxPerFoot={pxPerFoot} ceilingHeight={ceilingHeight} style3d={style3d} />
+        <CapSolids fps={wallFps} walls={walls} cx={cx} cz={cz} pxPerFoot={pxPerFoot} ceilingHeight={ceilingHeight} style3d={style3d} />
+        <JunctionTrim walls={walls} nodes={nodes} cx={cx} cz={cz} pxPerFoot={pxPerFoot} style3d={style3d} />
         {show3dCeiling && <CeilingPlane walls={walls} nodes={nodes} cx={cx} cz={cz} pxPerFoot={pxPerFoot} ceilingHeight={ceilingHeight} style3d={style3d} />}
         {columns.map(col => (
           <Column3D key={col.id} col={col} cx={cx} cz={cz} pxPerFoot={pxPerFoot} ceilingHeight={ceilingHeight}

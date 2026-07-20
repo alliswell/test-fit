@@ -123,6 +123,129 @@ export function traceOuterBoundary(nodes, walls) {
   return null;
 }
 
+// ─── Mitered wall footprints ─────────────────────────────────────────────────
+// Shared by the 2D plan renderer AND the 3D wall solids: each wall's footprint is a
+// quad whose end corners are mitered against the bounding neighbours at the junction,
+// so adjacent footprints tile gap-free with ZERO overlap (both walls at a corner agree
+// on the same shared point). Ported verbatim from the plan renderer's getMiterSides.
+//
+// wallEndMiter — miter one wall end. (jx,jy) junction; (dirX,dirY) unit direction
+// pointing AWAY from the junction along this wall; (nx,ny) this wall's left normal;
+// halfT half-thickness (px). others: [{oux,ouy,onx,ony,oHalfT}] per neighbour wall,
+// direction pointing away from the junction.
+export function wallEndMiter({ jx, jy, dirX, dirY, nx, ny, halfT, others }) {
+  const myAngle = Math.atan2(dirY, dirX);
+  const norm = a => ((a - myAngle) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI);
+  const info = others.map(o => ({ ...o, na: norm(Math.atan2(o.ouy, o.oux)) }));
+  const lN = info.filter(o => o.na > 0.02 && o.na < Math.PI - 0.02).sort((a, b) => a.na - b.na)[0];
+  const rN = info.filter(o => o.na > Math.PI + 0.02).sort((a, b) => b.na - a.na)[0];
+  // Miter a given side (s=+1 → +n edge / L, s=-1 → -n edge / R) with its bounding
+  // neighbour. Inner vs outer is decided GEOMETRICALLY via the interior bisector (not
+  // the wall's arbitrary node-order normal), so both walls at a corner agree on the
+  // same shared point → seamless, gap-free joins.
+  const cornerWith = (nb, s) => {
+    const baseX = jx + nx * halfT * s, baseY = jy + ny * halfT * s;
+    let bx = dirX + nb.oux, by = dirY + nb.ouy; const bl = Math.hypot(bx, by);
+    if (bl < 1e-6) return { x: baseX, y: baseY }; // collinear → no miter
+    bx /= bl; by /= bl;
+    const isInner = (nx * s * bx + ny * s * by) > 0;      // this edge faces the interior?
+    const sB = (nb.onx * bx + nb.ony * by) >= 0 ? 1 : -1; // neighbour's inner-edge sign
+    const nbSign = (isInner ? 1 : -1) * sB;               // match same inner/outer side
+    const qx = jx + nb.onx * nb.oHalfT * nbSign, qy = jy + nb.ony * nb.oHalfT * nbSign;
+    return lineInt(baseX, baseY, dirX, dirY, qx, qy, nb.oux, nb.ouy, Math.max(halfT, nb.oHalfT) * 6);
+  };
+  const nbL = lN || rN, nbR = rN || lN;
+  const Lpt = nbL ? cornerWith(nbL, 1) : { x: jx + nx * halfT, y: jy + ny * halfT };
+  const Rpt = nbR ? cornerWith(nbR, -1) : { x: jx - nx * halfT, y: jy - ny * halfT };
+  return { L: Lpt, R: Rpt, openL: !lN, openR: !rN, free: others.length === 0 };
+}
+
+// computeWallFootprints — resolve every wall's mitered footprint quad in one pass.
+// Neighbours are matched by shared node id OR endpoint proximity (< prox px), which
+// closes joins where two walls meet but sit on separate, unsnapped nodes.
+// halfTOf(wall) → half-thickness in px (kind/pony-aware; caller supplies so this stays
+// free of theme/scale constants). Returns Map wallId → { c, ux, uy, nx, ny, halfT,
+// mN1, mN2, quad:[mN1.L, mN2.L, mN2.R, mN1.R] }; degenerate walls (<1px, missing
+// nodes) are omitted.
+export function computeWallFootprints(walls, nodes, { halfTOf, prox = 6 } = {}) {
+  const nodeMap = new Map((nodes || []).map(n => [n.id, n]));
+  const coords = new Map();
+  for (const w of walls || []) {
+    const a = nodeMap.get(w.n1), b = nodeMap.get(w.n2);
+    if (!a || !b) continue;
+    if (Math.hypot(b.x - a.x, b.y - a.y) < 1) continue;
+    coords.set(w.id, { x1: a.x, y1: a.y, x2: b.x, y2: b.y });
+  }
+  const byNode = new Map();
+  for (const w of walls || []) {
+    if (!coords.has(w.id)) continue;
+    for (const nid of [w.n1, w.n2]) {
+      if (!byNode.has(nid)) byNode.set(nid, []);
+      byNode.get(nid).push(w);
+    }
+  }
+  const endMiter = (w, c, nx, ny, halfT, nid, dirX, dirY) => {
+    const jx = nid === w.n1 ? c.x1 : c.x2, jy = nid === w.n1 ? c.y1 : c.y2;
+    const nodeConns = byNode.get(nid) || [];
+    const others = [];
+    for (const ow of walls) {
+      if (ow.id === w.id) continue;
+      const oc = coords.get(ow.id); if (!oc) continue;
+      const shares = nodeConns.some(x => x.id === ow.id)
+        || Math.hypot(oc.x1 - jx, oc.y1 - jy) < prox || Math.hypot(oc.x2 - jx, oc.y2 - jy) < prox;
+      if (!shares) continue;
+      const atN1 = ow.n1 === nid || Math.hypot(oc.x1 - jx, oc.y1 - jy) < prox;
+      const odx = atN1 ? oc.x2 - oc.x1 : oc.x1 - oc.x2;
+      const ody = atN1 ? oc.y2 - oc.y1 : oc.y1 - oc.y2;
+      const olen = Math.hypot(odx, ody) || 1;
+      const oux = odx / olen, ouy = ody / olen;
+      others.push({ oux, ouy, onx: -ouy, ony: oux, oHalfT: halfTOf(ow) || 0 });
+    }
+    return wallEndMiter({ jx, jy, dirX, dirY, nx, ny, halfT, others });
+  };
+  const out = new Map();
+  for (const w of walls || []) {
+    const c = coords.get(w.id); if (!c) continue;
+    const dx = c.x2 - c.x1, dy = c.y2 - c.y1, len = Math.hypot(dx, dy);
+    const ux = dx / len, uy = dy / len, nx = -uy, ny = ux;
+    const halfT = halfTOf(w) || 0;
+    const mN1 = endMiter(w, c, nx, ny, halfT, w.n1, ux, uy);
+    const mN2 = endMiter(w, c, nx, ny, halfT, w.n2, -ux, -uy);
+    out.set(w.id, { c, ux, uy, nx, ny, halfT, mN1, mN2, quad: [mN1.L, mN2.L, mN2.R, mN1.R] });
+  }
+  return out;
+}
+
+// junctionCapPolys — where ≥2 walls meet, the per-wall mitered quads can leave a small
+// uncovered wedge (worst at odd / T-junction angles). Cluster wall-end corner points by
+// junction POSITION (per-axis prox, matching the miter's neighbour proximity) and emit
+// the convex wedge polygon per junction. entries = footprint values (caller pre-filters,
+// e.g. to phase-visible walls) each carrying an `id`. Returns
+// [{ x, y, pts:[{x,y}] angle-sorted, wallIds:[first-touch order] }].
+export function junctionCapPolys(entries, { prox = 6 } = {}) {
+  const caps = [];
+  const addCap = (jx, jy, p, id) => {
+    let cl = caps.find(c => Math.abs(c.x - jx) <= prox && Math.abs(c.y - jy) <= prox);
+    if (!cl) { cl = { x: jx, y: jy, pts: [], wallIds: [] }; caps.push(cl); }
+    cl.pts.push(p);
+    if (!cl.wallIds.includes(id)) cl.wallIds.push(id);
+  };
+  for (const e of entries || []) {
+    addCap(e.c.x1, e.c.y1, e.mN1.L, e.id); addCap(e.c.x1, e.c.y1, e.mN1.R, e.id);
+    addCap(e.c.x2, e.c.y2, e.mN2.L, e.id); addCap(e.c.x2, e.c.y2, e.mN2.R, e.id);
+  }
+  const out = [];
+  for (const cl of caps) {
+    if (cl.wallIds.length < 2) continue; // open end → no wedge
+    const uniq = [];
+    cl.pts.forEach(p => { if (!uniq.some(q => Math.abs(q.x - p.x) < 0.5 && Math.abs(q.y - p.y) < 0.5)) uniq.push(p); });
+    if (uniq.length < 3) continue; // collinear pass-through
+    uniq.sort((a, b) => Math.atan2(a.y - cl.y, a.x - cl.x) - Math.atan2(b.y - cl.y, b.x - cl.x));
+    out.push({ x: cl.x, y: cl.y, pts: uniq, wallIds: cl.wallIds });
+  }
+  return out;
+}
+
 // ─── Clear-inside floor outline ──────────────────────────────────────────────
 // Inset a floor polygon (points on wall CENTERLINES, e.g. the rect-room auto floor)
 // to the clear inside-face outline: each edge that has a wall running along it moves

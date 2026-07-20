@@ -42,25 +42,43 @@ src/
                        testfit.jsx. Reads geometry/interaction/selection via their stores;
                        receives helper callbacks, UI scalars, refs & tool-config via `ctx`.
     testfit3d.jsx      <TestFit3D> react-three-fiber 3D view (lazy chunk; imports M3D).
-                       Demo walls short-circuit Wall3D: ONE continuous translucent red
-                       volume + red WallEdges outline, full height/length, in all three
-                       styles — doors/windows/casings on a demo wall are NOT rendered
-                       (they're being demoed too; solid finished parts inside a ghost
-                       wall read as "staying", which is backwards). Demo walls also skip
-                       shadows (noAutoShadow + castShadow off). Their translucency is a
-                       two-pass union in WallBox: a depth-only prepass (renderOrder 10,
-                       colorWrite off) then an UNLIT color pass (renderOrder 11, basic
-                       material, depthFunc EqualDepth, depthWrite off) — mitered demo-demo
-                       corners overlap in volume, and naive per-box blending stacked the
-                       alpha into darker corner pillars; the prepass guarantees exactly one
-                       blend per pixel across the whole demo run, and unlit color keeps
-                       end-cap lighting from reading as a seam.
+                       WALLS (Pascal-style, reworked): each wall is ONE WallSolid mesh —
+                       its mitered footprint quad (scene-level computeWallFootprints memo,
+                       shared with the 2D plan) extruded via wallGeo3d.js, with door/window
+                       openings CSG-SUBTRACTED (three-bvh-csg) for true reveals. Walls tile
+                       gap-free with zero overlap at junctions by construction: no end
+                       extensions, no cover-up corner posts. CapSolids extrudes the shared
+                       junctionCapPolys wedges at 3+/odd junctions (height = MIN adjacent so
+                       they never poke above pony walls; textured material wins).
+                       JunctionTrim keeps only the detailed-mode baseboard plinth.
+                       Outlines (xray ghosts, demo red) come from buildWallEdgeSegments —
+                       procedural, because CSG output has T-vertices that break
+                       EdgesGeometry (caps use solidEdgesGeometry: position-only weld).
+                       Demo walls extrude UNCUT (openings/casings/glass not rendered —
+                       they're being demoed too), skip shadows (noAutoShadow), and keep the
+                       two-pass union in WallSolid: depth-only prepass (renderOrder 10)
+                       then UNLIT color at depthFunc EqualDepth (renderOrder 11) so the
+                       whole demo run — including overlapping cap wedges — blends exactly
+                       once per pixel; unlit keeps end-cap lighting from reading as a seam.
+    wallGeo3d.js       three-dependent (only testfit3d imports it — keeps the lazy chunk):
+                       footprintToLocal, buildWallSolidGeometry (Shape→Extrude→rotateX,
+                       CCW-enforced winding, butterfly-quad fallback, CSG cuts w/ try/catch
+                       uncut-prism fallback, applyBoxUVs box-projection at
+                       WALL_MATERIAL_TILE_FT scale incl. reveal jambs),
+                       buildCapSolidGeometry, buildWallEdgeSegments, solidEdgesGeometry;
+                       pinned by wallGeo3d.test.js (three-bvh-csg@0.0.17 exactly — 0.0.18
+                       needs three-mesh-bvh 0.9.x which drei 9.x forbids)
     markerMount.js     pure (no three.js): M3D mount config + markerMountYFt — imported by
                        both testfit3d and the 2D ElevationView so 3D stays in its own chunk
     model.js           pure: uid, sn, dst, polyArea/Centroid, pointInPoly, orthoSnap,
                        parseDimInput, migrateProjectData, PROJECT_VERSION, AUTOSAVE_KEY
     geometry.js        pure: wallResizeCursor, applySmartGuides, lineInt, wallMiterPt,
-                       revCloudPath, traceOuterBoundary, insetFloorPolygon (clear-inside
+                       revCloudPath, traceOuterBoundary, wallEndMiter +
+                       computeWallFootprints + junctionCapPolys (mitered wall footprint
+                       quads + junction cap wedges, plan px — SINGLE source of truth for
+                       wall shapes, consumed by BOTH the 2D plan render pass and the 3D
+                       WallSolid/CapSolids; neighbours match by node id OR 6px endpoint
+                       proximity), insetFloorPolygon (clear-inside
                        room outline: floor polygons sit on wall CENTERLINES — all dims/sf
                        in the app are centerline by convention — so this insets each edge
                        that has a wall along it by that wall's half-thickness to get the

@@ -5,7 +5,7 @@ import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "../app
 // Lazy-loaded so three.js / r3f / drei (a large bundle) only download when a 3D pane is shown.
 const TestFit3D = lazy(() => import("./testfit3d"));
 import { uid, sn, dst, ptSeg, polyArea, polyCentroid, pointInPoly, orthoSnap, isLightComponent, parseDimInput, migrateProjectData, PROJECT_VERSION, AUTOSAVE_KEY, dedupeWalls, splitWallThroughNodes, splitWallAtNode, weldWallCrossings } from "./model";
-import { wallResizeCursor, applySmartGuides, lineInt, revCloudPath, insetFloorPolygon } from "./geometry";
+import { wallResizeCursor, applySmartGuides, lineInt, revCloudPath, insetFloorPolygon, computeWallFootprints, junctionCapPolys } from "./geometry";
 import { useViewStore } from "../store/viewStore";
 import { useLayersStore } from "../store/layersStore";
 import { useSelectionStore } from "../store/selectionStore";
@@ -2794,75 +2794,28 @@ export default function TestfitTool() {
               {/* Walls — two-pass render: fills first, then all edge lines on top.
                   This prevents double-hatching at overlaps and keeps edges always visible. */}
               {(() => {
-                // Helper: compute miter corners per-side at an endpoint
-                const getMiterSides = (w, c, nx, ny, halfT, nid, dirX, dirY) => {
-                  const jx = nid === w.n1 ? c.x1 : c.x2, jy = nid === w.n1 ? c.y1 : c.y2;
-                  // Find neighbors by node ID or by endpoint proximity (handles coincident-but-unshared nodes)
-                  const PROX = 6;
-                  const nodeConns = nodeWallsMap[nid] || [];
-                  const others = walls.filter(ow => {
-                    if (ow.id === w.id) return false;
-                    if (nodeConns.some(x => x.id === ow.id)) return true;
-                    const oc2 = wc(ow); if (!oc2) return false;
-                    return dst(oc2.x1, oc2.y1, jx, jy) < PROX || dst(oc2.x2, oc2.y2, jx, jy) < PROX;
-                  });
-                  const myAngle = Math.atan2(dirY, dirX);
-                  const norm = a => ((a - myAngle) % (2*Math.PI) + 2*Math.PI) % (2*Math.PI);
-                  const info = others.map(ow => {
-                    const oc = wc(ow); if (!oc) return null;
-                    const atN1 = ow.n1 === nid || dst(oc.x1, oc.y1, jx, jy) < PROX;
-                    const odx = atN1 ? oc.x2 - oc.x1 : oc.x1 - oc.x2;
-                    const ody = atN1 ? oc.y2 - oc.y1 : oc.y1 - oc.y2;
-                    const olen = Math.hypot(odx, ody) || 1;
-                    const oux = odx/olen, ouy = ody/olen;
-                    const owk = wallKinds[ow.kind || "existing"];
-                    const oTI = ow.kind === "pony" ? (ow.ponyDepth || 6) : (owk.thickness || 5);
-                    const oHalfT = (oTI / 12) * pxPerFoot / 2;
-                    return { oux, ouy, onx: -ouy, ony: oux, oHalfT, na: norm(Math.atan2(ouy, oux)) };
-                  }).filter(Boolean);
-                  const lN = info.filter(o => o.na > 0.02 && o.na < Math.PI - 0.02).sort((a,b) => a.na - b.na)[0];
-                  const rN = info.filter(o => o.na > Math.PI + 0.02).sort((a,b) => b.na - a.na)[0];
-                  // Miter a given side of this wall (s=+1 → +n edge / L, s=-1 → -n edge / R) with
-                  // its bounding neighbour. Inner vs outer is decided GEOMETRICALLY via the
-                  // interior bisector (not the wall's arbitrary node-order normal), so both walls
-                  // at a corner agree on the same shared point → seamless, gap-free joins.
-                  const cornerWith = (nb, s) => {
-                    const baseX = jx + nx * halfT * s, baseY = jy + ny * halfT * s;
-                    let bx = dirX + nb.oux, by = dirY + nb.ouy; const bl = Math.hypot(bx, by);
-                    if (bl < 1e-6) return { x: baseX, y: baseY }; // collinear → no miter
-                    bx /= bl; by /= bl;
-                    const isInner = (nx * s * bx + ny * s * by) > 0;           // this edge faces the interior?
-                    const sB = (nb.onx * bx + nb.ony * by) >= 0 ? 1 : -1;       // neighbour's inner-edge sign
-                    const nbSign = (isInner ? 1 : -1) * sB;                     // match same inner/outer side
-                    const qx = jx + nb.onx * nb.oHalfT * nbSign, qy = jy + nb.ony * nb.oHalfT * nbSign;
-                    return lineInt(baseX, baseY, dirX, dirY, qx, qy, nb.oux, nb.ouy, Math.max(halfT, nb.oHalfT) * 6);
-                  };
-                  const nbL = lN || rN, nbR = rN || lN;
-                  const Lpt = nbL ? cornerWith(nbL, 1)  : { x: jx + nx * halfT, y: jy + ny * halfT };
-                  const Rpt = nbR ? cornerWith(nbR, -1) : { x: jx - nx * halfT, y: jy - ny * halfT };
-                  return { L: Lpt, R: Rpt, openL: !lN, openR: !rN, free: others.length === 0 };
-                };
+                // Mitered footprints shared with the 3D solids (geometry.js). Computed over
+                // ALL walls (miters must see hidden-phase neighbours too, matching the old
+                // inline behaviour); phase filtering happens per-wall below.
+                const fps = computeWallFootprints(walls, nodes, { halfTOf: wallHalfT });
 
                 // Compute geometry for all walls once
                 const wallData = walls.map(w => {
                   if (!phaseVisible(w.phase)) return null;
-                  const c = wc(w); if (!c) return null;
+                  const fp = fps.get(w.id); if (!fp) return null;
+                  const c = fp.c;
                   const sel = (selectedId === w.id && selType === "wall") || selectedIds.includes(w.id);
                   const wk = wallKinds[w.kind || "existing"];
-                  const wLen = dst(c.x1, c.y1, c.x2, c.y2); if (wLen < 1) return null;
+                  const wLen = dst(c.x1, c.y1, c.x2, c.y2);
                   const dx = c.x2 - c.x1, dy = c.y2 - c.y1;
-                  const wallThicknessIn = w.kind === "pony" ? (w.ponyDepth || 6) : (wk.thickness || 5);
-                  const halfT = (wallThicknessIn / 12) * pxPerFoot / 2;
-                  const nx = -dy / wLen, ny = dx / wLen;
-                  const ux = dx / wLen, uy = dy / wLen;
+                  const { halfT, nx, ny } = fp;
                   const cuts = []; [...doors, ...windows].filter(item => phaseVisible(item.phase)).forEach(item => { const rp = resolvePos(item); const projT = ((rp.x - c.x1) * dx + (rp.y - c.y1) * dy) / (wLen * wLen); if (projT < -0.05 || projT > 1.05) return; const projX = c.x1 + projT * dx, projY = c.y1 + projT * dy; if (dst(rp.x, rp.y, projX, projY) > 8) return; const halfW = inToPx(item.width) / 2 / wLen; cuts.push({ t0: Math.max(0, projT - halfW), t1: Math.min(1, projT + halfW) }); });
                   cuts.sort((a,b) => a.t0 - b.t0); const merged = []; cuts.forEach(cu => { if (merged.length && cu.t0 <= merged[merged.length-1].t1) merged[merged.length-1].t1 = Math.max(merged[merged.length-1].t1, cu.t1); else merged.push({...cu}); });
                   const segs = []; let tS = 0; merged.forEach(cu => { if (cu.t0 > tS) segs.push({t0:tS,t1:cu.t0}); tS = cu.t1; }); if (tS < 1) segs.push({t0:tS,t1:1});
                   const hatchId = w.material && WALL_MATERIAL_HATCHES[w.material] ? WALL_MATERIAL_HATCHES[w.material] : ({demo:"hatch-demo",new:"hatch-new",pony:"hatch-pony"}[w.kind] ?? "hatch-existing");
                   const edgeColor = sel ? T.nodeFill : wk.color;
                   const edgeW = sel ? 2 : 1.5;
-                  const mN1 = getMiterSides(w, c, nx, ny, halfT, w.n1,  ux,  uy);
-                  const mN2 = getMiterSides(w, c, nx, ny, halfT, w.n2, -ux, -uy);
+                  const { mN1, mN2 } = fp;
                   // Pre-compute segment corner points
                   const segPts = segs.map(seg => {
                     const ax = c.x1 + seg.t0 * dx, ay = c.y1 + seg.t0 * dy;
@@ -2885,25 +2838,12 @@ export default function TestfitTool() {
                 // Cluster wall ends by junction POSITION (not node id) within the same proximity the
                 // miter uses, so caps also close near-miss joins where two walls meet but sit on
                 // separate, unsnapped nodes a few px apart — the common "doesn't look merged" case.
-                const CAP_PROX = 6; // must match getMiterSides' neighbour proximity
-                const caps = []; // { x, y, pts:[{x,y}], walls:Set, hatchId, color }
-                const addCap = (jx, jy, p, d) => {
-                  let cl = caps.find(c => Math.abs(c.x - jx) <= CAP_PROX && Math.abs(c.y - jy) <= CAP_PROX);
-                  if (!cl) { cl = { x: jx, y: jy, pts: [], walls: new Set(), hatchId: d.hatchId, color: d.wk.color }; caps.push(cl); }
-                  cl.pts.push(p); cl.walls.add(d.w.id);
-                };
-                wallData.forEach(d => {
-                  addCap(d.c.x1, d.c.y1, d.mN1.L, d); addCap(d.c.x1, d.c.y1, d.mN1.R, d);
-                  addCap(d.c.x2, d.c.y2, d.mN2.L, d); addCap(d.c.x2, d.c.y2, d.mN2.R, d);
+                const capPolys = junctionCapPolys(
+                  wallData.map(d => ({ id: d.w.id, c: d.c, mN1: d.mN1, mN2: d.mN2 })),
+                ).map((cp, i) => {
+                  const d0 = wallData.find(d => d.w.id === cp.wallIds[0]); // first-touch wall styles the wedge
+                  return { nid: Math.round(cp.x) + "_" + Math.round(cp.y) + "_" + i, points: cp.pts.map(p => `${p.x},${p.y}`).join(" "), hatchId: d0.hatchId, color: d0.wk.color };
                 });
-                const capPolys = caps.map((cl, i) => {
-                  if (cl.walls.size < 2) return null; // open end → no wedge
-                  const uniq = [];
-                  cl.pts.forEach(p => { if (!uniq.some(q => Math.abs(q.x - p.x) < 0.5 && Math.abs(q.y - p.y) < 0.5)) uniq.push(p); });
-                  if (uniq.length < 3) return null; // collinear pass-through
-                  uniq.sort((a, b) => Math.atan2(a.y - cl.y, a.x - cl.x) - Math.atan2(b.y - cl.y, b.x - cl.x));
-                  return { nid: Math.round(cl.x) + "_" + Math.round(cl.y) + "_" + i, points: uniq.map(p => `${p.x},${p.y}`).join(" "), hatchId: cl.hatchId, color: cl.color };
-                }).filter(Boolean);
 
                 // Terminators (more open ends) render first; through-walls render last so their
                 // canvas fill buries any junction edge bleed from the walls they cross.
