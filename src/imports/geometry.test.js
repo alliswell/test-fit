@@ -1,7 +1,9 @@
 import { describe, it, expect } from "vitest";
 import {
   wallResizeCursor, applySmartGuides, lineInt, wallMiterPt, revCloudPath, traceOuterBoundary,
+  insetFloorPolygon,
 } from "./geometry";
+import { polyArea } from "./model";
 
 describe("wallResizeCursor", () => {
   // The cursor points along the drag direction, which is PERPENDICULAR to the wall.
@@ -101,5 +103,51 @@ describe("traceOuterBoundary", () => {
   it("returns null for empty input", () => {
     expect(traceOuterBoundary([], [])).toBeNull();
     expect(traceOuterBoundary(null, null)).toBeNull();
+  });
+});
+
+describe("insetFloorPolygon — clear inside-face outline", () => {
+  // 10'×10' room at 20 px/ft, nodes on the wall centerlines; 7"-thick walls → halfT 5.8333px.
+  const halfT = ((7 / 12) * 20) / 2;
+  const nodes = [
+    { id: "a", x: 0, y: 0 }, { id: "b", x: 200, y: 0 },
+    { id: "c", x: 200, y: 200 }, { id: "d", x: 0, y: 200 },
+  ];
+  const square = [{ x: 0, y: 0 }, { x: 200, y: 0 }, { x: 200, y: 200 }, { x: 0, y: 200 }];
+  const wallsAll = [
+    { id: "w1", n1: "a", n2: "b" }, { id: "w2", n1: "b", n2: "c" },
+    { id: "w3", n1: "c", n2: "d" }, { id: "w4", n1: "d", n2: "a" },
+  ];
+  const hOf = () => halfT;
+
+  it("insets every walled edge by its half-thickness (4 walls → (W−t)×(H−t))", () => {
+    const out = insetFloorPolygon(square, wallsAll, nodes, hOf);
+    expect(polyArea(out)).toBeCloseTo((200 - 2 * halfT) ** 2, 1);
+    // corners land exactly halfT in from both directions
+    expect(out[0].x).toBeCloseTo(halfT, 3); expect(out[0].y).toBeCloseTo(halfT, 3);
+    expect(out[2].x).toBeCloseTo(200 - halfT, 3); expect(out[2].y).toBeCloseTo(200 - halfT, 3);
+  });
+
+  it("only edges with a wall move — two opposite walls shrink one axis only", () => {
+    const twoWalls = [{ id: "w2", n1: "b", n2: "c" }, { id: "w4", n1: "d", n2: "a" }]; // left + right
+    const out = insetFloorPolygon(square, twoWalls, nodes, hOf);
+    expect(polyArea(out)).toBeCloseTo((200 - 2 * halfT) * 200, 1);
+  });
+
+  it("no walls → polygon unchanged; reversed winding gives the same clear area", () => {
+    const out = insetFloorPolygon(square, [], nodes, hOf);
+    out.forEach((p, i) => { expect(p.x).toBeCloseTo(square[i].x, 6); expect(p.y).toBeCloseTo(square[i].y, 6); });
+    const rev = [...square].reverse();
+    expect(polyArea(insetFloorPolygon(rev, wallsAll, nodes, hOf))).toBeCloseTo((200 - 2 * halfT) ** 2, 1);
+  });
+
+  it("a wall split into collinear segments still insets its edge; missing nodes are skipped", () => {
+    const nodes2 = [...nodes, { id: "m", x: 100, y: 0 }];
+    const split = [
+      { id: "wA", n1: "a", n2: "m" }, { id: "wB", n1: "m", n2: "b" }, // top edge in two pieces
+      { id: "wX", n1: "ghost", n2: "b" },                             // dangling ref — ignored
+    ];
+    const out = insetFloorPolygon(square, split, nodes2, hOf);
+    expect(polyArea(out)).toBeCloseTo(200 * (200 - halfT), 1); // only the top edge moved
   });
 });

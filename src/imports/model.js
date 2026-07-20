@@ -1,6 +1,7 @@
 // ─── Pure model + geometry helpers ──────────────────────────────────────────
 // Extracted from the main component so they can be unit-tested in isolation and
 // reused by a future backend. Everything here is PURE (no React/three/DOM deps).
+import { sanitizeSlideTree } from "../utils/docs";
 
 export const uid = () => Math.random().toString(36).slice(2, 10);
 export const sn = (v, g) => Math.round(v / g) * g;
@@ -63,7 +64,7 @@ export const parseDimInput = (str, ppf) => {
 // shape; migrateProjectData() normalizes any older/partial blob (file import,
 // localStorage autosave, snapshot data) up to the current version. The seam that file
 // import, autosave, and a future database all flow through.
-export const PROJECT_VERSION = "testfit-v10";
+export const PROJECT_VERSION = "testfit-v16";
 export const AUTOSAVE_KEY = "testfit-autosave"; // localStorage key for crash-safe session restore
 const _arr = (v) => Array.isArray(v) ? v : [];
 const _obj = (v) => (v && typeof v === "object") ? v : {};
@@ -174,7 +175,7 @@ export const mergeNode = (nodes, walls, srcId, tgtId) => ({
 });
 
 // Docs-stage slide sanitizer: whitelist the view enum, coerce field types, drop junk.
-const SLIDE_VIEWS = new Set(["plan", "front", "back", "left", "right", "3d"]);
+const SLIDE_VIEWS = new Set(["plan", "front", "back", "left", "right", "3d", "budget", "ffe", "title"]); // data sheets: budget (v12), ffe (v13); title = section divider (v15)
 const _slide = (s) => {
   if (!s || typeof s !== "object" || !SLIDE_VIEWS.has(s.view)) return null;
   const rect = (s.rect && typeof s.rect === "object" && typeof s.rect.w === "number") ? s.rect : null;
@@ -187,9 +188,32 @@ const _slide = (s) => {
     image: typeof s.image === "string" ? s.image : null,
     notes: _arr(s.notes),
     title: typeof s.title === "string" ? s.title : "",
+    // v15: subtitle line for "title" section-divider slides (ignored by other views).
+    subtitle: typeof s.subtitle === "string" ? s.subtitle : "",
     scaleText: typeof s.scaleText === "string" ? s.scaleText : "",
+    // v11: per-slide layer visibility — null = inherit the live editor layers.
+    vis: (s.vis && typeof s.vis === "object") ? s.vis : null,
+    // v14: one-level deck nesting — parent slide id, or null for top level.
+    // Cross-slide validity (parent exists, is top-level) is enforced tree-wide in
+    // migrateProjectData via sanitizeSlideTree.
+    parentId: typeof s.parentId === "string" ? s.parentId : null,
+    // v15: a section slide remembers whether its children are collapsed in the deck strip.
+    collapsed: s.collapsed === true,
     ts: typeof s.ts === "number" ? s.ts : Date.now(),
   };
+};
+
+// v16: elevation dims are scoped to their section cut. Drop legacy dims that predate the
+// `cut` field (they'd otherwise show on every cut of that direction); tagged dims + all
+// labels/revClouds pass through untouched.
+const _elevAnno = (ea) => {
+  if (!ea || typeof ea !== "object") return {};
+  const out = {};
+  for (const [dir, a] of Object.entries(ea)) {
+    if (!a || typeof a !== "object") continue;
+    out[dir] = { ...a, dims: _arr(a.dims).filter(dm => dm && typeof dm === "object" && "cut" in dm) };
+  }
+  return out;
 };
 
 export function migrateProjectData(d) {
@@ -208,7 +232,7 @@ export function migrateProjectData(d) {
     revClouds: _arr(d.revClouds), flowPaths: _arr(d.flowPaths), floorRegions: _arr(d.floorRegions),
     guides: _arr(d.guides), // elevation cut-line guides { id, dir, pos }
     floorMaterial: d.floorMaterial || "Wood",
-    elevAnnotations: _obj(d.elevAnnotations),
+    elevAnnotations: _elevAnno(d.elevAnnotations),
     bgOpacity: typeof d.bgOpacity === "number" ? d.bgOpacity : 0.35,
     bgScale: typeof d.bgScale === "number" ? d.bgScale : 1,
     bgOffset: (d.bgOffset && typeof d.bgOffset === "object") ? d.bgOffset : { x: 0, y: 0 },
@@ -221,7 +245,7 @@ export function migrateProjectData(d) {
     splitPosV: typeof d.splitPosV === "number" ? d.splitPosV : 0.5,
     lockedLayers: _obj(d.lockedLayers),
     // Docs stage (v10): slide deck + sheet settings — project-level like snapshots.
-    slides: _arr(d.slides).map(_slide).filter(Boolean),
+    slides: sanitizeSlideTree(_arr(d.slides).map(_slide).filter(Boolean)),
     docSettings: {
       size: ["letter", "tabloid"].includes(d.docSettings?.size) ? d.docSettings.size : "letter",
       orientation: ["landscape", "portrait"].includes(d.docSettings?.orientation) ? d.docSettings.orientation : "landscape",

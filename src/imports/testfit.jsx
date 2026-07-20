@@ -5,19 +5,22 @@ import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "../app
 // Lazy-loaded so three.js / r3f / drei (a large bundle) only download when a 3D pane is shown.
 const TestFit3D = lazy(() => import("./testfit3d"));
 import { uid, sn, dst, ptSeg, polyArea, polyCentroid, pointInPoly, orthoSnap, isLightComponent, parseDimInput, migrateProjectData, PROJECT_VERSION, AUTOSAVE_KEY, dedupeWalls, splitWallThroughNodes, splitWallAtNode, weldWallCrossings } from "./model";
-import { wallResizeCursor, applySmartGuides, lineInt, revCloudPath } from "./geometry";
+import { wallResizeCursor, applySmartGuides, lineInt, revCloudPath, insetFloorPolygon } from "./geometry";
 import { useViewStore } from "../store/viewStore";
 import { useLayersStore } from "../store/layersStore";
 import { useSelectionStore } from "../store/selectionStore";
 import { useGeometryStore } from "../store/geometryStore";
 import { useDocsStore, DEFAULT_DOC_SETTINGS } from "../store/docsStore";
 import DocsView, { PrintDeck } from "../components/DocsView";
-import { sheetDims, sheetInches, sheetBodyDims, fitRectToViewport, fitStandardScale, scaledRectCam, defaultSlideName, viewTitle } from "../utils/docs";
+import BudgetSheet from "../components/BudgetSheet";
+import FnESheet from "../components/FnESheet";
+import TitleSheet from "../components/TitleSheet";
+import { sheetDims, sheetInches, sheetBodyDims, fitRectToViewport, fitStandardScale, scaledRectCam, defaultSlideName, viewTitle, resolveSlideVis, SLIDE_VIS_PRESETS, matchSlidePreset } from "../utils/docs";
 import { useInteractionStore } from "../store/interactionStore";
 import { useCanvasEvents } from "./useCanvasEvents";
 // Extracted modules — see CLAUDE.md → "Code structure" for what belongs where.
 import { THEMES, cadCrosshair, WALL_KINDS, WALL_KINDS_LIGHT, WALL_MATERIALS, WALL_MATERIAL_HATCHES } from "../constants/theme";
-import { SPEC_COMPONENTS, SPEC_LAYERS, DOOR_TYPES, WINDOW_TYPES, FLOW_PATH_COLORS, PROX_DRAG_TYPES, SNAP_R, LABEL_MAX_W, DEFAULT_PHASES, COMPONENT_FINISHES, FINISH_COLORS, ACCESS_READER_COST } from "../constants/specs";
+import { SPEC_COMPONENTS, SPEC_LAYERS, DOOR_TYPES, WINDOW_TYPES, FLOW_PATH_COLORS, PROX_DRAG_TYPES, SNAP_R, LABEL_MAX_W, DEFAULT_PHASES, COMPONENT_FINISHES, FINISH_COLORS, ACCESS_READER_COST, WALL_COST_PER_FT, DOOR_COST, WINDOW_COST, COLUMN_COST } from "../constants/specs";
 import { wrapLabelLines, labelBounds } from "../utils/labels";
 import { WallIcon, WindowIcon, ColumnIcon, RectRoomIcon } from "../components/icons";
 import { SliderInput, LabelAnnotation, AlignBtn } from "../components/ui";
@@ -53,7 +56,7 @@ export default function TestfitTool() {
   // Docs stage: slide deck + sheet settings (project-level artifact, like snapshots).
   const {
     slides, setSlides, docSettings, setDocSettings, activeSlideId, setActiveSlideId,
-    addSlide, updateSlide, removeSlide, moveSlide,
+    addSlide, updateSlide, removeSlide, dropSlide,
   } = useDocsStore();
   const [printing, setPrinting] = useState(false);   // print root mounted while true
   const docsCaptureRef = useRef(null);               // capture() for the docs-editor 3D instance
@@ -336,6 +339,30 @@ export default function TestfitTool() {
     return (m) => visibleITMEP; // only the master IT/MEP visibility toggle applies now
   }, [visibleITMEP]);
 
+  // Layer-visibility bundle threaded into renderPlanCanvas (params shadow the same-named
+  // component locals) so a Docs slide can override each layer. The live editor passes the
+  // real flags; a slide passes its resolved per-slide visibility.
+  const liveLayers = {
+    showGrid, visibleDims, visibleZones, visibleLabels, visibleRevClouds, visibleFlowPaths,
+    visibleFloorRegions, visibleGuides, visibleLayers, visibleBuildElectrical, visibleBuildLighting, markerVisible,
+  };
+  const ALL_SPEC_LAYERS_ON = { power: true, av: true, it: true, mep: true, security: true };
+  // slide.vis === null → inherit the live layers; otherwise resolve to the bundle shape.
+  // Power markers split into elec/light; other IT/MEP layers map to their SPEC_LAYERS key.
+  const slideLayersFor = (slide) => {
+    const rv = resolveSlideVis(slide.vis);
+    if (!rv) return liveLayers;
+    const mv = (m) => m.layer === "power"
+      ? (isLightComponent(m.componentType) ? rv.light : rv.elec)
+      : (rv[m.layer] ?? true);
+    return {
+      showGrid: rv.grid, visibleDims: rv.dims, visibleZones: rv.zones, visibleLabels: rv.labels,
+      visibleRevClouds: rv.revClouds, visibleFlowPaths: rv.flowPaths, visibleFloorRegions: rv.floors,
+      visibleGuides: rv.guides, visibleLayers: ALL_SPEC_LAYERS_ON,
+      visibleBuildElectrical: true, visibleBuildLighting: true, markerVisible: mv,
+    };
+  };
+
   // ── Project management ─────────────────────────────────────────────
   // captureModel: the full live model WITHOUT snapshot meta (used as a snapshot's data).
   // Docs slides/docSettings are deliberately EXCLUDED — they're a deck artifact like
@@ -571,6 +598,15 @@ export default function TestfitTool() {
   }, [pxPerFoot]);
   const ftN = useCallback((px) => px / pxPerFoot, [pxPerFoot]);
   const inToPx = useCallback((inches) => (inches / 12) * pxPerFoot, [pxPerFoot]);
+  // Clear-inside room area: floor polygons sit on wall CENTERLINES, so the labeled sf
+  // slightly overstates usable floor. Inset each walled edge by that wall's half-thickness
+  // (kind/pony-aware — same formula the wall renderer uses) and measure what's left.
+  const wallHalfT = useCallback((w) => (((w.kind === "pony" ? (w.ponyDepth || 6) : (wallKinds[w.kind || "existing"]?.thickness || 5)) / 12) * pxPerFoot) / 2, [wallKinds, pxPerFoot]);
+  const clearInsideSf = useCallback((pts) => {
+    if (!pts || pts.length < 3) return null;
+    const inset = insetFloorPolygon(pts, walls, nodes, wallHalfT);
+    return Math.round(polyArea(inset) / (pxPerFoot * pxPerFoot));
+  }, [walls, nodes, wallHalfT, pxPerFoot]);
 
   // gn: resolve node position, applying per-phase override if the wall has one
   // gn: resolve a node's position using the cumulative phase stack (same model as resolvePos).
@@ -901,13 +937,30 @@ export default function TestfitTool() {
     if (acDoors > 0) pc["it|access_reader|"] = { count: acDoors, unitCost: ACCESS_READER_COST, name: "Access Reader", layer: "it" };
     const zt = zc.reduce((s, z) => s + z.total, 0), pt = Object.values(pc).reduce((s, p) => s + p.count * p.unitCost, 0);
     const totalSf = zc.reduce((s, z) => s + z.sf, 0);
-    // Wall footage by kind
+    // Wall footage by kind (feet in wl-units → real feet is len already)
     const wallFt = { existing: 0, demo: 0, new: 0, pony: 0 };
     walls.forEach(w => { const len = wl(w); wallFt[w.kind || "existing"] += len; });
     const wallFtFormatted = {};
     Object.entries(wallFt).forEach(([k, v]) => { if (v > 0) wallFtFormatted[k] = { ft: v, label: wallKinds[k].label, color: wallKinds[k].color }; });
-    return { zones: zc, markers: pc, total: zt + pt, totalSf, wallFt: wallFtFormatted };
-  }, [zones, markers, doors, walls, wl, ftN]);
+    // Construction — priced net-new scope only. Walls carry it in `kind` (existing = $0);
+    // doors/windows/columns are as-built unless flagged `isNew`, so only new ones are
+    // priced (doors by doorType, windows by type, columns a flat each). NB: wallFt
+    // accumulates CANVAS PX (the ft() formatter converts for display), so pricing converts
+    // to real feet via ftN first.
+    const wallCost = Object.entries(wallFt).filter(([, v]) => v > 0)
+      .map(([k, v]) => ({ kind: k, label: wallKinds[k].label, color: wallKinds[k].color, ft: v, unitCost: WALL_COST_PER_FT[k] || 0, cost: Math.round(ftN(v) * (WALL_COST_PER_FT[k] || 0)) }));
+    const groupBy = (arr, keyFn, def) => arr.reduce((m, x) => { const k = keyFn(x) || def; m[k] = (m[k] || 0) + 1; return m; }, {});
+    const doorCost = Object.entries(groupBy(doors.filter(d => d.isNew), d => d.doorType, "Wood"))
+      .map(([type, count]) => ({ type, count, unitCost: DOOR_COST[type] ?? 0, cost: count * (DOOR_COST[type] ?? 0) }));
+    const winCost = Object.entries(groupBy(windows.filter(w => w.isNew), w => w.type, "Window"))
+      .map(([type, count]) => ({ type, count, unitCost: WINDOW_COST[type] ?? 0, cost: count * (WINDOW_COST[type] ?? 0) }));
+    const newCols = columns.filter(c => c.isNew).length;
+    const columnCost = { count: newCols, unitCost: COLUMN_COST, cost: newCols * COLUMN_COST };
+    const sum = (a) => a.reduce((s, x) => s + x.cost, 0);
+    const constructionTotal = sum(wallCost) + sum(doorCost) + sum(winCost) + columnCost.cost;
+    const construction = { walls: wallCost, doors: doorCost, windows: winCost, columns: columnCost, total: constructionTotal };
+    return { zones: zc, markers: pc, construction, total: zt + pt + constructionTotal, totalSf, wallFt: wallFtFormatted };
+  }, [zones, markers, doors, windows, columns, walls, wl, ftN]);
 
   const selZone = useMemo(() => selType === "zone" ? zones.find(z => z.id === selectedId) : null, [selType, selectedId, zones]);
   const selMarker = useMemo(() => selType === "marker" ? markers.find(p => p.id === selectedId) : null, [selType, selectedId, markers]);
@@ -1053,6 +1106,14 @@ export default function TestfitTool() {
   const updDoor = (u) => { const ids = _ids(); setDoors(p => p.map(d => ids.has(d.id) ? { ...d, ...u } : d)); };
   const updWindow = (u) => { const ids = _ids(); setWindows(p => p.map(w => ids.has(w.id) ? { ...w, ...u } : w)); };
   const updColumn = (u) => { const ids = _ids(); setColumns(p => p.map(c => ids.has(c.id) ? { ...c, ...u } : c)); };
+  // "New construction" toggle shared by the door/window/column inspectors — an unchecked
+  // item is part of the as-built plan (priced $0); checking it rolls the item into the budget.
+  const newToggle = (on, onToggle, accent = T.brand) => (
+    <label style={{ display: "flex", alignItems: "center", gap: 7, cursor: "pointer", marginBottom: 8, padding: "7px 9px", background: on ? accent + "18" : T.panelBg, borderRadius: 6, border: "1px solid " + (on ? accent : T.border) }}>
+      <input type="checkbox" data-testid="new-construction" checked={on} onChange={e => onToggle(e.target.checked)} style={{ width: 14, height: 14, accentColor: accent, cursor: "pointer" }} />
+      <span style={{ fontSize: 10, color: on ? T.textBright : T.textMuted, fontWeight: on ? 600 : 400 }}>New construction <span style={{ color: T.textFaint, fontWeight: 400 }}>· adds to budget</span></span>
+    </label>
+  );
   const updElevLabel = (u) => setElevAnnotations(prev => Object.fromEntries(Object.entries(prev).map(([dir, a]) =>
     [dir, { ...a, labels: (a?.labels || []).map(l => l.id === selectedId ? { ...l, ...u } : l) }])));
   const updElevRevCloud = (u) => setElevAnnotations(prev => Object.fromEntries(Object.entries(prev).map(([dir, a]) =>
@@ -1301,8 +1362,8 @@ export default function TestfitTool() {
       else if (k === "M") { setT("dim"); setDrawDim(null); }
       else if (k === "T") { setT("label"); }
       else if (k === "N") { setT("revcloud"); }
-      else if (k === "K") { setT("flowPath"); }
-      else if (k === "A" && !(e.ctrlKey || e.metaKey)) { setT("floorRegion"); }
+      else if (mode === "build" && k === "K") { setT("flowPath"); }
+      else if (mode === "build" && k === "A" && !(e.ctrlKey || e.metaKey)) { setT("floorRegion"); }
       else if (mode === "zone" && k === "Z") { setT("zone"); }
       else if (mode === "itmep" && k === "P") { setT("marker"); }
       if (k === "D" && !e.ctrlKey) setShowDims(d => !d);
@@ -1431,6 +1492,32 @@ export default function TestfitTool() {
       <line x1={c.x2 + px * tk} y1={c.y2 + py * tk} x2={c.x2 - px * tk} y2={c.y2 - py * tk} stroke={col} strokeWidth={0.8} />
       <line x1={c.x1 + px * tk} y1={c.y1 + py * tk} x2={c.x2 + px * tk} y2={c.y2 + py * tk} stroke={col} strokeWidth={0.5} strokeDasharray="3 2" />
       <DimLbl cx={mid.x} cy={mid.y} text={ft(len)} angle={ang} color={hi ? T.nodeFill : T.dimText} />
+    </g>;
+  };
+
+  // Clear-inside overlay for a selected zone: wall dims label CENTERLINES, so this dashes
+  // the true inside-face outline (each edge with a wall along it inset by that wall's
+  // half-thickness) and dimensions every edge with what a tape measure would read between
+  // finished faces. Renders nothing when no edge has a wall (free-floating zone) — there's
+  // no inside face to distinguish.
+  const clearInsideOverlay = (pts, color) => {
+    if (!pts || pts.length < 3) return null;
+    const inset = insetFloorPolygon(pts, walls, nodes, wallHalfT);
+    const moved = inset.some((p, i) => Math.abs(p.x - pts[i].x) > 0.25 || Math.abs(p.y - pts[i].y) > 0.25);
+    if (!moved) return null;
+    const nI = inset.length;
+    let a2 = 0; for (let i = 0; i < nI; i++) { const j = (i + 1) % nI; a2 += inset[i].x * inset[j].y - inset[j].x * inset[i].y; }
+    const inSign = a2 > 0 ? 1 : -1; // DimLbl's off direction is (−sinθ,cosθ) = this polygon's inward normal × inSign
+    const dIn = "M " + inset.map(p => `${p.x},${p.y}`).join(" L ") + " Z";
+    return <g style={{ pointerEvents: "none" }}>
+      <path d={dIn} fill="none" stroke={color} strokeWidth={1.2} strokeDasharray="5 3" opacity={0.9} />
+      {inset.map((p, i) => {
+        const q = inset[(i + 1) % nI];
+        const len = dst(p.x, p.y, q.x, q.y);
+        if (len < 24) return null;
+        const ang = (Math.atan2(q.y - p.y, q.x - p.x) * 180) / Math.PI;
+        return <DimLbl key={"cd" + i} cx={(p.x + q.x) / 2} cy={(p.y + q.y) / 2} text={ft(len)} angle={ang} off={12 * inSign} color={color} />;
+      })}
     </g>;
   };
 
@@ -1904,6 +1991,32 @@ export default function TestfitTool() {
     </div>
   );
   const renderSlideBody = (slide, { width, height, forPrint = false, sheetScale = 1 } = {}) => {
+    // Every slide (on-screen preview AND print — both flow through this same function) is
+    // the printable output, so it always draws Vellum (light) regardless of the app's
+    // dark/light preference: dark colors would print wrong (or invisible, on a dark canvas
+    // background). Shadows the outer T for the rest of this function only.
+    const T = THEMES.light;
+    // Section divider (no model geometry): a heading that indexes the slides nested under
+    // it. The right-hand contents list auto-builds from the section's children (live —
+    // includes collapsed ones; collapse only tidies the deck strip, not this sheet).
+    if (slide.view === "title") {
+      const contents = slides.filter(s => s.parentId === slide.id).map(k => {
+        const base = viewTitle(k.view);
+        let detail = base;
+        if (k.view === "budget") detail = base + " · " + $(cost.total);
+        else if (k.view !== "ffe") { const sc = slideAutoScale(k); if (sc) detail = base + " · " + sc; }
+        return { sheetNo: slides.indexOf(k) + 1, name: k.title || k.name, detail };
+      });
+      return <TitleSheet width={width} height={height} title={slide.title || slide.name} subtitle={slide.subtitle}
+        contents={contents} T={T} font={font} display={display} />;
+    }
+    // Data slides (no camera, no layers): budget rollup + FF&E schedule, both live.
+    if (slide.view === "budget") {
+      return <BudgetSheet width={width} height={height} cost={cost} T={T} font={font} display={display} $={$} ft={ft} />;
+    }
+    if (slide.view === "ffe") {
+      return <FnESheet width={width} height={height} cost={cost} T={T} font={font} display={display} $={$} />;
+    }
     // Plan + elevation share the crop-editing model: while editing, a working copy of the
     // slide's rect is panned (drag) and zoomed (wheel); Save persists it and rendering
     // re-snaps to the nearest true standard scale.
@@ -1919,6 +2032,7 @@ export default function TestfitTool() {
         onMouseDown={(e) => { e.stopPropagation(); e.preventDefault(); docsPanRef.current = { sx: e.clientX, sy: e.clientY, rect: docsEditRect, k: dispZoom * sheetScale }; }}
         onWheel={() => {}}
         onWheelCapture={(e) => {
+          e.stopPropagation(); // crop zoom must not also zoom the sheet view
           setDocsEditRect(r => {
             if (!r) return r;
             const f = e.deltaY > 0 ? 1.1 : 1 / 1.1;
@@ -1933,7 +2047,7 @@ export default function TestfitTool() {
       const std = rectEditing ? null : slideStdScale(slide, width, height);
       const rect = rectEditing ? docsEditRect : slide.rect;
       const cam = std ? scaledRectCam(rect, width, height, std.zoom) : fitRectToViewport(rect, width, height, 8);
-      const body = renderPlanCanvas({ zoom: cam.zoom, viewOff: cam.viewOff, width, height, interactive: false });
+      const body = renderPlanCanvas({ zoom: cam.zoom, viewOff: cam.viewOff, width, height, interactive: false, ...slideLayersFor(slide) });
       if (forPrint) return body;
       return (
         <div style={{ width, height, position: "relative", pointerEvents: rectEditing ? "auto" : "none" }}>
@@ -1951,10 +2065,11 @@ export default function TestfitTool() {
       const std = rectEditing ? null : slideStdScale(slide, width, height);
       const rect = rectEditing ? docsEditRect : slide.rect;
       const dispZoom = fitRectToViewport(rect, width, height, 8).zoom; // matches ElevationView's contain-fit
+      const elevMV = slideLayersFor(slide).markerVisible; // per-slide IT/MEP layer filter
       return (
         <div key={width + "x" + height} style={{ width, height, background: T.canvas, position: "relative", pointerEvents: rectEditing ? "auto" : "none" }}>
           <ElevationView dir={dir} nodes={nodes} walls={walls} doors={doors} windows={windows} columns={columns}
-            markers={visibleITMEP ? markers : []}
+            markers={markers.filter(elevMV)}
             ceilingHeight={ceilingHeight} pxPerFoot={pxPerFoot} T={T} ft={ft} tool="select"
             cut={cut ? cut.pos : null} scrub={null} onView={null} panU={null}
             selectedId={null} selType={null} onSelect={() => {}}
@@ -2027,6 +2142,8 @@ export default function TestfitTool() {
   // Plan restores the exact crop (camera applied once the canvas remounts); elevation/3D
   // open in a split pane and auto-fit (camera restore is best-effort in v1).
   const editModelFromSlide = (slide) => {
+    if (slide.view === "budget") { setMode("budget"); setT("select"); return; } // data slide → Budget stage
+    if (slide.view === "ffe") { setMode("zone"); setT("select"); return; }      // FF&E comes from zones → Zones stage
     setMode("build"); setT("select");
     if (slide.view === "plan") { setLayout(1); pendingPlanFitRef.current = slide.rect; }
     else { setLayout(2); setPaneView(1, slide.view === "3d" ? "3d" : slide.view); }
@@ -2464,7 +2581,19 @@ export default function TestfitTool() {
   // SHADOW the component state of the same names, so the body below serves both
   // callers unchanged. Editor overlays (marquee, ghosts, selection) key off
   // interaction state that is null outside the editor, so readonly renders clean.
-  const renderPlanCanvas = ({ zoom, viewOff, width = null, height = null, interactive = true }) => (
+  // The layer-visibility params SHADOW the same-named component locals inside the body,
+  // so a Docs slide overrides which layers draw. Callers spread liveLayers / slideLayersFor.
+  const renderPlanCanvas = ({ zoom, viewOff, width = null, height = null, interactive = true,
+    showGrid, visibleDims, visibleZones, visibleLabels, visibleRevClouds, visibleFlowPaths,
+    visibleFloorRegions, visibleGuides, visibleLayers, visibleBuildElectrical, visibleBuildLighting, markerVisible,
+    T: outerT = T, wallKinds: outerWallKinds = wallKinds }) => {
+    // Docs slides + print (interactive:false) always draw Vellum (light), regardless of the
+    // live app theme — dark-mode colors would print wrong (or invisible, on a dark canvas
+    // background). Shadows T/wallKinds for the rest of this function only; the live editable
+    // canvas (interactive:true) keeps following the user's theme toggle as before.
+    const T = interactive ? outerT : THEMES.light;
+    const wallKinds = interactive ? outerWallKinds : WALL_KINDS_LIGHT;
+    return (
           <svg ref={interactive ? cvs : undefined} data-testid={interactive ? "plan-canvas" : "docs-slide-canvas"}
             width={interactive ? "100%" : width} height={interactive ? "100%" : height}
             style={interactive
@@ -2817,6 +2946,7 @@ export default function TestfitTool() {
                   return <g key={z.id} filter={glowEffect ? "url(#glow-budget)" : undefined}><polygon points={pts} fill={lib.color + "25"} stroke={sel ? T.nodeFill : lib.color + "88"} strokeWidth={sel ? 2 : 1} strokeDasharray={sel ? "none" : "4 2"} strokeLinejoin="round" />
                     <text x={c.x} y={c.y - 4} textAnchor="middle" fill={lib.color + "CC"} fontSize={10} fontFamily="inherit" fontWeight={500} style={{ pointerEvents: "none" }}>{z.label}</text>
                     <text x={c.x} y={c.y + 14} textAnchor="middle" fill={lib.color + "BB"} fontSize={13} fontFamily="inherit" fontWeight={700} style={{ pointerEvents: "none" }}>{sf} sf</text>
+                    {sel && clearInsideOverlay(rpts, lib.color)}
                     {sel && rpts.map((p, i) => { const j = (i + 1) % rpts.length; const p2 = rpts[j]; return <line key={"e" + i} x1={p.x} y1={p.y} x2={p2.x} y2={p2.y} stroke="transparent" strokeWidth={14} style={{ cursor: wallResizeCursor(p.x, p.y, p2.x, p2.y) }} />; })}
                     {sel && rpts.map((p, i) => <g key={i}><circle cx={p.x} cy={p.y} r={7} fill={lib.color} stroke={T.nodeFill} strokeWidth={2} style={{ cursor: "move" }} /><circle cx={p.x} cy={p.y} r={3} fill={T.nodeFill} style={{ cursor: "move", pointerEvents: "none" }} /></g>)}
                   </g>; }
@@ -2825,6 +2955,7 @@ export default function TestfitTool() {
                   <text x={z.x + z.w / 2} y={z.y + z.h / 2 + 7} textAnchor="middle" fill={lib.color + "BB"} fontSize={13} fontFamily="inherit" fontWeight={700} style={{ pointerEvents: "none" }}>{Math.round(ftN(z.w) * ftN(z.h))} sf</text>
                   {showDims && visibleDims && <><text x={z.x + z.w / 2} y={z.y + z.h + 14} textAnchor="middle" fill={T.dimText} fontSize={9} fontFamily="inherit" style={{ pointerEvents: "none" }}>{ft(z.w)}</text>
                     <text x={z.x + z.w + 14} y={z.y + z.h / 2} textAnchor="middle" dominantBaseline="middle" fill={T.dimText} fontSize={9} fontFamily="inherit" transform={`rotate(90,${z.x + z.w + 14},${z.y + z.h / 2})`} style={{ pointerEvents: "none" }}>{ft(z.h)}</text></>}
+                  {sel && clearInsideOverlay([{ x: z.x, y: z.y }, { x: z.x + z.w, y: z.y }, { x: z.x + z.w, y: z.y + z.h }, { x: z.x, y: z.y + z.h }], lib.color)}
                 </g>;
               })}
 
@@ -2894,13 +3025,22 @@ export default function TestfitTool() {
                 const y0 = Math.min(drawRect.y1, cursorPos.y), y1r = Math.max(drawRect.y1, cursorPos.y);
                 const wPx = x1r - x0, hPx = y1r - y0;
                 const sf = Math.round((wPx * hPx) / (pxPerFoot * pxPerFoot));
+                // The dragged rect is where the wall CENTERLINES go; the clear inside is one
+                // wall thickness smaller per axis (half each side), so show both while sizing.
+                const tPx = inToPx(wallKind === "pony" ? ponyDepth : (wallKinds[wallKind].thickness || 5));
+                const cw = wPx - tPx, ch = hPx - tPx;
+                const clearSf = cw > 0 && ch > 0 ? Math.round((cw * ch) / (pxPerFoot * pxPerFoot)) : 0;
                 return <g style={{ pointerEvents: "none" }}>
                   <rect x={x0} y={y0} width={wPx} height={hPx} fill={col + "10"} stroke={col} strokeWidth={1.2} strokeDasharray="6 4" />
                   {wPx > 10 && <DimLbl cx={(x0 + x1r) / 2} cy={y0} text={ft(wPx)} angle={0} off={-14} color={T.nodeFill} />}
                   {hPx > 10 && <DimLbl cx={x0} cy={(y0 + y1r) / 2} text={ft(hPx)} angle={90} off={-14} color={T.nodeFill} />}
-                  {wPx > 30 && hPx > 30 && sf > 0 &&
+                  {wPx > 30 && hPx > 30 && sf > 0 && <>
                     <text x={(x0 + x1r) / 2} y={(y0 + y1r) / 2} textAnchor="middle" dominantBaseline="middle"
-                      fill={T.nodeFill} fontSize={14} fontWeight={700} fontFamily="inherit">{sf} sf</text>}
+                      fill={T.nodeFill} fontSize={14} fontWeight={700} fontFamily="inherit">{sf} sf</text>
+                    {clearSf > 0 &&
+                      <text x={(x0 + x1r) / 2} y={(y0 + y1r) / 2 + 16} textAnchor="middle" dominantBaseline="middle"
+                        fill={T.dimText} fontSize={10} fontWeight={600} fontFamily="inherit">{ft(cw)} × {ft(ch)} · {clearSf} sf clear</text>}
+                  </>}
                   <circle cx={drawRect.x1} cy={drawRect.y1} r={4} fill={col} />
                   <circle cx={cursorPos.x} cy={cursorPos.y} r={4} fill={cursorPos.snap ? "#50C878" : T.nodeFill} />
                 </g>;
@@ -3439,7 +3579,8 @@ export default function TestfitTool() {
               )}
             </g>
           </svg>
-  );
+    );
+  };
 
   return (
     <TooltipProvider>
@@ -3657,7 +3798,8 @@ export default function TestfitTool() {
             {mode === "budget" && <>
               <div style={S.sec}>
                 <div style={S.sh}>Cost Breakdown</div>
-                {Object.entries(cost.wallFt).map(([k, v]) => {
+                {cost.construction.walls.map((v) => {
+                  const k = v.kind;
                   const matchingWalls = walls.filter(w => (w.kind || "existing") === k);
                   const isSelected = matchingWalls.length > 0 && matchingWalls.every(w => selectedIds.includes(w.id));
                   return <div key={k} style={{ ...S.cr, cursor: "pointer", transition: "all 0.12s ease", background: isSelected ? T.selBg : "transparent" }}
@@ -3670,9 +3812,11 @@ export default function TestfitTool() {
                       }
                     }}
                   >
-                    <span style={{ color: v.color, fontWeight: 500 }}>{v.label} wall</span><span style={{ fontWeight: 500 }}>{ft(v.ft)}</span>
+                    <span style={{ color: v.color, fontWeight: 500 }}>{v.label} wall · {ft(v.ft)}</span><span style={{ fontWeight: 500 }}>{v.cost ? $(v.cost) : "—"}</span>
                   </div>;
                 })}
+                {cost.construction.doors.map(d => <div key={"cd" + d.type} style={S.cr}><span>{d.count}× Door · {d.type}</span><span style={{ fontWeight: 500 }}>{d.cost ? $(d.cost) : "—"}</span></div>)}
+                {cost.construction.windows.map(w => <div key={"cw" + w.type} style={S.cr}><span>{w.count}× {w.type}</span><span style={{ fontWeight: 500 }}>{w.cost ? $(w.cost) : "—"}</span></div>)}
                 {cost.zones.map(z => <div key={z.id} style={{ ...S.cr, cursor: "pointer", transition: "all 0.12s ease", background: selectedId === z.id ? T.selBg : "transparent" }}
                   onClick={() => {
                     setSelectedId(z.id);
@@ -3809,13 +3953,45 @@ export default function TestfitTool() {
               // layer can't still be nudged / deleted / edited via the inspector.
               if (locking) { setSelectedId(null); setSelType(null); setSelectedIds([]); }
             };
+            // Layer presets — the same one-click looks as the Docs stage, applied to the live
+            // planning layers (so you can focus the working view AND preview how a slide reads).
+            // Collapse the spread-out visibility state into the SLIDE_LAYER_DEFS vis shape:
+            // IT/MEP layers only count as "on" when the master (visibleITMEP) is also on.
+            const layerVis = {
+              grid: showGrid, dims: visibleDims, zones: visibleZones, floors: visibleFloorRegions,
+              labels: visibleLabels, revClouds: visibleRevClouds, flowPaths: visibleFlowPaths, guides: visibleGuides,
+              elec: visibleITMEP && visibleBuildElectrical, light: visibleITMEP && visibleBuildLighting,
+              av: visibleITMEP && !!visibleLayers.av, it: visibleITMEP && !!visibleLayers.it,
+              mep: visibleITMEP && !!visibleLayers.mep, security: visibleITMEP && !!visibleLayers.security,
+            };
+            const allLayersOn = Object.values(layerVis).every(Boolean);
+            const activeLayerPreset = allLayersOn ? "all" : matchSlidePreset(layerVis);
+            const layerPresets = [{ id: "all", label: "All", vis: Object.fromEntries(Object.keys(layerVis).map(k => [k, true])) }, ...SLIDE_VIS_PRESETS];
+            const applyLayerPreset = (vis) => {
+              setShowGrid(!!vis.grid); setVisibleDims(!!vis.dims); setVisibleZones(!!vis.zones);
+              setVisibleFloorRegions(!!vis.floors); setVisibleLabels(!!vis.labels);
+              setVisibleRevClouds(!!vis.revClouds); setVisibleFlowPaths(!!vis.flowPaths); setVisibleGuides(!!vis.guides);
+              setVisibleBuildElectrical(!!vis.elec); setVisibleBuildLighting(!!vis.light);
+              setVisibleLayers({ power: !!(vis.elec || vis.light), av: !!vis.av, it: !!vis.it, mep: !!vis.mep, security: !!vis.security });
+              // Master IT/MEP toggle: on iff the preset shows any device layer, else all markers hide.
+              setVisibleITMEP(!!(vis.elec || vis.light || vis.av || vis.it || vis.mep || vis.security));
+            };
             return (
               <div style={{ borderTop: "1px solid " + T.bg3, padding: "10px 12px", background: T.bg1, flexShrink: 0 }}>
                 <div style={{ fontSize: 9, color: T.textDim, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6, fontWeight: 600 }}>Layers</div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 8 }}>
+                  {layerPresets.map(p => (
+                    <button key={p.id} data-testid={"plan-layer-preset-" + p.id} data-active={activeLayerPreset === p.id ? "true" : undefined} onClick={() => applyLayerPreset(p.vis)}
+                      style={{ padding: "3px 8px", fontSize: 9.5, fontFamily: "inherit", fontWeight: 600, borderRadius: 5, cursor: "pointer",
+                        border: "1px solid " + (activeLayerPreset === p.id ? T.brand : T.border),
+                        background: activeLayerPreset === p.id ? T.brand + "22" : "transparent",
+                        color: activeLayerPreset === p.id ? T.textBright : T.textMuted }}>{p.label}</button>
+                  ))}
+                </div>
                 {[...rows].sort((a, b) => a.label.localeCompare(b.label)).map(({ key, label, color, visible, toggle, count, lockable }) => {
                   const locked = lockable && layerLocked(key);
                   return (
-                  <div key={key} style={{ ...S.lr, padding: "4px 4px", borderRadius: 6, marginBottom: 1 }}>
+                  <div key={key} data-testid={"plan-layer-row-" + key} style={{ ...S.lr, padding: "4px 4px", borderRadius: 6, marginBottom: 1 }}>
                     <span style={{ width: 10, height: 10, borderRadius: 3, background: color, opacity: visible ? 1 : 0.3, flexShrink: 0 }} />
                     <span style={{ color: locked ? T.textDim : visible ? T.accent : T.textMuted, flex: 1, fontSize: 11 }}>{label}</span>
                     {count != null && <span style={{ color: visible ? color : T.accentDim, fontSize: 10, fontWeight: 500 }}>{count}</span>}
@@ -3893,30 +4069,34 @@ export default function TestfitTool() {
               <TooltipContent side="right" sideOffset={8}>Revision Cloud (N)</TooltipContent>
             </Tooltip>
 
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <button style={S.toolBtn(tool === "flowPath", "#4A90D9")} onClick={() => setT("flowPath")}>
-                  <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-                    <path d="M3 15 L8 7 L13 12 L17 5" stroke={tool === "flowPath" ? "#4A90D9" : T.textMuted} strokeWidth="3.5" strokeOpacity="0.3" strokeLinecap="round" strokeLinejoin="round" />
-                    <path d="M3 15 L8 7 L13 12 L17 5" stroke={tool === "flowPath" ? "#4A90D9" : T.textMuted} strokeWidth="1" strokeDasharray="2 2" strokeLinecap="round" strokeLinejoin="round" />
-                  </svg>
-                </button>
-              </TooltipTrigger>
-              <TooltipContent side="right" sideOffset={8}>Flow Path (K)</TooltipContent>
-            </Tooltip>
+            {/* Flow Path + Floor Region draw on top of the built plan, so — like the rest of
+                the Build-mode tools below — they only make sense while building. */}
+            {mode === "build" && <>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button data-testid="tool-flowpath" style={S.toolBtn(tool === "flowPath", "#4A90D9")} onClick={() => setT("flowPath")}>
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                      <path d="M3 15 L8 7 L13 12 L17 5" stroke={tool === "flowPath" ? "#4A90D9" : T.textMuted} strokeWidth="3.5" strokeOpacity="0.3" strokeLinecap="round" strokeLinejoin="round" />
+                      <path d="M3 15 L8 7 L13 12 L17 5" stroke={tool === "flowPath" ? "#4A90D9" : T.textMuted} strokeWidth="1" strokeDasharray="2 2" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="right" sideOffset={8}>Flow Path (K)</TooltipContent>
+              </Tooltip>
 
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <button style={S.toolBtn(tool === "floorRegion", "#7A9E5A")} onClick={() => setT("floorRegion")}>
-                  <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-                    <rect x="3" y="3" width="14" height="14" rx="1.5" stroke={tool === "floorRegion" ? "#7A9E5A" : T.textMuted} strokeWidth="1.5" />
-                    <line x1="3" y1="8"  x2="17" y2="8"  stroke={tool === "floorRegion" ? "#7A9E5A" : T.textMuted} strokeWidth="0.8" opacity="0.6" />
-                    <line x1="3" y1="12" x2="17" y2="12" stroke={tool === "floorRegion" ? "#7A9E5A" : T.textMuted} strokeWidth="0.8" opacity="0.6" />
-                  </svg>
-                </button>
-              </TooltipTrigger>
-              <TooltipContent side="right" sideOffset={8}>Floor Region (A)</TooltipContent>
-            </Tooltip>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button data-testid="tool-floorregion" style={S.toolBtn(tool === "floorRegion", "#7A9E5A")} onClick={() => setT("floorRegion")}>
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                      <rect x="3" y="3" width="14" height="14" rx="1.5" stroke={tool === "floorRegion" ? "#7A9E5A" : T.textMuted} strokeWidth="1.5" />
+                      <line x1="3" y1="8"  x2="17" y2="8"  stroke={tool === "floorRegion" ? "#7A9E5A" : T.textMuted} strokeWidth="0.8" opacity="0.6" />
+                      <line x1="3" y1="12" x2="17" y2="12" stroke={tool === "floorRegion" ? "#7A9E5A" : T.textMuted} strokeWidth="0.8" opacity="0.6" />
+                    </svg>
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="right" sideOffset={8}>Floor Region (A)</TooltipContent>
+              </Tooltip>
+            </>}
 
             {/* ── Build-mode tools ───────────────────────────────────── */}
             {mode === "build" && <>
@@ -4043,9 +4223,10 @@ export default function TestfitTool() {
           <DocsView T={T} font={font} display={display} projectName={projectName}
             slides={slides} docSettings={docSettings} activeSlideId={activeSlideId}
             onSelectSlide={setActiveSlideId} onUpdateSlide={updateSlide} onDeleteSlide={removeSlide}
-            onMoveSlide={moveSlide} onUpdateSettings={(p) => setDocSettings(s => ({ ...s, ...p }))}
+            onDropSlide={dropSlide} onUpdateSettings={(p) => setDocSettings(s => ({ ...s, ...p }))}
             onEditModel={editModelFromSlide} renderSlideBody={renderSlideBody}
-            onPrint={() => setPrinting(true)} captureRef={docsCaptureRef} autoScaleFor={slideAutoScale} />
+            onPrint={() => setPrinting(true)} captureRef={docsCaptureRef} autoScaleFor={slideAutoScale}
+            onAddTemplate={(view) => addSlide({ name: defaultSlideName(view, slides.length), view, rect: null, cam3d: null, image: null })} />
         ) : (
         <div ref={splitContainerRef} style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", position: "relative" }}>
         {/* Row 1 (plan + aux pane 1) */}
@@ -4300,7 +4481,7 @@ export default function TestfitTool() {
             />;
           })()}
 
-          {renderPlanCanvas({ zoom, viewOff, interactive: true })}
+          {renderPlanCanvas({ zoom, viewOff, interactive: true, ...liveLayers })}
 
           {/* Collapsed option-panel handle — re-expands the panel */}
           {(inspSel || inspTool) && !inspectorOpen && (
@@ -4378,6 +4559,7 @@ export default function TestfitTool() {
                     style={{ flex: 1, padding: "5px 0", borderRadius: 5, cursor: "pointer", fontFamily: "inherit", fontSize: 9, fontWeight: 500, textTransform: "capitalize", border: "1.5px solid " + ((selDoor.accessSide || "latch") === s ? T.brand : T.border), background: (selDoor.accessSide || "latch") === s ? T.brand + "22" : "transparent", color: (selDoor.accessSide || "latch") === s ? T.textBright : T.textMuted }}>{s} side</button>)}
                 </div>}
               </div>}
+              {newToggle(!!selDoor.isNew, v => updDoor({ isNew: v }), T.uiDoor)}
               <button style={S.del} onClick={delSel}>Delete</button>
             </>}
             {selectedIds.length <= 1 && selWindow && (() => { const isCut = selWindow.type === "Cut Opening"; const accent = isCut ? "#A09068" : "#60A0C8"; return <>
@@ -4391,6 +4573,7 @@ export default function TestfitTool() {
               <div style={{ marginBottom: 10 }}><SliderInput value={selWindow.width} min={12} max={96} onChange={w => updWindow({ width: w })} accent={accent} textColor={T.textBright} bgColor={T.bg2} borderColor={T.border} /></div>
               <div style={{ marginBottom: 8 }}><div style={S.lbl}>Height (inches)</div><SliderInput value={selWindow.height || 48} min={12} max={96} onChange={v => updWindow({ height: v })} accent={accent} textColor={T.textBright} bgColor={T.bg2} borderColor={T.border} /></div>
               <div style={{ marginBottom: 8 }}><div style={S.lbl}>Sill Height (inches)</div><SliderInput value={selWindow.sill ?? 30} min={0} max={60} onChange={v => updWindow({ sill: v })} accent={accent} textColor={T.textBright} bgColor={T.bg2} borderColor={T.border} /></div>
+              {newToggle(!!selWindow.isNew, v => updWindow({ isNew: v }), accent)}
               <button style={S.del} onClick={delSel}>Delete</button>
             </>; })()}
             {selectedIds.length <= 1 && selLabel && (() => {
@@ -4603,11 +4786,20 @@ export default function TestfitTool() {
             {selectedIds.length <= 1 && selFloorRegion && (() => {
               const FR_COLORS = { "Wood": "#C8A878", "Concrete": "#AEABA4", "Vinyl": "#BFA889", "Carpet": "#786758" };
               const frSf = selFloorRegion.points?.length >= 3 ? Math.round(polyArea(selFloorRegion.points) / (pxPerFoot * pxPerFoot)) : 0;
+              const frClearSf = clearInsideSf(selFloorRegion.points);
               return <>
                 <div style={{ fontSize: 12, color: T.textBright, marginBottom: 10, fontWeight: 600 }}>Floor Region · {selFloorRegion.material}</div>
-                <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 10, padding: "6px 9px", background: T.bg2, borderRadius: 5 }}>
-                  <span style={{ fontSize: 10, color: T.textMuted }}>Area</span>
-                  <span style={{ fontSize: 13, fontWeight: 600, color: T.textBright }}>{frSf.toLocaleString()} sf</span>
+                <div style={{ marginBottom: 10, padding: "6px 9px", background: T.bg2, borderRadius: 5 }}>
+                  <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between" }}>
+                    <span style={{ fontSize: 10, color: T.textMuted }}>Area (to wall centerline)</span>
+                    <span style={{ fontSize: 13, fontWeight: 600, color: T.textBright }}>{frSf.toLocaleString()} sf</span>
+                  </div>
+                  {frClearSf != null && frClearSf !== frSf && (
+                    <div data-testid="floor-clear-sf" style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginTop: 3 }}>
+                      <span style={{ fontSize: 10, color: T.textMuted }}>Clear inside walls</span>
+                      <span style={{ fontSize: 12, fontWeight: 600, color: T.text }}>{frClearSf.toLocaleString()} sf</span>
+                    </div>
+                  )}
                 </div>
                 <div style={{ marginBottom: 10 }}>
                   <div style={S.lbl}>Material</div>
@@ -4659,6 +4851,7 @@ export default function TestfitTool() {
               <div style={{ marginBottom: 8 }}><div style={S.lbl}>Size (inches)</div><SliderInput value={selColumn.size} min={6} max={48} onChange={v => updColumn({ size: v })} accent="#9A9488" textColor={T.textBright} bgColor={T.bg2} borderColor={T.border} /></div>
               <div style={{ marginBottom: 8 }}><div style={S.lbl}>Label</div><input style={S.inp} value={selColumn.label || ""} onChange={e => updColumn({ label: e.target.value })} /></div>
               <div style={{ marginBottom: 8 }}><div style={S.lbl}>Notes</div><textarea style={{ ...S.inp, height: 40, resize: "vertical" }} value={selColumn.notes || ""} onChange={e => updColumn({ notes: e.target.value })} /></div>
+              {newToggle(!!selColumn.isNew, v => updColumn({ isNew: v }), "#9A9488")}
               <button style={S.del} onClick={delSel}>Delete Column</button>
             </>}
             {selectedIds.length <= 1 && selZone && (() => {
@@ -4672,8 +4865,16 @@ export default function TestfitTool() {
               const lib = zoneLibrary[selZone.type] ?? {};
               const items = lib.items ?? [];
               const estCost = items.reduce((s, i) => s + i.qty * i.unitCost, 0);
+              const zoneClearSf = clearInsideSf(pts.length ? pts
+                : [{ x: selZone.x, y: selZone.y }, { x: selZone.x + selZone.w, y: selZone.y }, { x: selZone.x + selZone.w, y: selZone.y + selZone.h }, { x: selZone.x, y: selZone.y + selZone.h }]);
               return <>
               <div style={{ fontSize: 12, marginBottom: 10, fontWeight: 600, color: lib.color }}>{lib.name} · {sf} sf</div>
+              {zoneClearSf != null && zoneClearSf !== sf && (
+                <div data-testid="zone-clear-sf" style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginTop: -6, marginBottom: 10, padding: "5px 9px", background: T.bg2, borderRadius: 5 }}>
+                  <span style={{ fontSize: 10, color: T.textMuted }}>Clear inside walls</span>
+                  <span style={{ fontSize: 12, fontWeight: 600, color: T.text }}>{zoneClearSf.toLocaleString()} sf</span>
+                </div>
+              )}
               <div style={{ marginBottom: 8 }}><div style={S.lbl}>Type</div>
                 <select style={{ ...S.inp, padding: "6px 10px", fontSize: 10 }} value={selZone.type}
                   onChange={e => { const newType = e.target.value; const l = zoneLibrary[newType]; updZone({ type: newType, label: selZone.label === lib.name ? l.name : selZone.label }); }}>

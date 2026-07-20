@@ -117,7 +117,7 @@ export default function ElevationView({ dir, nodes, walls, doors, windows, colum
       if (beyondCut(p.d)) continue; // in front of the section cut — cropped away
       const halfW = ((c.size || 12) / 12) * pxPerFoot / 2;
       if (occluded(p.u - halfW, p.u + halfW, ceilV, p.d)) continue; // behind the near face — hidden
-      out.push({ kind: "column", id: c.id, u1: p.u - halfW, u2: p.u + halfW, d: p.d, top: ceilV });
+      out.push({ kind: "column", id: c.id, u1: p.u - halfW, u2: p.u + halfW, d: p.d, top: ceilV, isNew: c.isNew });
     }
     // IT/MEP markers, placed at their mounting height (AFF). Pushed last so they draw on top
     // of the wall they're mounted on; same cut + occlusion rules as everything else.
@@ -225,31 +225,68 @@ export default function ElevationView({ dir, nodes, walls, doors, windows, colum
   const toElev = (sx, sy) => ({ x: (sx - cm.tx) / cm.z, y: (sy - cm.ty) / cm.z });
   const svgPt = (e) => { const r = svgRef.current.getBoundingClientRect(); return { sx: e.clientX - r.left, sy: e.clientY - r.top }; };
 
+  // Named anchor points for one projected item: 8 (corners + edge-midpoints) for a bounded
+  // item (wall/door/window/column), 1 ("c") for a marker (a point, no box). Shared by the
+  // snap grid below AND by resolveAnchorPt (dimension endpoints re-derive their position
+  // from these on every render, so a dim stays exact as the item it's snapped to moves).
+  const itemAnchorPoints = useCallback((it) => {
+    if (it.kind === "marker") return { c: { u: it.u, v: it.v } };
+    let vb, vt;
+    if (it.kind === "wall" || it.kind === "column") { vb = 0; vt = it.top; }
+    else if (it.kind === "window") { const s = it.item.sill ?? 30, h = it.item.height ?? 48; vb = vAt(s); vt = vAt(s + h); }
+    else if (it.kind === "door") { vb = 0; vt = vAt(DOOR_HEIGHT_IN); }
+    else return null;
+    const um = (it.u1 + it.u2) / 2, vm = (vb + vt) / 2;
+    return {
+      u1vb: { u: it.u1, v: vb }, u2vb: { u: it.u2, v: vb },
+      u1vt: { u: it.u1, v: vt }, u2vt: { u: it.u2, v: vt },
+      umvb: { u: um, v: vb }, umvt: { u: um, v: vt },
+      u1vm: { u: it.u1, v: vm }, u2vm: { u: it.u2, v: vm },
+    };
+  }, [vAt]);
+
   // Object nodes the dim/label tools snap to — corners + edge-midpoints of every drawn item,
   // plus marker centers, in elevation (u,v) space. Mirrors the plan dim tool's node snapping.
+  // Each point carries back which item/part it came from, so a dimension drawn onto one can
+  // stay anchored to it (see resolveAnchorPt).
   const snapPts = useMemo(() => {
     const pts = [];
     for (const it of items) {
-      if (it.kind === "marker") { pts.push({ u: it.u, v: it.v }); continue; }
-      let vb, vt;
-      if (it.kind === "wall" || it.kind === "column") { vb = 0; vt = it.top; }
-      else if (it.kind === "window") { const s = it.item.sill ?? 30, h = it.item.height ?? 48; vb = vAt(s); vt = vAt(s + h); }
-      else if (it.kind === "door") { vb = 0; vt = vAt(DOOR_HEIGHT_IN); }
-      else continue;
-      const um = (it.u1 + it.u2) / 2, vm = (vb + vt) / 2;
-      pts.push({ u: it.u1, v: vb }, { u: it.u2, v: vb }, { u: it.u1, v: vt }, { u: it.u2, v: vt },
-               { u: um, v: vb }, { u: um, v: vt }, { u: it.u1, v: vm }, { u: it.u2, v: vm });
+      const anchors = itemAnchorPoints(it);
+      if (!anchors) continue;
+      for (const part in anchors) pts.push({ ...anchors[part], anchorId: it.id, anchorKind: it.kind, anchorPart: part });
     }
     return pts;
-  }, [items, vAt]);
+  }, [items, itemAnchorPoints]);
+
+  // Re-derive an anchored dim endpoint from the CURRENT item list — null if the anchor is
+  // absent or its target no longer exists (item deleted), in which case the caller falls
+  // back to the dim's last literal x/y.
+  const resolveAnchorPt = useCallback((a) => {
+    if (!a) return null;
+    const it = items.find(x => x.kind === a.kind && x.id === a.id);
+    const pts = it && itemAnchorPoints(it);
+    return pts ? pts[a.part] : null;
+  }, [items, itemAnchorPoints]);
+  // A dim endpoint anchored to a wall/opening/column/marker (a1/a2) is live — recomputed
+  // from that item's current projected position every render, so moving, resizing, or
+  // re-angling the item keeps the measurement exact instead of freezing at draw-time.
+  // Endpoints that were never snapped to an item (only the floor/ceiling datum, or a free
+  // click) have no anchor and behave exactly as before.
+  const resolveDim = useCallback((d) => {
+    const r1 = resolveAnchorPt(d.a1), r2 = resolveAnchorPt(d.a2);
+    return (r1 || r2) ? { ...d, x1: r1?.u ?? d.x1, y1: r1?.v ?? d.y1, x2: r2?.u ?? d.x2, y2: r2?.v ?? d.y2 } : d;
+  }, [resolveAnchorPt]);
 
   // Snap an elevation point to the nearest item node within ~SNAP_R screen px, else to the
-  // floor/ceiling datum line (height only). Returns { x, y, snapped }.
+  // floor/ceiling datum line (height only). Returns { x, y, snapped, anchor? } — anchor is
+  // set only when the snap landed on an item node (not a datum line or a free point), and
+  // is what lets the dim tool attach an endpoint to that item (see onBgDown).
   const snapElev = (p) => {
     const thresh = SNAP_R / cm.z;
     let best = null, bd = thresh;
     for (const s of snapPts) { const d = Math.hypot(p.x - s.u, p.y - s.v); if (d < bd) { best = s; bd = d; } }
-    if (best) return { x: best.u, y: best.v, snapped: true };
+    if (best) return { x: best.u, y: best.v, snapped: true, anchor: { id: best.anchorId, kind: best.anchorKind, part: best.anchorPart } };
     if (Math.abs(p.y) < thresh) return { x: p.x, y: 0, snapped: true };          // finished floor
     if (Math.abs(p.y - ceilV) < thresh) return { x: p.x, y: ceilV, snapped: true }; // ceiling
     return { x: p.x, y: p.y, snapped: false };
@@ -357,21 +394,28 @@ export default function ElevationView({ dir, nodes, walls, doors, windows, colum
         window.addEventListener("mouseup", open);
         return;
       }
-      // dim: 3-click (point, point, then pull the dim line away to set its offset) — like 2D
+      // dim: 3-click (point, point, then pull the dim line away to set its offset) — like 2D.
+      // A click that snapped onto an item (not just the floor/ceiling datum) attaches that
+      // endpoint to it — a1/a2 below — so the measurement follows the item if it later moves.
       const dd = dimDraftRef.current;
       if (!dd) {
-        dimDraftRef.current = { x1: p.x, y1: p.y }; setDimDraft({ x1: p.x, y1: p.y });
+        dimDraftRef.current = { x1: p.x, y1: p.y, a1: p.anchor ?? null }; setDimDraft({ x1: p.x, y1: p.y });
       } else if (!("x2" in dd)) {
-        // Shift locks the axis from p1 and snaps onto any edge the locked line crosses.
-        const sp = (tool === "dim" && e.shiftKey) ? axisSnap(raw, { x: dd.x1, y: dd.y1 }) : p;
+        // Shift locks the axis from p1 and snaps onto any edge the locked line crosses — a
+        // different (line-based, not point-based) snap, so that path doesn't set an anchor.
+        const useAxis = tool === "dim" && e.shiftKey;
+        const sp = useAxis ? axisSnap(raw, { x: dd.x1, y: dd.y1 }) : p;
         if (Math.hypot(sp.x - dd.x1, sp.y - dd.y1) < 4) return; // ignore a tiny second click
-        dimDraftRef.current = { ...dd, x2: sp.x, y2: sp.y }; setDimDraft({ ...dd, x2: sp.x, y2: sp.y });
+        const a2 = useAxis ? null : (p.anchor ?? null);
+        dimDraftRef.current = { ...dd, x2: sp.x, y2: sp.y, a2 }; setDimDraft({ ...dd, x2: sp.x, y2: sp.y });
       } else {
         const ddx = dd.x2 - dd.x1, ddy = dd.y2 - dd.y1, dlen = Math.hypot(ddx, ddy);
         if (dlen < 1) { dimDraftRef.current = null; setDimDraft(null); return; }
         const nnx = -ddy / dlen, nny = ddx / dlen; // perpendicular
         const off = (raw.x - dd.x1) * nnx + (raw.y - dd.y1) * nny; // signed pull distance (un-snapped)
-        onPlaceDim?.({ x1: dd.x1, y1: dd.y1, x2: dd.x2, y2: dd.y2, offset: off });
+        // Scope the dim to the section cut it's drawn under (null = no-cut view), so it only
+        // shows when that cut is active — measurements stay tied to the wall they annotate.
+        onPlaceDim?.({ x1: dd.x1, y1: dd.y1, x2: dd.x2, y2: dd.y2, offset: off, cut: cut ?? null, a1: dd.a1 ?? null, a2: dd.a2 ?? null });
         dimDraftRef.current = null; setDimDraft(null);
       }
       return;
@@ -392,10 +436,14 @@ export default function ElevationView({ dir, nodes, walls, doors, windows, colum
     e.stopPropagation();
     onSelect?.(id, kind === "dim" ? "elevDim" : kind === "revcloud" ? "elevRevCloud" : "elevLabel");
     const s0 = svgPt(e), e0 = toElev(s0.sx, s0.sy);
-    const src = kind === "dim" ? (anno?.dims || []).find(x => x.id === id)
+    const rawSrc = kind === "dim" ? (anno?.dims || []).find(x => x.id === id)
       : kind === "revcloud" ? (anno?.revClouds || []).find(x => x.id === id)
       : (anno?.labels || []).find(x => x.id === id);
-    if (!src) return;
+    if (!rawSrc) return;
+    // Dims: base the drag on the CURRENT (anchor-resolved) position, not the raw stored one
+    // — otherwise dragging an anchored endpoint would jump by however far its item has
+    // since moved (the displayed position and the stored x/y can differ once anchored).
+    const src = kind === "dim" ? resolveDim(rawSrc) : rawSrc;
     const move = (ev) => {
       const p = svgPt(ev), cur = toElev(p.sx, p.sy);
       const dx = cur.x - e0.x, dy = cur.y - e0.y;
@@ -405,8 +453,10 @@ export default function ElevationView({ dir, nodes, walls, doors, windows, colum
         else onUpdateLabel?.(id, { x: src.x + dx, y: src.y + dy }); // box moves; leader tip stays anchored
         return;
       }
-      if (part === "p1") onUpdateDim?.(id, { x1: src.x1 + dx, y1: src.y1 + dy });
-      else if (part === "p2") onUpdateDim?.(id, { x2: src.x2 + dx, y2: src.y2 + dy });
+      // Manually dragging an endpoint detaches it from its anchor — it's now a free point,
+      // no longer tied to whatever item it used to follow.
+      if (part === "p1") onUpdateDim?.(id, { x1: src.x1 + dx, y1: src.y1 + dy, a1: null });
+      else if (part === "p2") onUpdateDim?.(id, { x2: src.x2 + dx, y2: src.y2 + dy, a2: null });
       else {
         // Dragging the dim line pulls the measurement away from the placed points (offset).
         const ddx = src.x2 - src.x1, ddy = src.y2 - src.y1, dl = Math.hypot(ddx, ddy) || 1;
@@ -437,14 +487,14 @@ export default function ElevationView({ dir, nodes, walls, doors, windows, colum
       label: ft(Math.hypot(d.x2 - d.x1, d.y2 - d.y1)), ang, slen,
     };
   };
-  const ElevDimVisual = ({ g, col, sw }) => (<g style={{ pointerEvents: "none" }}>
+  const ElevDimVisual = ({ g, col, sw, testid }) => (<g style={{ pointerEvents: "none" }}>
     <line x1={g.e1s.x} y1={g.e1s.y} x2={g.e1e.x} y2={g.e1e.y} stroke={col} strokeWidth={sw} />
     <line x1={g.e2s.x} y1={g.e2s.y} x2={g.e2e.x} y2={g.e2e.y} stroke={col} strokeWidth={sw} />
     <line x1={g.dl1.x} y1={g.dl1.y} x2={g.dl2.x} y2={g.dl2.y} stroke={col} strokeWidth={sw} />
     <line x1={g.dl1.x - g.diagX * g.tk} y1={g.dl1.y - g.diagY * g.tk} x2={g.dl1.x + g.diagX * g.tk} y2={g.dl1.y + g.diagY * g.tk} stroke={col} strokeWidth={sw + 0.25} />
     <line x1={g.dl2.x - g.diagX * g.tk} y1={g.dl2.y - g.diagY * g.tk} x2={g.dl2.x + g.diagX * g.tk} y2={g.dl2.y + g.diagY * g.tk} stroke={col} strokeWidth={sw + 0.25} />
     <rect x={g.mid.x - (g.label.length * 3 + 4)} y={g.mid.y - 7} width={g.label.length * 6 + 8} height={14} fill={T.canvas} transform={`rotate(${g.ang},${g.mid.x},${g.mid.y})`} />
-    <text x={g.mid.x} y={g.mid.y} textAnchor="middle" dominantBaseline="middle" fontSize={10} fill={col} fontFamily="inherit" fontWeight={600} transform={`rotate(${g.ang},${g.mid.x},${g.mid.y})`}>{g.label}</text>
+    <text data-testid={testid} x={g.mid.x} y={g.mid.y} textAnchor="middle" dominantBaseline="middle" fontSize={10} fill={col} fontFamily="inherit" fontWeight={600} transform={`rotate(${g.ang},${g.mid.x},${g.mid.y})`}>{g.label}</text>
   </g>);
 
   // Datum lines in screen space (full pane width)
@@ -465,6 +515,28 @@ export default function ElevationView({ dir, nodes, walls, doors, windows, colum
   };
   const cancelLblEdit = () => setEditingLbl(null); // nothing created/changed yet
 
+  // "New construction" flag for elevation openings/columns: as-built items (the default)
+  // read plainly; flagged items get a compact brand "NEW" tag above them + a heavier
+  // outline. Skipped on tiny on-screen items so zoomed-out elevations stay clean.
+  const newTag = (cxPos, topY, w) => {
+    if (!(w > 12)) return null;
+    const tw = 21, th = 9;
+    return <g style={{ pointerEvents: "none" }}>
+      <rect x={cxPos - tw / 2} y={topY - th - 3} width={tw} height={th} rx={2} fill={T.brand} />
+      <text x={cxPos} y={topY - th / 2 - 3} textAnchor="middle" dominantBaseline="central" fontSize={6} fill="#fff" fontFamily="inherit" fontWeight={700} letterSpacing="0.6">NEW</text>
+    </g>;
+  };
+
+  // A dimension belongs to the section cut it was drawn under; show it only when that cut is
+  // the active one (both null = the no-cut view). Legacy dims predate cut-scoping (no `cut`
+  // key) → not shown here; migrateProjectData drops them so they clear on load.
+  const dimInView = (dm) => {
+    if (!("cut" in dm)) return false;
+    const dc = typeof dm.cut === "number" ? dm.cut : null;
+    const cc = cut ?? null;
+    return dc === null ? cc === null : (cc !== null && Math.abs(dc - cc) < 1);
+  };
+
   return (
     <div style={{ position: "relative", width: "100%", height: "100%" }}>
     <svg ref={svgRef} width="100%" height="100%"
@@ -482,7 +554,7 @@ export default function ElevationView({ dir, nodes, walls, doors, windows, colum
           const a = toScreen(it.u1, 0), b = toScreen(it.u2, it.top);
           const x = Math.min(a.x, b.x), y = Math.min(a.y, b.y), w = Math.abs(b.x - a.x), h = Math.abs(a.y - b.y);
           const on = isSel(it.id, "wall");
-          return <rect key={"w" + it.id + i} x={x} y={y} width={w} height={h}
+          return <rect key={"w" + it.id + i} data-testid={"elev-wall-" + it.id} x={x} y={y} width={w} height={h}
             fill={it.demo ? "none" : it.color + "55"} stroke={on ? T.accent : it.color}
             strokeWidth={on ? 2 : 1} strokeDasharray={it.dash || "none"}
             onClick={sel(it.id, "wall")} style={{ cursor: "pointer" }} />;
@@ -492,22 +564,26 @@ export default function ElevationView({ dir, nodes, walls, doors, windows, colum
           const a = toScreen(it.u1, vAt(sill)), b = toScreen(it.u2, vAt(sill + hgt));
           const x = Math.min(a.x, b.x), y = Math.min(a.y, b.y), w = Math.abs(b.x - a.x), h = Math.abs(a.y - b.y);
           const on = isSel(it.id, "window");
+          const nu = !!it.item.isNew;
           const wst = WINDOW_TYPE_STYLES[it.item.type] || WINDOW_TYPE_STYLES.Window;
           return <g key={"win" + it.id + i} onClick={sel(it.id, "window")} style={{ cursor: "pointer" }}>
             <rect x={x} y={y} width={w} height={h} fill={wst.fill ?? "transparent"}
-              stroke={on ? T.accent : wst.stroke} strokeWidth={on ? 2 : 1.2} strokeDasharray={wst.dash || "none"} />
+              stroke={on ? T.accent : wst.stroke} strokeWidth={on ? 2 : nu ? 1.9 : 1.2} strokeDasharray={wst.dash || "none"} />
             {wst.glassTick && <line x1={x} y1={y} x2={x + w} y2={y + h} stroke={wst.stroke} strokeWidth={0.6} opacity={0.6} style={{ pointerEvents: "none" }} />}
+            {nu && newTag(x + w / 2, y, w)}
           </g>;
         }
         if (it.kind === "door") {
           const a = toScreen(it.u1, 0), b = toScreen(it.u2, vAt(DOOR_HEIGHT_IN));
           const x = Math.min(a.x, b.x), y = Math.min(a.y, b.y), w = Math.abs(b.x - a.x), h = Math.abs(a.y - b.y);
           const on = isSel(it.id, "door");
+          const nu = !!it.item.isNew;
           const st = DOOR_TYPE_STYLES[it.item.doorType] || DOOR_TYPE_STYLES.Wood;
           const stroke = on ? T.accent : st.elev.stroke;
           return <g key={"d" + it.id + i} onClick={sel(it.id, "door")} style={{ cursor: "pointer" }}>
             <rect x={x} y={y} width={w} height={h} fill={st.elev.fill ?? "transparent"}
-              stroke={stroke} strokeWidth={on ? 2 : 1.2} strokeDasharray={st.elev.dash || "none"} />
+              stroke={stroke} strokeWidth={on ? 2 : nu ? 1.9 : 1.2} strokeDasharray={st.elev.dash || "none"} />
+            {nu && newTag(x + w / 2, y, w)}
             {/* Wood: classic 2-panel symbol; guards keep zoomed-out doors clean */}
             {st.elev.panels && w > 10 && h > 24 && <g style={{ pointerEvents: "none" }}>
               <rect x={x + w * 0.18} y={y + h * 0.10} width={w * 0.64} height={h * 0.34} fill="none" stroke={stroke} strokeWidth={0.8} opacity={0.65} />
@@ -583,21 +659,28 @@ export default function ElevationView({ dir, nodes, walls, doors, windows, colum
             glyph = <><circle cx={a.x} cy={a.y} r={r} fill={fin ? fillC : baseColor + "cc"} stroke={lineC} strokeWidth={sw} />
               {letter && <text x={a.x} y={a.y} textAnchor="middle" dominantBaseline="central" fontSize={r} fill={fin ? fin.line : "#fff"} fontFamily="inherit" fontWeight={700} style={{ pointerEvents: "none" }}>{letter}</text>}</>;
           }
-          return <g key={"mk" + it.id + i} onClick={sel(it.id, "marker")} style={{ cursor: "pointer" }}>{glyph}</g>;
+          return <g key={"mk" + it.id + i} data-testid={"elev-marker-" + it.id} onClick={sel(it.id, "marker")} style={{ cursor: "pointer" }}>{glyph}</g>;
         }
         // column
         const a = toScreen(it.u1, 0), b = toScreen(it.u2, it.top);
         const x = Math.min(a.x, b.x), y = Math.min(a.y, b.y), w = Math.abs(b.x - a.x), h = Math.abs(a.y - b.y);
         const on = isSel(it.id, "column");
-        return <rect key={"c" + it.id + i} x={x} y={y} width={w} height={h}
-          fill={T.nodeStroke + "66"} stroke={on ? T.accent : "#9A9488"} strokeWidth={on ? 2 : 1}
-          onClick={sel(it.id, "column")} style={{ cursor: "pointer" }} />;
+        const nu = !!it.isNew;
+        return <g key={"c" + it.id + i} onClick={sel(it.id, "column")} style={{ cursor: "pointer" }}>
+          <rect x={x} y={y} width={w} height={h}
+            fill={T.nodeStroke + "66"} stroke={on ? T.accent : "#9A9488"} strokeWidth={on ? 2 : nu ? 1.9 : 1} />
+          {nu && newTag(x + w / 2, y, w)}
+        </g>;
       })}
 
-      {/* Annotations (elevation space) — selectable + draggable with the Select tool */}
-      {annoDims.map(d => {
-        if (![d.x1, d.y1, d.x2, d.y2].every(Number.isFinite)) return null; // skip malformed/legacy dims
-        const g = elevDimGeom(d);
+      {/* Annotations (elevation space) — selectable + draggable with the Select tool.
+          Dims are filtered to the active section cut (see dimInView). */}
+      {annoDims.filter(dimInView).map(d => {
+        // Anchored endpoints (a1/a2) re-derive their position from the live item on every
+        // render — the dim tracks a moved/resized item instead of freezing at draw-time.
+        const rd = resolveDim(d);
+        if (![rd.x1, rd.y1, rd.x2, rd.y2].every(Number.isFinite)) return null; // skip malformed/legacy dims
+        const g = elevDimGeom(rd);
         const on = isSel(d.id, "elevDim");
         const interactive = tool === "select";
         return <g key={d.id}>
@@ -605,7 +688,7 @@ export default function ElevationView({ dir, nodes, walls, doors, windows, colum
           <line x1={g.dl1.x} y1={g.dl1.y} x2={g.dl2.x} y2={g.dl2.y} stroke="transparent" strokeWidth={12}
             onMouseDown={e => startAnnoDrag("dim", d.id, "line", e)}
             style={{ cursor: interactive ? "move" : "inherit", pointerEvents: interactive ? "stroke" : "none" }} />
-          <ElevDimVisual g={g} col={on ? T.accent : T.dimText} sw={on ? 1.6 : 1} />
+          <ElevDimVisual g={g} col={on ? T.accent : T.dimText} sw={on ? 1.6 : 1} testid={"elev-dim-label-" + d.id} />
           {on && interactive && [["p1", g.a1], ["p2", g.a2]].map(([part, p]) => (
             <circle key={part} cx={p.x} cy={p.y} r={5} fill={T.accent} stroke={T.nodeFill} strokeWidth={1.5}
               onMouseDown={e => startAnnoDrag("dim", d.id, part, e)} style={{ cursor: "move" }} />
@@ -713,8 +796,16 @@ export default function ElevationView({ dir, nodes, walls, doors, windows, colum
         </g>;
       })()}
 
-      {/* Offset past the pane's view-selector chip (absolute, left:8, ~80px wide) so it isn't covered */}
-      <text x={100} y={22} fontSize={10} fontWeight={700} fill={T.textMuted} fontFamily="inherit" style={{ letterSpacing: "0.08em" }}>{dir.toUpperCase()} ELEVATION</text>
+      {/* Right-aligned, inline with the row of buttons on its own side (percentage x resolves
+          against the SVG's own rendered width, so this holds under the plain editor pane AND
+          the CSS-scaled Docs sheet); dominantBaseline centers it on that row regardless of
+          font metrics. Live editor pane: nothing else sits top-right, so it sits flush
+          against the edge, level with the top-left view chip (measured center ~19px).
+          Docs slide view: the "Edit view"/"Reset"+"Save view" cluster (top:10, 27px tall,
+          up to 166px wide) occupies that same top-right corner, so the label instead sits to
+          its left, still on the same row (measured cluster center ~24px; 190px clears even
+          the widest Reset+Save state with margin). */}
+      <text x="100%" dx={readonly ? -190 : -10} y={readonly ? 24 : 19} dominantBaseline="central" textAnchor="end" fontSize={10} fontWeight={700} fill={T.textMuted} fontFamily="inherit" style={{ letterSpacing: "0.08em" }}>{dir.toUpperCase()} ELEVATION</text>
     </svg>
     {/* Inline label editor — same in-canvas flow as the plan (Enter commits, Esc cancels,
         empty text deletes); replaces window.prompt, which embedded browsers block. */}

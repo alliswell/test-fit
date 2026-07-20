@@ -283,6 +283,58 @@ describe("migrateProjectData — the persistence seam", () => {
     expect(m.docSettings).toEqual({ size: "letter", orientation: "landscape" });
   });
 
+  it("docs (v14): parentId round-trips; bad refs cleared; children regroup after parents", () => {
+    const m = migrateProjectData({ slides: [
+      { id: "x", view: "plan", parentId: "a" },        // child listed before parent → regrouped
+      { id: "a", view: "plan" },
+      { id: "q", view: "plan", parentId: "missing" },  // orphan → top level
+    ] });
+    expect(m.slides.map(s => s.id)).toEqual(["a", "x", "q"]);
+    expect(m.slides[1].parentId).toBe("a");
+    expect(m.slides[2].parentId).toBeNull();
+  });
+
+  it("docs (v12/v13): budget + ffe data slides pass the view whitelist", () => {
+    const m = migrateProjectData({ slides: [{ id: "b1", view: "budget", rect: null, cam3d: null }, { id: "f1", view: "ffe" }] });
+    expect(m.slides).toHaveLength(2);
+    expect(m.slides[0]).toMatchObject({ view: "budget", rect: null, cam3d: null });
+    expect(m.slides[1]).toMatchObject({ view: "ffe", rect: null, cam3d: null });
+  });
+
+  it("docs (v15): title section slide round-trips subtitle + persisted collapsed state", () => {
+    const m = migrateProjectData({ slides: [
+      { id: "t1", view: "title", title: "Level 2", subtitle: "Tenant Improvements", collapsed: true },
+      { id: "p1", view: "plan", parentId: "t1" },
+    ] });
+    expect(m.slides[0]).toMatchObject({ view: "title", title: "Level 2", subtitle: "Tenant Improvements", collapsed: true });
+    expect(m.slides[1].parentId).toBe("t1"); // a real slide nests under the section
+    // non-string subtitle → ""; collapsed defaults to false and only true persists as true
+    expect(migrateProjectData({ slides: [{ id: "t2", view: "title", subtitle: 42 }] }).slides[0].subtitle).toBe("");
+    expect(migrateProjectData({ slides: [{ id: "t3", view: "title" }] }).slides[0].collapsed).toBe(false);
+    expect(migrateProjectData({ slides: [{ id: "t4", view: "title", collapsed: "yes" }] }).slides[0].collapsed).toBe(false);
+  });
+
+  it("elevation dims (v16): tagged dims scope to their cut; legacy untagged dims are dropped", () => {
+    const m = migrateProjectData({ elevAnnotations: { front: {
+      dims: [
+        { id: "d1", x1: 0, y1: 0, x2: 100, y2: 0, offset: 10, cut: 700 }, // tagged → kept
+        { id: "d2", x1: 0, y1: 0, x2: 50, y2: 0, offset: 10, cut: null }, // no-cut view → kept
+        { id: "d3", x1: 0, y1: 0, x2: 30, y2: 0, offset: 10 },            // legacy untagged → dropped
+      ],
+      labels: [{ id: "l1", x: 5, y: 5, text: "keep" }],
+    } } });
+    const front = m.elevAnnotations.front;
+    expect(front.dims.map(d => d.id)).toEqual(["d1", "d2"]);
+    expect(front.labels).toHaveLength(1); // labels pass through untouched
+  });
+
+  it("docs (v11): preserves an explicit per-slide layer visibility object", () => {
+    const m = migrateProjectData({ slides: [{ id: "s1", view: "plan", vis: { dims: false, elec: true } }] });
+    expect(m.slides[0].vis).toEqual({ dims: false, elec: true });
+    // non-object vis coerced to null (inherit)
+    expect(migrateProjectData({ slides: [{ id: "s2", view: "plan", vis: "nope" }] }).slides[0].vis).toBeNull();
+  });
+
   it("docs (v10): round-trips a populated slide and sanitizes junk", () => {
     const good = {
       id: "s1", name: "Plan 01", view: "plan", rect: { x: 0, y: 0, w: 400, h: 300 },
@@ -296,6 +348,7 @@ describe("migrateProjectData — the persistence seam", () => {
     });
     expect(m.slides).toHaveLength(2); // invalid view + junk dropped
     expect(m.slides[0]).toMatchObject(good);
+    expect(m.slides[0].vis).toBeNull(); // v11: missing vis → inherit
     expect(m.slides[1]).toMatchObject({ view: "3d", rect: null, cam3d: { style3d: "detailed" }, image: "data:image/jpeg;base64,x" });
     expect(typeof m.slides[1].ts).toBe("number");
     // invalid enums normalized

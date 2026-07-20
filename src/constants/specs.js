@@ -75,6 +75,16 @@ export const DOOR_KNOB_HEIGHT_IN = 38; // knob/lever centerline AFF, used in ele
 export const WINDOW_WIDTHS = [24, 36, 48, 60];
 export const WINDOW_TYPES = ["Window", "Cut Opening"];
 
+// ── Construction unit costs ──────────────────────────────────────────────────
+// Net-new / spec'd built items that roll into the budget. Existing walls carry no
+// cost (they're there already); Case Opening / Cut Opening are just framed openings.
+export const WALL_COST_PER_FT = { existing: 0, demo: 12, new: 95, pony: 65 };
+export const DOOR_COST = { "Wood": 850, "Glass": 1650, "Metal": 1200, "Case Opening": 350 };
+export const WINDOW_COST = { "Window": 780, "Cut Opening": 220 };
+// Doors, windows, and columns count toward the budget only when flagged `isNew` — an
+// unflagged item is part of the as-built plan and priced at $0. New columns are a flat each.
+export const COLUMN_COST = 1200;
+
 export const FLOW_PATH_COLORS = ["#4A90D9", "#2BB3A3", "#E0A030", "#9B6BD6"]; // blue, teal, amber, violet
 
 // Drag types where proximity-hover preview should stay live (so nearby snap

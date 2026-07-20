@@ -312,7 +312,7 @@ export function useCanvasEvents(ctx) {
       const nid = uid();
       const snap = snapToWall(pos.x, pos.y);
       const dx = snap ? snap.x : sx, dy = snap ? snap.y : sy, da = snap ? snap.angle : 0;
-      setDoors(p => [...p, { id: nid, x: dx, y: dy, angle: da, width: doorWidth, flipped: doorFlipped, hingeRight: doorHingeRight, doorType, phase: activePhase }]);
+      setDoors(p => [...p, { id: nid, x: dx, y: dy, angle: da, width: doorWidth, flipped: doorFlipped, hingeRight: doorHingeRight, doorType, isNew: false, phase: activePhase }]);
       if (e.shiftKey) { setSelectedId(null); setSelType(null); } else { setSelectedId(nid); setSelType("door"); setTool("select"); setGhostPos(null); }
       return;
     }
@@ -320,13 +320,13 @@ export function useCanvasEvents(ctx) {
       const nid = uid();
       const snap = snapToWall(pos.x, pos.y);
       const wx = snap ? snap.x : sx, wy = snap ? snap.y : sy, wa2 = snap ? snap.angle : 0;
-      setWindows(p => [...p, { id: nid, x: wx, y: wy, angle: wa2, width: windowWidth, height: windowHeight, sill: windowSill, type: windowType, phase: activePhase }]);
+      setWindows(p => [...p, { id: nid, x: wx, y: wy, angle: wa2, width: windowWidth, height: windowHeight, sill: windowSill, type: windowType, isNew: false, phase: activePhase }]);
       if (e.shiftKey) { setSelectedId(null); setSelType(null); } else { setSelectedId(nid); setSelType("window"); setTool("select"); setGhostPos(null); }
       return;
     }
     if (tool === "column") {
       const nid = uid();
-      setColumns(p => [...p, { id: nid, x: sx, y: sy, size: columnSize, shape: columnShape, label: columnLabel, notes: columnNotes, phase: activePhase }]);
+      setColumns(p => [...p, { id: nid, x: sx, y: sy, size: columnSize, shape: columnShape, label: columnLabel, notes: columnNotes, isNew: false, phase: activePhase }]);
       if (e.shiftKey) { setSelectedId(null); setSelType(null); } else { setSelectedId(nid); setSelType("column"); setTool("select"); setGhostPos(null); }
       return;
     }

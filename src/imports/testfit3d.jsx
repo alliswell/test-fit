@@ -19,6 +19,21 @@ const WALL_KINDS = {
   pony:     { label: "Pony",     color: "#C8A060", thickness: 4   },
 };
 
+// Blend a hex color toward white by t∈[0,1]. Clay-mode walls render a lighter tone than
+// their saturated drafting kind color (which xray still uses at low opacity) — pale,
+// unpainted-drywall existing walls, while keeping the demo/new/pony hues distinguishable
+// as soft tints. Paired with a matching `emissive` on the wall material (below): under
+// clay's lighting (ambientLight 0.65 + one directional 0.9), pure Lambert shading caps
+// shaded/side faces at ~65% of this color regardless of how light it is — emissive adds
+// a light-independent floor so those faces read pale too, while lit faces (diffuse +
+// emissive) stay brighter, preserving the per-face shading that gives the massing depth.
+const lightenHex = (hex, t) => {
+  const n = parseInt(hex.slice(1), 16), r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
+  const m = (v) => Math.round(v + (255 - v) * t);
+  return "#" + [m(r), m(g), m(b)].map((v) => v.toString(16).padStart(2, "0")).join("");
+};
+const CLAY_WALL_LIGHTEN = 0.6;
+
 // Per-material PBR specs used in detailed-mode rendering. Drafting kind colors
 // (existing/demo/new/pony) drive the look in clay/xray; in detailed mode the
 // material's realistic color/roughness wins so walls read as their built finish.
@@ -430,19 +445,42 @@ function WallBox({ lenFt, heightFt, thickFt, yCenter, offsetFt = 0, color, mater
     return g;
   }, [lenFt, heightFt, thickFt, tileFt]);
   useEffect(() => () => geo.dispose(), [geo]);
+  // Demo walls (clay/detailed) draw in TWO passes so the whole demo run blends exactly
+  // once per pixel: adjacent demo walls overlap at mitered corners, and stacking two 50%
+  // reds there rendered darker "pillars". Pass 1 (renderOrder 10) writes only DEPTH —
+  // after all opaque geometry, so anything solid in front still wins and demo volumes
+  // hidden inside opaque walls never register. Pass 2 (renderOrder 11) blends color only
+  // where the depth is EQUAL to that nearest-demo-surface, so overlapping boxes can't
+  // double-blend. Both passes share `geo` + transform → bit-identical depths.
+  const demoUnion = isDemo && style3d !== "xray";
   return (
     <group position={[offsetFt, yCenter, 0]}>
+      {demoUnion && (
+        <mesh key={style3d + "-demoprep"} geometry={geo} renderOrder={10} userData={{ noAutoShadow: true }}>
+          <meshBasicMaterial transparent colorWrite={false} depthWrite />
+        </mesh>
+      )}
       <mesh
-        key={style3d}
+        key={style3d + (demoUnion ? "-demo" : "")}
         geometry={geo}
+        renderOrder={demoUnion ? 11 : undefined}
         onClick={interactive ? (e => { e.stopPropagation(); onSelect(wallId, "wall"); }) : undefined}
         onPointerOver={interactive ? (e => { e.stopPropagation(); setHov(true); }) : undefined}
         onPointerOut={interactive ? (() => setHov(false)) : undefined}
-        castShadow={style3d === "detailed"}
-        receiveShadow={style3d === "detailed"}
+        castShadow={style3d === "detailed" && !isDemo}
+        receiveShadow={style3d === "detailed" && !isDemo}
+        userData={isDemo ? { noAutoShadow: true } : undefined}
       >
-        {style3d === "xray"    && <meshBasicMaterial    color={c} transparent opacity={hov ? 0.25 : 0.08} depthWrite={false} />}
-        {style3d === "detailed"&& <meshStandardMaterial
+        {/* Unlit (basic) on purpose: with lambert, the corner column's nearest face is a
+            brighter-lit end cap, so the junction still read as a distinct lighter pillar.
+            Flat color → every face of the union blends identically; the red WallEdges
+            outline carries the form. */}
+        {demoUnion && <meshBasicMaterial
+          color={(interactive && hov) ? "#ffffff" : color}
+          transparent opacity={hov ? 0.7 : 0.4}
+          depthWrite={false} depthFunc={THREE.EqualDepth} />}
+        {!demoUnion && style3d === "xray" && <meshBasicMaterial color={c} transparent opacity={hov ? 0.25 : 0.08} depthWrite={false} />}
+        {!demoUnion && style3d === "detailed" && <meshStandardMaterial
           color={interactive && hov ? "#ffffff" : (tex ? "#ffffff" : detailedColor)}
           roughness={detailedRough}
           metalness={detailedMetal}
@@ -450,10 +488,19 @@ function WallBox({ lenFt, heightFt, thickFt, yCenter, offsetFt = 0, color, mater
           map={tex?.map}
           bumpMap={tex?.bumpMap}
           bumpScale={tex?.bumpScale}
-          transparent={isDemo}
-          opacity={isDemo ? 0.5 : 1}
         />}
-        {style3d === "clay"    && <meshLambertMaterial  color={c} transparent={isDemo || hov} opacity={isDemo ? 0.5 : hov ? 0.85 : 1} />}
+        {!demoUnion && style3d === "clay" && (() => {
+          const claySelf = lightenHex(color, CLAY_WALL_LIGHTEN);
+          // emissive adds a light-independent floor so shaded/side faces (capped at the
+          // scene's ~0.65 ambient under pure Lambert) still read pale — closer to how real
+          // matte gypsum board bounces ambient light — while the lit faces (diffuse + this)
+          // stay brighter still, keeping the per-face shading that gives the massing depth.
+          return <meshLambertMaterial
+            color={(interactive && hov) ? "#ffffff" : claySelf}
+            emissive={(interactive && hov) ? "#000000" : claySelf}
+            emissiveIntensity={0.4}
+            transparent={hov} opacity={hov ? 0.85 : 1} />;
+        })()}
       </mesh>
       {style3d === "xray" && edges && <WallEdges w={lenFt} h={heightFt} d={thickFt} color={color} />}
       {isSelected && <BoxGlow w={lenFt} h={heightFt} d={thickFt} />}
@@ -750,6 +797,28 @@ function Wall3D({ w, nodes, walls = [], doors, windows, cx, cz, pxPerFoot, ceili
     return result;
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [w, doors, windows, x1, y1, dx, dy, wLen, pxPerFoot]);
+
+  // Demo walls: the whole assembly — wall AND any doors/windows in it — is coming out,
+  // so render ONE continuous translucent red volume with a crisp red outline instead of
+  // segmenting around openings. (Otherwise the door leaf/casing/window frame render as
+  // solid finished pieces standing inside a ghost wall, which reads as "these stay" —
+  // exactly backwards.) Same treatment in clay/detailed/xray so demo scope is always
+  // unmistakable, full height.
+  if (w.kind === "demo") {
+    const segLenFt = wallLenFt + extStartTotal + extEndTotal;
+    const offsetFt = -extStartTotal / 2 + extEndTotal / 2;
+    return (
+      <group position={[midX, 0, midZ]} rotation={[0, -angle, 0]}>
+        <WallBox lenFt={segLenFt} heightFt={heightFt} thickFt={thickFt} yCenter={heightFt / 2} offsetFt={offsetFt} color={wk.color} material={w.material} wallId={w.id} onSelect={onSelect} isDemo isSelected={wallSel && interactive} style3d={style3d} interactive={interactive} edges={false} />
+        <group position={[offsetFt, heightFt / 2, 0]}><WallEdges w={segLenFt} h={heightFt} d={thickFt} color={wk.color} /></group>
+        {showDims && wallLenFt > 0.5 && (
+          <Billboard position={[0, heightFt + 0.3, 0]}>
+            <Text fontSize={0.28} color="#9A9488" anchorX="center" anchorY="middle" outlineWidth={0.025} outlineColor="#000000">{ftFmtDirect(wallLenFt)}</Text>
+          </Billboard>
+        )}
+      </group>
+    );
+  }
 
   return (
     <group position={[midX, 0, midZ]} rotation={[0, -angle, 0]}>

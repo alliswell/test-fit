@@ -122,3 +122,56 @@ export function traceOuterBoundary(nodes, walls) {
   }
   return null;
 }
+
+// ─── Clear-inside floor outline ──────────────────────────────────────────────
+// Inset a floor polygon (points on wall CENTERLINES, e.g. the rect-room auto floor)
+// to the clear inside-face outline: each edge that has a wall running along it moves
+// inward by that wall's half-thickness; edges with no wall stay put. Corners re-close
+// by intersecting the shifted neighbor edges (miter), so the result is the polygon a
+// tape measure would find between finished wall faces.
+// halfTOf(wall) → half-thickness in px (kind/pony-aware; supplied by the caller so
+// this stays free of theme/scale constants). Returns a NEW points array.
+export function insetFloorPolygon(points, walls, nodes, halfTOf, tol = 1.5) {
+  const n = points?.length || 0;
+  if (n < 3) return points || [];
+  const nodeMap = new Map((nodes || []).map(nd => [nd.id, nd]));
+  // Signed shoelace sum decides which perpendicular points into the room: for a>0 the
+  // left normal (-dy,dx) faces inward (screen coords, y down); for a<0 it's flipped.
+  let a = 0;
+  for (let i = 0; i < n; i++) { const j = (i + 1) % n; a += points[i].x * points[j].y - points[j].x * points[i].y; }
+  const inSign = a > 0 ? 1 : -1;
+
+  const edges = points.map((p, i) => {
+    const q = points[(i + 1) % n];
+    const dx = q.x - p.x, dy = q.y - p.y, len = Math.hypot(dx, dy) || 1;
+    const ux = dx / len, uy = dy / len;
+    const nx = -uy * inSign, ny = ux * inSign; // inward normal
+    // Largest half-thickness among walls lying along this edge (collinear + overlapping).
+    let inset = 0;
+    for (const w of walls || []) {
+      const A = nodeMap.get(w.n1), B = nodeMap.get(w.n2);
+      if (!A || !B) continue;
+      // (nx,ny) is a unit perpendicular of the edge, so |(P−p)·n̂| is P's distance to the
+      // edge's infinite line — both wall endpoints must sit on it (within tol) to count.
+      const distA = Math.abs((A.x - p.x) * nx + (A.y - p.y) * ny);
+      const distB = Math.abs((B.x - p.x) * nx + (B.y - p.y) * ny);
+      if (distA > tol || distB > tol) continue;
+      const tA = ((A.x - p.x) * ux + (A.y - p.y) * uy) / len;
+      const tB = ((B.x - p.x) * ux + (B.y - p.y) * uy) / len;
+      if (Math.min(Math.max(tA, tB), 1) - Math.max(Math.min(tA, tB), 0) < 0.05) continue; // no real overlap
+      inset = Math.max(inset, halfTOf(w) || 0);
+    }
+    return { px: p.x + nx * inset, py: p.y + ny * inset, ux, uy, inset, nx, ny };
+  });
+
+  // New vertex k = intersection of shifted edges k-1 and k; near-parallel neighbors
+  // (collinear runs) fall back to the original corner shifted by the current edge.
+  return points.map((p, k) => {
+    const e0 = edges[(k - 1 + n) % n], e1 = edges[k];
+    const den = e0.ux * e1.uy - e0.uy * e1.ux;
+    if (Math.abs(den) < 0.001) return { x: p.x + e1.nx * e1.inset, y: p.y + e1.ny * e1.inset };
+    const t = ((e1.px - e0.px) * e1.uy - (e1.py - e0.py) * e1.ux) / den;
+    if (!Number.isFinite(t) || Math.abs(t) > 1e5) return { x: p.x + e1.nx * e1.inset, y: p.y + e1.ny * e1.inset };
+    return { x: e0.px + e0.ux * t, y: e0.py + e0.uy * t };
+  });
+}

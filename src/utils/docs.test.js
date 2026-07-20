@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { sheetDims, sheetInches, sheetBodyDims, fitRectToViewport, defaultSlideName, formatSheetNo, viewTitle, fitStandardScale, scaledRectCam, STANDARD_SCALES } from "./docs";
+import { sheetDims, sheetInches, sheetBodyDims, fitRectToViewport, defaultSlideName, formatSheetNo, viewTitle, fitStandardScale, scaledRectCam, STANDARD_SCALES, SLIDE_LAYER_DEFS, DEFAULT_SLIDE_VIS, SLIDE_VIS_PRESETS, resolveSlideVis, matchSlidePreset, dropSlideList, sanitizeSlideTree } from "./docs";
 
 describe("sheetDims", () => {
   it("all four size × orientation combos", () => {
@@ -77,11 +77,94 @@ describe("standard scales", () => {
   });
 });
 
+describe("per-slide layer visibility", () => {
+  it("resolveSlideVis: null inherits (returns null); object merges over defaults", () => {
+    expect(resolveSlideVis(null)).toBeNull();
+    const r = resolveSlideVis({ dims: false, elec: true });
+    expect(r.dims).toBe(false);        // explicit override
+    expect(r.elec).toBe(true);
+    expect(r.zones).toBe(DEFAULT_SLIDE_VIS.zones); // untouched key falls back to default
+    // every layer key present
+    expect(Object.keys(r).sort()).toEqual(SLIDE_LAYER_DEFS.map(d => d.key).sort());
+  });
+  it("defaults: grid + elevation rulers off, everything else on", () => {
+    expect(DEFAULT_SLIDE_VIS.grid).toBe(false);
+    expect(DEFAULT_SLIDE_VIS.guides).toBe(false);
+    expect(DEFAULT_SLIDE_VIS.zones).toBe(true);
+    expect(DEFAULT_SLIDE_VIS.elec).toBe(true);
+  });
+  it("presets are complete boolean maps and cover the electrical/zone guides", () => {
+    const keys = SLIDE_LAYER_DEFS.map(d => d.key);
+    for (const p of SLIDE_VIS_PRESETS) expect(Object.keys(p.vis).sort()).toEqual([...keys].sort());
+    const elec = SLIDE_VIS_PRESETS.find(p => p.id === "electrical").vis;
+    expect(elec.elec).toBe(true); expect(elec.dims).toBe(false); expect(elec.zones).toBe(false);
+    const zoning = SLIDE_VIS_PRESETS.find(p => p.id === "zoning").vis;
+    expect(zoning.zones).toBe(true); expect(zoning.elec).toBe(false);
+  });
+  it("matchSlidePreset: null → live, exact preset → its id, custom → null", () => {
+    expect(matchSlidePreset(null)).toBe("live");
+    expect(matchSlidePreset(SLIDE_VIS_PRESETS.find(p => p.id === "electrical").vis)).toBe("electrical");
+    expect(matchSlidePreset({ ...DEFAULT_SLIDE_VIS, dims: false, zones: false })).toBeNull();
+  });
+});
+
+describe("deck ordering + nesting", () => {
+  const S = (id, parentId = null) => ({ id, parentId });
+  const order = (a) => a.map(s => s.id + (s.parentId ? "<" + s.parentId : "")).join(",");
+
+  it("reorders a top-level slide before/after another", () => {
+    const list = [S("a"), S("b"), S("c")];
+    expect(order(dropSlideList(list, "c", "a", "before"))).toBe("c,a,b");
+    expect(order(dropSlideList(list, "a", "c", "after"))).toBe("b,c,a");
+  });
+  it("nests a slide into a top-level target (end of its group)", () => {
+    const list = [S("a"), S("x", "a"), S("b")];
+    expect(order(dropSlideList(list, "b", "a", "into"))).toBe("a,x<a,b<a");
+  });
+  it("into is rejected for child targets, parents-with-children, and self", () => {
+    const list = [S("a"), S("x", "a"), S("b"), S("y", "b")];
+    expect(dropSlideList(list, "b", "x", "into")).toBe(list);  // target is a child
+    expect(dropSlideList(list, "a", "b", "into")).toBe(list);  // drag has children
+    expect(dropSlideList(list, "a", "a", "into")).toBe(list);  // self
+  });
+  it("un-nests: dropping a child before/after a top-level row clears its parent", () => {
+    const list = [S("a"), S("x", "a"), S("b")];
+    expect(order(dropSlideList(list, "x", "b", "after"))).toBe("a,b,x");
+    expect(order(dropSlideList(list, "x", "a", "before"))).toBe("x,a,b");
+  });
+  it("dropping next to a child keeps the group's parent (sibling reorder)", () => {
+    const list = [S("a"), S("x", "a"), S("y", "a"), S("b")];
+    expect(order(dropSlideList(list, "y", "x", "before"))).toBe("a,y<a,x<a,b");
+    expect(order(dropSlideList(list, "b", "x", "after"))).toBe("a,x<a,b<a,y<a");
+  });
+  it("a parent drags its children with it; after a grouped target lands after the group", () => {
+    const list = [S("a"), S("x", "a"), S("b"), S("c")];
+    expect(order(dropSlideList(list, "a", "c", "after"))).toBe("b,c,a,x<a");
+    expect(order(dropSlideList(list, "c", "a", "after"))).toBe("a,x<a,c,b");
+  });
+  it("a parent dropped next to a child stays top-level relative to that group", () => {
+    const list = [S("a"), S("x", "a"), S("b"), S("y", "b"), S("z", "b")];
+    expect(order(dropSlideList(list, "a", "y", "after"))).toBe("b,y<b,z<b,a,x<a");
+  });
+  it("no-ops keep the same array identity", () => {
+    const list = [S("a"), S("b")];
+    expect(dropSlideList(list, "a", "b", "before")).toBe(list);
+    expect(dropSlideList(list, "a", "a", "after")).toBe(list);
+  });
+  it("sanitizeSlideTree drops bad parents and regroups children after parents", () => {
+    const messy = [S("x", "a"), S("a"), S("b"), S("q", "missing"), S("r", "x"), S("s", "s")];
+    const out = sanitizeSlideTree(messy);
+    expect(order(out)).toBe("a,x<a,b,q,r,s");
+  });
+});
+
 describe("naming", () => {
   it("defaultSlideName + viewTitle", () => {
     expect(defaultSlideName("plan", 0)).toBe("Plan 01");
     expect(defaultSlideName("front", 4)).toBe("Front Elevation 05");
     expect(defaultSlideName("3d", 11)).toBe("3D View 12");
+    expect(defaultSlideName("title", 2)).toBe("Section 03");
+    expect(viewTitle("title")).toBe("Section");
     expect(viewTitle("nope")).toBe("View");
   });
   it("formatSheetNo pads both sides", () => {
