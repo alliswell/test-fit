@@ -90,6 +90,19 @@ export default function ElevationView({ dir, nodes, walls, doors, windows, colum
       return cursor >= u2 - 0.5;
     };
     for (const wp of wallProj) { if (!occluded(wp.u1, wp.u2, wp.top, wp.d)) out.push(wp); }
+    // Openings attach to walls by POSITION (no wall ref), so find the host the same way
+    // the plan/3D do — project onto each wall segment and take the one it sits on. Used to
+    // mark openings that ride a demo wall: they're being removed with it.
+    const hostWallOf = (it) => {
+      for (const w of walls) {
+        const a = nodeMap.get(w.n1), b = nodeMap.get(w.n2); if (!a || !b) continue;
+        const dx = b.x - a.x, dy = b.y - a.y, L2 = dx * dx + dy * dy; if (L2 < 1) continue;
+        const t = ((it.x - a.x) * dx + (it.y - a.y) * dy) / L2;
+        if (t < -0.05 || t > 1.05) continue;
+        if (Math.hypot(it.x - (a.x + t * dx), it.y - (a.y + t * dy)) <= 8) return w;
+      }
+      return null;
+    };
     const opening = (arr, type) => {
       for (const it of arr) {
         // Project the opening's two ends ALONG its host wall (angle in degrees) so it
@@ -107,7 +120,7 @@ export default function ElevationView({ dir, nodes, walls, doors, windows, colum
         // Doors: keep the hinge end's projected u so the knob can render latch-side.
         // (Plan hinge sits at the +half end when hingeRight — see DoorSvg's hingeSide.)
         const hingeU = type === "door" ? (it.hingeRight ? e2.u : e1.u) : undefined;
-        out.push({ kind: type, id: it.id, u1, u2, d, item: it, hingeU });
+        out.push({ kind: type, id: it.id, u1, u2, d, item: it, hingeU, demo: hostWallOf(it)?.kind === "demo" });
       }
     };
     opening(doors, "door");
@@ -526,6 +539,18 @@ export default function ElevationView({ dir, nodes, walls, doors, windows, colum
       <text x={cxPos} y={topY - th / 2 - 3} textAnchor="middle" dominantBaseline="central" fontSize={6} fill="#fff" fontFamily="inherit" fontWeight={700} letterSpacing="0.6">NEW</text>
     </g>;
   };
+  // Demolition marker for walls and the openings riding them. Demo reads as: diagonal
+  // hatch + dashed red outline + a "DEMO" tag — the same language as the plan, so a wall
+  // being removed is unmistakable in elevation instead of looking like a plain wall.
+  const DEMO_COLOR = WALL_KINDS.demo.color;
+  const demoTag = (cxPos, topY, w) => {
+    if (!(w > 16)) return null;
+    const tw = 27, th = 9;
+    return <g style={{ pointerEvents: "none" }}>
+      <rect x={cxPos - tw / 2} y={topY - th - 3} width={tw} height={th} rx={2} fill={DEMO_COLOR} />
+      <text x={cxPos} y={topY - th / 2 - 3} textAnchor="middle" dominantBaseline="central" fontSize={6} fill="#fff" fontFamily="inherit" fontWeight={700} letterSpacing="0.6">DEMO</text>
+    </g>;
+  };
 
   // A dimension belongs to the section cut it was drawn under; show it only when that cut is
   // the active one (both null = the no-cut view). Legacy dims predate cut-scoping (no `cut`
@@ -543,6 +568,11 @@ export default function ElevationView({ dir, nodes, walls, doors, windows, colum
       onMouseDown={readonly ? undefined : onBgDown} onMouseMove={readonly ? undefined : onBgMove}
       onMouseLeave={readonly ? undefined : () => hoverSnap && setHoverSnap(null)} onWheel={readonly ? undefined : onWheel}
       style={{ display: "block", background: T.canvas, cursor: (tool === "dim" || tool === "label") ? "crosshair" : "grab" }}>
+      <defs>
+        <pattern id="elev-demo-hatch" patternUnits="userSpaceOnUse" width="7" height="7" patternTransform="rotate(45)">
+          <line x1="0" y1="0" x2="0" y2="7" stroke={DEMO_COLOR} strokeWidth="1" opacity="0.55" />
+        </pattern>
+      </defs>
       {/* Floor + ceiling datum lines */}
       <line x1={0} y1={floorY} x2="100%" y2={floorY} stroke={T.textMuted} strokeWidth={1} opacity={0.6} />
       <line x1={0} y1={ceilY} x2="100%" y2={ceilY} stroke={T.textMuted} strokeWidth={0.75} strokeDasharray="5 4" opacity={0.4} />
@@ -554,10 +584,13 @@ export default function ElevationView({ dir, nodes, walls, doors, windows, colum
           const a = toScreen(it.u1, 0), b = toScreen(it.u2, it.top);
           const x = Math.min(a.x, b.x), y = Math.min(a.y, b.y), w = Math.abs(b.x - a.x), h = Math.abs(a.y - b.y);
           const on = isSel(it.id, "wall");
-          return <rect key={"w" + it.id + i} data-testid={"elev-wall-" + it.id} x={x} y={y} width={w} height={h}
-            fill={it.demo ? "none" : it.color + "55"} stroke={on ? T.accent : it.color}
-            strokeWidth={on ? 2 : 1} strokeDasharray={it.dash || "none"}
-            onClick={sel(it.id, "wall")} style={{ cursor: "pointer" }} />;
+          return <g key={"w" + it.id + i}>
+            <rect data-testid={"elev-wall-" + it.id} x={x} y={y} width={w} height={h}
+              fill={it.demo ? "url(#elev-demo-hatch)" : it.color + "55"} stroke={on ? T.accent : it.color}
+              strokeWidth={on ? 2 : it.demo ? 1.5 : 1} strokeDasharray={it.dash || "none"}
+              onClick={sel(it.id, "wall")} style={{ cursor: "pointer" }} />
+            {it.demo && demoTag(x + w / 2, y, w)}
+          </g>;
         }
         if (it.kind === "window") {
           const sill = it.item.sill ?? 30, hgt = it.item.height ?? 48;
@@ -566,11 +599,14 @@ export default function ElevationView({ dir, nodes, walls, doors, windows, colum
           const on = isSel(it.id, "window");
           const nu = !!it.item.isNew;
           const wst = WINDOW_TYPE_STYLES[it.item.type] || WINDOW_TYPE_STYLES.Window;
+          // On a demo wall the window goes with it — dashed red + DEMO tag, no glass fill.
           return <g key={"win" + it.id + i} onClick={sel(it.id, "window")} style={{ cursor: "pointer" }}>
-            <rect x={x} y={y} width={w} height={h} fill={wst.fill ?? "transparent"}
-              stroke={on ? T.accent : wst.stroke} strokeWidth={on ? 2 : nu ? 1.9 : 1.2} strokeDasharray={wst.dash || "none"} />
-            {wst.glassTick && <line x1={x} y1={y} x2={x + w} y2={y + h} stroke={wst.stroke} strokeWidth={0.6} opacity={0.6} style={{ pointerEvents: "none" }} />}
-            {nu && newTag(x + w / 2, y, w)}
+            <rect x={x} y={y} width={w} height={h} fill={it.demo ? "url(#elev-demo-hatch)" : (wst.fill ?? "transparent")}
+              stroke={on ? T.accent : it.demo ? DEMO_COLOR : wst.stroke}
+              strokeWidth={on ? 2 : it.demo || nu ? 1.9 : 1.2}
+              strokeDasharray={it.demo ? "6 3" : (wst.dash || "none")} />
+            {wst.glassTick && !it.demo && <line x1={x} y1={y} x2={x + w} y2={y + h} stroke={wst.stroke} strokeWidth={0.6} opacity={0.6} style={{ pointerEvents: "none" }} />}
+            {it.demo ? demoTag(x + w / 2, y, w) : nu && newTag(x + w / 2, y, w)}
           </g>;
         }
         if (it.kind === "door") {
@@ -579,18 +615,22 @@ export default function ElevationView({ dir, nodes, walls, doors, windows, colum
           const on = isSel(it.id, "door");
           const nu = !!it.item.isNew;
           const st = DOOR_TYPE_STYLES[it.item.doorType] || DOOR_TYPE_STYLES.Wood;
-          const stroke = on ? T.accent : st.elev.stroke;
+          const stroke = on ? T.accent : it.demo ? DEMO_COLOR : st.elev.stroke;
+          // A door on a demo wall is being removed with it: dashed red + hatch + DEMO tag,
+          // and the finished-door detailing (panels, lites, knob) is dropped so it never
+          // reads as a door that stays.
           return <g key={"d" + it.id + i} onClick={sel(it.id, "door")} style={{ cursor: "pointer" }}>
-            <rect x={x} y={y} width={w} height={h} fill={st.elev.fill ?? "transparent"}
-              stroke={stroke} strokeWidth={on ? 2 : nu ? 1.9 : 1.2} strokeDasharray={st.elev.dash || "none"} />
-            {nu && newTag(x + w / 2, y, w)}
+            <rect x={x} y={y} width={w} height={h} fill={it.demo ? "url(#elev-demo-hatch)" : (st.elev.fill ?? "transparent")}
+              stroke={stroke} strokeWidth={on ? 2 : it.demo || nu ? 1.9 : 1.2}
+              strokeDasharray={it.demo ? "6 3" : (st.elev.dash || "none")} />
+            {it.demo ? demoTag(x + w / 2, y, w) : nu && newTag(x + w / 2, y, w)}
             {/* Wood: classic 2-panel symbol; guards keep zoomed-out doors clean */}
-            {st.elev.panels && w > 10 && h > 24 && <g style={{ pointerEvents: "none" }}>
+            {st.elev.panels && !it.demo && w > 10 && h > 24 && <g style={{ pointerEvents: "none" }}>
               <rect x={x + w * 0.18} y={y + h * 0.10} width={w * 0.64} height={h * 0.34} fill="none" stroke={stroke} strokeWidth={0.8} opacity={0.65} />
               <rect x={x + w * 0.18} y={y + h * 0.52} width={w * 0.64} height={h * 0.38} fill="none" stroke={stroke} strokeWidth={0.8} opacity={0.65} />
             </g>}
             {/* Glass: narrow frame + full glazed lite, same glass language as windows */}
-            {st.elev.lite === "full" && w > 8 && h > 16 && (() => {
+            {st.elev.lite === "full" && !it.demo && w > 8 && h > 16 && (() => {
               const fx = x + w * 0.10, fy = y + h * 0.06, fw = w * 0.80, fh = h * 0.88;
               return <g style={{ pointerEvents: "none" }}>
                 <rect x={fx} y={fy} width={fw} height={fh} fill="#7FB4D633" stroke="#60A0C8" strokeWidth={0.8} />
@@ -598,11 +638,11 @@ export default function ElevationView({ dir, nodes, walls, doors, windows, colum
               </g>;
             })()}
             {/* Metal: small vision lite in the upper third */}
-            {st.elev.lite === "vision" && w > 14 && h > 30 &&
+            {st.elev.lite === "vision" && !it.demo && w > 14 && h > 30 &&
               <rect x={x + w * 0.32} y={y + h * 0.12} width={w * 0.36} height={h * 0.20}
                 fill="#7FB4D633" stroke="#60A0C8" strokeWidth={0.7} style={{ pointerEvents: "none" }} />}
             {/* Knob dot, latch side (opposite the hinge) at knob height */}
-            {st.elev.knob && w > 8 && h > 16 && (() => {
+            {st.elev.knob && !it.demo && w > 8 && h > 16 && (() => {
               const hingeLeft = it.hingeU != null && Math.abs(it.hingeU - it.u1) < Math.abs(it.hingeU - it.u2);
               const kx = hingeLeft ? x + w * 0.88 : x + w * 0.12;
               const ky = toScreen(0, vAt(DOOR_KNOB_HEIGHT_IN)).y;

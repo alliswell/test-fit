@@ -434,6 +434,80 @@ test("elevation: a door flagged New construction shows a NEW tag", async ({ page
   await expect(elev).toContainText("NEW");
 });
 
+test("isometric view: locked ortho corners, and saves as an iso slide", async ({ page }) => {
+  const seed = {
+    version: "testfit-v16", pxPerFoot: 20,
+    nodes: [
+      { id: "a", x: 380, y: 280 }, { id: "b", x: 820, y: 280 },
+      { id: "c", x: 820, y: 580 }, { id: "d", x: 380, y: 580 },
+    ],
+    walls: [
+      { id: "w1", n1: "a", n2: "b", kind: "existing" }, { id: "w2", n1: "b", n2: "c", kind: "existing" },
+      { id: "w3", n1: "c", n2: "d", kind: "existing" }, { id: "w4", n1: "d", n2: "a", kind: "existing" },
+    ],
+  };
+  await page.addInitScript((s) => localStorage.setItem("testfit-autosave", JSON.stringify(s)), seed);
+  await page.goto("/");
+  await page.getByRole("button", { name: "◫", exact: true }).click();
+  await page.locator("select").last().selectOption("iso");
+  await page.waitForTimeout(1500);
+
+  // Rotate arrows swing 90° per press through ne→se→sw→nw; start is "se".
+  await expect(page.getByTestId("iso-rot-left")).toBeVisible();
+  await expect(page.getByTestId("iso-fit")).toBeVisible();
+  await page.getByTestId("iso-rot-right").click();   // se → sw
+  await page.getByTestId("iso-rot-right").click();   // sw → nw
+  await page.waitForTimeout(300);
+
+  // Saving records an "iso" slide carrying the viewing corner.
+  await page.getByTestId("save-to-docs-1").click();
+  await page.waitForFunction(() => (JSON.parse(localStorage.getItem("testfit-autosave") || "{}").slides || []).length > 0, null, { timeout: 5000 });
+  let slides = await page.evaluate(() => JSON.parse(localStorage.getItem("testfit-autosave") || "{}").slides || []);
+  expect(slides[0].view).toBe("iso");
+  expect(slides[0].cam3d.isoCorner).toBe("nw");
+
+  // The snapshot must carry the ORTHOGRAPHIC zoom: an ortho camera's position doesn't set
+  // the image scale, so without it the slide silently re-fit to the whole building.
+  const box = await page.locator("canvas").first().boundingBox();
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  for (let i = 0; i < 12; i++) { await page.mouse.wheel(0, -120); await page.waitForTimeout(60); }
+  await page.waitForTimeout(300);
+  await page.getByTestId("save-to-docs-1").click();
+  await page.waitForFunction(() => (JSON.parse(localStorage.getItem("testfit-autosave") || "{}").slides || []).length > 1, null, { timeout: 5000 });
+  slides = await page.evaluate(() => JSON.parse(localStorage.getItem("testfit-autosave") || "{}").slides || []);
+  expect(slides[1].cam3d.zoom).toBeGreaterThan(slides[0].cam3d.zoom * 1.2); // zoomed-in framing preserved
+});
+
+test("demo wall keeps its openings in 3D and tags them DEMO in elevation", async ({ page }) => {
+  // A demo wall carrying a door + window. The openings must survive as real cuts in 3D
+  // (they used to be swallowed by the uncut red mass) and read as demo in elevation.
+  const seed = {
+    version: "testfit-v16", pxPerFoot: 20,
+    nodes: [
+      { id: "a", x: 380, y: 300 }, { id: "b", x: 800, y: 300 },
+      { id: "c", x: 800, y: 560 }, { id: "d", x: 380, y: 560 },
+    ],
+    walls: [
+      { id: "wTop", n1: "a", n2: "b", kind: "existing" },
+      { id: "wRight", n1: "b", n2: "c", kind: "existing" },
+      { id: "wFront", n1: "c", n2: "d", kind: "demo" },
+      { id: "wLeft", n1: "d", n2: "a", kind: "existing" },
+    ],
+    doors: [{ id: "dDemo", x: 500, y: 560, angle: 0, width: 36, doorType: "Wood", phase: "existing" }],
+    windows: [{ id: "wDemo", x: 700, y: 560, angle: 0, width: 48, height: 48, sill: 30, type: "Window", phase: "existing" }],
+  };
+  await page.addInitScript((s) => localStorage.setItem("testfit-autosave", JSON.stringify(s)), seed);
+  await page.goto("/");
+  await page.waitForTimeout(300);
+
+  await page.getByRole("button", { name: "◫", exact: true }).click();
+  await page.locator("select").filter({ has: page.locator('option[value="front"]') }).first().selectOption("front");
+  const elev = page.locator("svg").filter({ hasText: "FRONT ELEVATION" });
+  await expect(elev).toBeVisible();
+  // Wall + door + window on the demo wall each carry a DEMO tag.
+  await expect(elev.getByText("DEMO", { exact: true })).toHaveCount(3);
+});
+
 test("elevation dims scope to the section cut: only the active cut's measurements show", async ({ page }) => {
   // Seed a wall + a front section cut at 700 + two dims: one tied to that cut, one to the
   // no-cut view. Only the cut-700 dim should render while the 700 cut is active.

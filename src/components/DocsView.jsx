@@ -16,6 +16,7 @@ import { Printer, Trash2, PencilRuler, Type, MousePointer2, Eye, EyeOff, Plus, Z
 
 const TITLE_H = SHEET_TITLE_H;   // title-block strip height (sheet-logical px)
 const BODY_PAD = SHEET_BODY_PAD; // margin around the drawing area
+const NOTE_EDIT_W = 220, NOTE_EDIT_H = 54; // note textarea, centered on the note anchor
 
 // Shared drafting title block — editable in the Docs editor, static for print.
 // autoScale: the computed true print scale (plan/elevation slides render AT this scale);
@@ -53,8 +54,8 @@ function TitleBlock({ slide, idx, total, T, font, display, projectName, editable
 // Print deck: every slide as a full-logical-size sheet, one per page. Mounted (by the
 // parent) only while printing; @media print swaps the app root for this. Always Vellum
 // (light), regardless of the app's theme — dark colors would print wrong.
-export function PrintDeck({ slides, docSettings, T: _appT, font, display, projectName, renderSlideBody, autoScaleFor = null }) {
-  const T = THEMES.light;
+export function PrintDeck({ slides, docSettings, T: _appT, sheetTheme = null, font, display, projectName, renderSlideBody, autoScaleFor = null }) {
+  const T = sheetTheme || THEMES.light;
   const sheet = sheetDims(docSettings);
   const bodyW = sheet.w - BODY_PAD * 2, bodyH = sheet.h - TITLE_H - BODY_PAD * 2;
   return (
@@ -76,17 +77,144 @@ export function PrintDeck({ slides, docSettings, T: _appT, font, display, projec
   );
 }
 
-export default function DocsView({
-  T, font, display, projectName,
-  slides, docSettings, activeSlideId,
-  onSelectSlide, onUpdateSlide, onDeleteSlide, onDropSlide, onUpdateSettings,
-  onEditModel, renderSlideBody, onPrint, captureRef, autoScaleFor = null, onAddTemplate = null,
-}) {
+// ─── Deck strip ──────────────────────────────────────────────────────────────
+// The slide list (add-template + reorderable/nestable rows). Lives in the app's left
+// sidebar in Docs mode; owns its own drag/drop + template-menu state so it can render
+// anywhere without lifting that state into the parent.
+export function DeckStrip({ slides, activeSlideId, T, font, onSelectSlide, onUpdateSlide, onDeleteSlide, onDropSlide, onAddTemplate = null }) {
   const [templateMenuOpen, setTemplateMenuOpen] = useState(false);
+  const [deckDrag, setDeckDrag] = useState(null);   // { id, startY, moved }
+  const [dropHint, setDropHint] = useState(null);   // { id, zone: "before"|"after"|"into" | null }
+  const rowZone = (e, row, dragId) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    const t = (e.clientY - r.top) / r.height;
+    // A section/title slide is always top-level: it never nests, and it can't land among
+    // another section's children, so only offer before/after on other top-level rows.
+    const drag = slides.find(x => x.id === dragId);
+    if (drag?.view === "title") return row.parentId ? null : (t < 0.5 ? "before" : "after");
+    const dragHasKids = slides.some(x => x.parentId === dragId);
+    const canNest = !row.parentId && !dragHasKids && row.id !== dragId;
+    if (canNest && t > 0.3 && t < 0.7) return "into";
+    return t < 0.5 ? "before" : "after";
+  };
+  useEffect(() => {
+    if (!deckDrag) return;
+    const mv = (e) => setDeckDrag(d => d && !d.moved && Math.abs(e.clientY - d.startY) > 4 ? { ...d, moved: true } : d);
+    const up = () => {
+      setDeckDrag(d => {
+        setDropHint(h => {
+          if (d?.moved && h) {
+            onDropSlide?.(d.id, h.id, h.zone);
+            if (h.zone === "into") onUpdateSlide?.(h.id, { collapsed: false }); // reveal the slide just nested
+          } else if (d && !d.moved) onSelectSlide(d.id);
+          return null;
+        });
+        return null;
+      });
+    };
+    window.addEventListener("mousemove", mv);
+    window.addEventListener("mouseup", up);
+    return () => { window.removeEventListener("mousemove", mv); window.removeEventListener("mouseup", up); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deckDrag?.id]);
+
+  const activeId = slides.find(s => s.id === activeSlideId) ? activeSlideId : slides[0]?.id;
+  const viewGlyph = { plan: "P", front: "F", back: "B", left: "L", right: "R", "3d": "3D", budget: "$", ffe: "FE", title: "§" };
+  const childrenOf = {}, byId = {};
+  slides.forEach(s => { byId[s.id] = s; if (s.parentId) (childrenOf[s.parentId] ||= []).push(s); });
+  const secH = { fontSize: 9, color: T.textDim, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600, margin: "0 0 6px" };
+
+  return (
+    <div data-testid="deck-strip">
+      <div style={secH}>Deck · {slides.length} slide{slides.length === 1 ? "" : "s"}</div>
+      {onAddTemplate && (
+        <div style={{ position: "relative", marginBottom: 8 }}>
+          <button data-testid="add-template" onClick={() => setTemplateMenuOpen(v => !v)}
+            style={{ width: "100%", padding: "6px 0", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, borderRadius: 6, border: "1px dashed " + (templateMenuOpen ? T.brand : T.border), background: templateMenuOpen ? T.brand + "10" : "transparent", color: templateMenuOpen ? T.textBright : T.textMuted, fontFamily: font, fontSize: 10, fontWeight: 600, cursor: "pointer" }}>
+            <Plus size={11} /> Template
+          </button>
+          {templateMenuOpen && <>
+            <div style={{ position: "fixed", inset: 0, zIndex: 40 }} onClick={() => setTemplateMenuOpen(false)} />
+            <div style={{ position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0, zIndex: 50, background: T.panelBg, border: "1px solid " + T.border, borderRadius: 7, padding: 4, boxShadow: T.panelShadow, backdropFilter: "blur(12px)" }}>
+              {[
+                { view: "title", testid: "add-title-slide", label: "Title / Section", hint: "Divider that groups nested slides" },
+                { view: "budget", testid: "add-budget-slide", label: "Budget sheet", hint: "Cost rollup + item schedule" },
+                { view: "ffe", testid: "add-ffe-slide", label: "FF&E schedule", hint: "Furnishings from placed zones" },
+              ].map(t => (
+                <div key={t.view} data-testid={t.testid} role="button"
+                  onClick={() => { onAddTemplate(t.view); setTemplateMenuOpen(false); }}
+                  style={{ padding: "6px 9px", borderRadius: 5, cursor: "pointer" }}
+                  onMouseEnter={e => e.currentTarget.style.background = T.border + "44"}
+                  onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
+                  <div style={{ fontSize: 10.5, fontWeight: 600, color: T.textBright }}>{t.label}</div>
+                  <div style={{ fontSize: 9, color: T.textMuted, marginTop: 1 }}>{t.hint}</div>
+                </div>
+              ))}
+            </div>
+          </>}
+        </div>
+      )}
+      {slides.length === 0 && (
+        <div style={{ fontSize: 10, color: T.textMuted, lineHeight: 1.6, padding: "8px 4px", fontStyle: "italic" }}>
+          No slides yet. Use the camera button on any pane (plan, elevation, 3D) in the planning stages to save a view here.
+        </div>
+      )}
+      {slides.map((s, i) => {
+        const nested = !!s.parentId;
+        if (nested && byId[s.parentId]?.collapsed) return null; // hidden under a collapsed section
+        const active = s.id === activeId;
+        const isDragging = deckDrag?.moved && deckDrag.id === s.id;
+        const hint = deckDrag?.moved && dropHint?.id === s.id ? dropHint.zone : null;
+        const kids = childrenOf[s.id];
+        const hasKids = !!(kids && kids.length);
+        const isCollapsed = !!s.collapsed;
+        return (
+          <div key={s.id} data-testid={"deck-slide-" + i}
+            onMouseDown={(e) => { if (e.button !== 0 || e.target.closest("button")) return; e.preventDefault(); setDeckDrag({ id: s.id, startY: e.clientY, moved: false }); }}
+            onMouseMove={(e) => { if (deckDrag?.moved && deckDrag.id !== s.id) { const z = rowZone(e, s, deckDrag.id); setDropHint(z ? { id: s.id, zone: z } : null); } }}
+            onMouseLeave={() => { if (dropHint?.id === s.id) setDropHint(null); }}
+            style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 8px", borderRadius: 6, marginBottom: 4, marginLeft: nested ? 18 : 0,
+              cursor: deckDrag?.moved ? "grabbing" : "grab", userSelect: "none", opacity: isDragging ? 0.35 : 1,
+              border: "1px solid " + (hint === "into" ? T.brand : active ? T.brand + "88" : "transparent"),
+              background: hint === "into" ? T.brand + "1E" : active ? T.brand + "14" : "transparent",
+              boxShadow: hint === "before" ? `0 -2px 0 0 ${T.brand}` : hint === "after" ? `0 2px 0 0 ${T.brand}` : "none" }}>
+            {nested && <span style={{ width: 8, borderBottom: "1px solid " + T.textFaint, flexShrink: 0 }} />}
+            {!nested && (
+              <span style={{ width: 13, flexShrink: 0, display: "flex", alignItems: "center" }}>
+                {hasKids && (
+                  <button data-testid={"deck-collapse-" + i} title={isCollapsed ? "Expand section" : "Collapse section"}
+                    onClick={(e) => { e.stopPropagation(); onUpdateSlide(s.id, { collapsed: !s.collapsed }); }}
+                    style={{ background: "none", border: "none", cursor: "pointer", color: T.textMuted, padding: 0, display: "flex", alignItems: "center" }}>
+                    {isCollapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
+                  </button>
+                )}
+              </span>
+            )}
+            <span style={{ fontSize: 9, color: T.textDim, width: 16, flexShrink: 0 }}>{String(i + 1).padStart(2, "0")}</span>
+            {s.view === "3d" && s.image
+              ? <img src={s.image} alt="" style={{ width: 34, height: 24, objectFit: "cover", borderRadius: 3, border: "1px solid " + T.border, flexShrink: 0 }} />
+              : <span style={{ width: 34, height: 24, borderRadius: 3, border: "1px solid " + T.border, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, fontWeight: 700, color: T.textMuted, flexShrink: 0 }}>{viewGlyph[s.view]}</span>}
+            <span style={{ flex: 1, minWidth: 0, fontSize: 10.5, fontWeight: active ? 600 : 500, color: active ? T.textBright : T.textMuted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.name}</span>
+            {hasKids && isCollapsed && <span title={kids.length + " nested slide" + (kids.length === 1 ? "" : "s")} style={{ fontSize: 8.5, fontWeight: 600, color: T.textDim, background: T.border + "88", borderRadius: 8, padding: "1px 6px", flexShrink: 0 }}>{kids.length}</span>}
+            <button title="Delete slide" onClick={(e) => { e.stopPropagation(); if (confirm("Delete slide \"" + s.name + "\"?")) onDeleteSlide(s.id); }} style={{ background: "none", border: "none", cursor: "pointer", color: T.textDim, padding: 1, flexShrink: 0 }}><Trash2 size={11} /></button>
+          </div>
+        );
+      })}
+      {slides.length > 1 && <div style={{ fontSize: 8.5, color: T.textFaint, padding: "2px 4px 0", lineHeight: 1.5 }}>Drag to reorder · drop onto a slide to nest</div>}
+    </div>
+  );
+}
+
+export default function DocsView({
+  T, sheetTheme = null, font, display, projectName,
+  slides, docSettings, activeSlideId,
+  onUpdateSlide, onUpdateSettings,
+  onEditModel, renderSlideBody, onPrint, captureRef, autoScaleFor = null,
+}) {
   // The sheet (paper + title block + notes) is the printable output, so it's always
   // Vellum (light) regardless of the app's theme — `T` still drives the surrounding
   // chrome (deck strip, inspector, floating tool/zoom chips), which follows it as normal.
-  const sheetT = THEMES.light;
+  const sheetT = sheetTheme || THEMES.light;
   const slide = slides.find(s => s.id === activeSlideId) || slides[0] || null;
   const sheet = sheetDims(docSettings);
   const bodyW = sheet.w - BODY_PAD * 2, bodyH = sheet.h - TITLE_H - BODY_PAD * 2;
@@ -138,42 +266,6 @@ export default function DocsView({
     el.scrollLeft = (el.scrollLeft + el.clientWidth / 2) * k - el.clientWidth / 2;
     el.scrollTop = (el.scrollTop + el.clientHeight / 2) * k - el.clientHeight / 2;
   }, [effScale]);
-
-  // ── Deck-strip drag & drop (reorder + one-level nesting) ──
-  const [deckDrag, setDeckDrag] = useState(null);   // { id, startY, moved }
-  const [dropHint, setDropHint] = useState(null);   // { id, zone: "before"|"after"|"into" | null }
-  const rowZone = (e, row, dragId) => {
-    const r = e.currentTarget.getBoundingClientRect();
-    const t = (e.clientY - r.top) / r.height;
-    // A section/title slide is always top-level: it never nests, and it can't land among
-    // another section's children, so only offer before/after on other top-level rows.
-    const drag = slides.find(x => x.id === dragId);
-    if (drag?.view === "title") return row.parentId ? null : (t < 0.5 ? "before" : "after");
-    const dragHasKids = slides.some(x => x.parentId === dragId);
-    const canNest = !row.parentId && !dragHasKids && row.id !== dragId;
-    if (canNest && t > 0.3 && t < 0.7) return "into";
-    return t < 0.5 ? "before" : "after";
-  };
-  useEffect(() => {
-    if (!deckDrag) return;
-    const mv = (e) => setDeckDrag(d => d && !d.moved && Math.abs(e.clientY - d.startY) > 4 ? { ...d, moved: true } : d);
-    const up = () => {
-      setDeckDrag(d => {
-        setDropHint(h => {
-          if (d?.moved && h) {
-            onDropSlide?.(d.id, h.id, h.zone);
-            if (h.zone === "into") onUpdateSlide?.(h.id, { collapsed: false }); // reveal the slide just nested
-          } else if (d && !d.moved) onSelectSlide(d.id);
-          return null;
-        });
-        return null;
-      });
-    };
-    window.addEventListener("mousemove", mv);
-    window.addEventListener("mouseup", up);
-    return () => { window.removeEventListener("mousemove", mv); window.removeEventListener("mouseup", up); };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [deckDrag?.id]);
 
   // ── Slide-local note tool state ──
   const [noteTool, setNoteTool] = useState("select"); // "select" | "note"
@@ -304,93 +396,9 @@ export default function DocsView({
   const secH = { fontSize: 9, color: T.textDim, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600, margin: "14px 0 6px" };
   const segBtn = (active) => ({ flex: 1, padding: "5px 0", fontSize: 10, fontFamily: font, fontWeight: 600, cursor: "pointer", borderRadius: 5, border: "1px solid " + (active ? T.brand : T.border), background: active ? T.brand + "22" : "transparent", color: active ? T.textBright : T.textMuted });
 
-  const viewGlyph = { plan: "P", front: "F", back: "B", left: "L", right: "R", "3d": "3D", budget: "$", ffe: "FE", title: "§" };
-  // children grouped by parent id + an id→slide lookup — drive the collapse chevron and
-  // the hidden-child skip (a child is hidden when its parent slide's `collapsed` flag is set).
-  const childrenOf = {};
-  const byId = {};
-  slides.forEach(s => { byId[s.id] = s; if (s.parentId) (childrenOf[s.parentId] ||= []).push(s); });
-
   return (
     <div style={{ flex: 1, display: "flex", overflow: "hidden", background: T.bg0 }} data-testid="docs-view">
-      {/* ── Deck strip ── */}
-      <div style={{ width: 216, flexShrink: 0, borderRight: "1px solid " + T.border, background: T.bg1, overflowY: "auto", padding: 10 }}>
-        <div style={{ ...secH, marginTop: 2 }}>Deck · {slides.length} slide{slides.length === 1 ? "" : "s"}</div>
-        {onAddTemplate && (
-          <div style={{ position: "relative", marginBottom: 8 }}>
-            <button data-testid="add-template" onClick={() => setTemplateMenuOpen(v => !v)}
-              style={{ width: "100%", padding: "6px 0", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, borderRadius: 6, border: "1px dashed " + (templateMenuOpen ? T.brand : T.border), background: templateMenuOpen ? T.brand + "10" : "transparent", color: templateMenuOpen ? T.textBright : T.textMuted, fontFamily: font, fontSize: 10, fontWeight: 600, cursor: "pointer" }}>
-              <Plus size={11} /> Template
-            </button>
-            {templateMenuOpen && <>
-              <div style={{ position: "fixed", inset: 0, zIndex: 40 }} onClick={() => setTemplateMenuOpen(false)} />
-              <div style={{ position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0, zIndex: 50, background: T.panelBg, border: "1px solid " + T.border, borderRadius: 7, padding: 4, boxShadow: T.panelShadow, backdropFilter: "blur(12px)" }}>
-                {[
-                  { view: "title", testid: "add-title-slide", label: "Title / Section", hint: "Divider that groups nested slides" },
-                  { view: "budget", testid: "add-budget-slide", label: "Budget sheet", hint: "Cost rollup + item schedule" },
-                  { view: "ffe", testid: "add-ffe-slide", label: "FF&E schedule", hint: "Furnishings from placed zones" },
-                ].map(t => (
-                  <div key={t.view} data-testid={t.testid} role="button"
-                    onClick={() => { onAddTemplate(t.view); setTemplateMenuOpen(false); }}
-                    style={{ padding: "6px 9px", borderRadius: 5, cursor: "pointer" }}
-                    onMouseEnter={e => e.currentTarget.style.background = T.border + "44"}
-                    onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
-                    <div style={{ fontSize: 10.5, fontWeight: 600, color: T.textBright }}>{t.label}</div>
-                    <div style={{ fontSize: 9, color: T.textMuted, marginTop: 1 }}>{t.hint}</div>
-                  </div>
-                ))}
-              </div>
-            </>}
-          </div>
-        )}
-        {slides.length === 0 && (
-          <div style={{ fontSize: 10, color: T.textMuted, lineHeight: 1.6, padding: "8px 4px", fontStyle: "italic" }}>
-            No slides yet. Use the camera button on any pane (plan, elevation, 3D) in the planning stages to save a view here.
-          </div>
-        )}
-        {slides.map((s, i) => {
-          const nested = !!s.parentId;
-          if (nested && byId[s.parentId]?.collapsed) return null; // hidden under a collapsed section
-          const active = slide && s.id === slide.id;
-          const isDragging = deckDrag?.moved && deckDrag.id === s.id;
-          const hint = deckDrag?.moved && dropHint?.id === s.id ? dropHint.zone : null;
-          const kids = childrenOf[s.id];
-          const hasKids = !!(kids && kids.length);
-          const isCollapsed = !!s.collapsed;
-          return (
-            <div key={s.id} data-testid={"deck-slide-" + i}
-              onMouseDown={(e) => { if (e.button !== 0 || e.target.closest("button")) return; e.preventDefault(); setDeckDrag({ id: s.id, startY: e.clientY, moved: false }); }}
-              onMouseMove={(e) => { if (deckDrag?.moved && deckDrag.id !== s.id) { const z = rowZone(e, s, deckDrag.id); setDropHint(z ? { id: s.id, zone: z } : null); } }}
-              onMouseLeave={() => { if (dropHint?.id === s.id) setDropHint(null); }}
-              style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 8px", borderRadius: 6, marginBottom: 4, marginLeft: nested ? 18 : 0,
-                cursor: deckDrag?.moved ? "grabbing" : "grab", userSelect: "none", opacity: isDragging ? 0.35 : 1,
-                border: "1px solid " + (hint === "into" ? T.brand : active ? T.brand + "88" : "transparent"),
-                background: hint === "into" ? T.brand + "1E" : active ? T.brand + "14" : "transparent",
-                boxShadow: hint === "before" ? `0 -2px 0 0 ${T.brand}` : hint === "after" ? `0 2px 0 0 ${T.brand}` : "none" }}>
-              {nested && <span style={{ width: 8, borderBottom: "1px solid " + T.textFaint, flexShrink: 0 }} />}
-              {!nested && (
-                <span style={{ width: 13, flexShrink: 0, display: "flex", alignItems: "center" }}>
-                  {hasKids && (
-                    <button data-testid={"deck-collapse-" + i} title={isCollapsed ? "Expand section" : "Collapse section"}
-                      onClick={(e) => { e.stopPropagation(); onUpdateSlide(s.id, { collapsed: !s.collapsed }); }}
-                      style={{ background: "none", border: "none", cursor: "pointer", color: T.textMuted, padding: 0, display: "flex", alignItems: "center" }}>
-                      {isCollapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
-                    </button>
-                  )}
-                </span>
-              )}
-              <span style={{ fontSize: 9, color: T.textDim, width: 16, flexShrink: 0 }}>{String(i + 1).padStart(2, "0")}</span>
-              {s.view === "3d" && s.image
-                ? <img src={s.image} alt="" style={{ width: 34, height: 24, objectFit: "cover", borderRadius: 3, border: "1px solid " + T.border, flexShrink: 0 }} />
-                : <span style={{ width: 34, height: 24, borderRadius: 3, border: "1px solid " + T.border, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, fontWeight: 700, color: T.textMuted, flexShrink: 0 }}>{viewGlyph[s.view]}</span>}
-              <span style={{ flex: 1, minWidth: 0, fontSize: 10.5, fontWeight: active ? 600 : 500, color: active ? T.textBright : T.textMuted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.name}</span>
-              {hasKids && isCollapsed && <span title={kids.length + " nested slide" + (kids.length === 1 ? "" : "s")} style={{ fontSize: 8.5, fontWeight: 600, color: T.textDim, background: T.border + "88", borderRadius: 8, padding: "1px 6px", flexShrink: 0 }}>{kids.length}</span>}
-              <button title="Delete slide" onClick={(e) => { e.stopPropagation(); if (confirm("Delete slide \"" + s.name + "\"?")) onDeleteSlide(s.id); }} style={{ background: "none", border: "none", cursor: "pointer", color: T.textDim, padding: 1, flexShrink: 0 }}><Trash2 size={11} /></button>
-            </div>
-          );
-        })}
-        {slides.length > 1 && <div style={{ fontSize: 8.5, color: T.textFaint, padding: "2px 4px 0", lineHeight: 1.5 }}>Drag to reorder · drop onto a slide to nest</div>}
-      </div>
+      {/* Deck strip lives in the app's left sidebar (Docs mode) — see testfit.jsx. */}
 
       {/* ── Sheet area — wrapper scrolls when zoomed past the fit; margin:auto centers ── */}
       <div ref={centerRef} style={{ flex: 1, position: "relative", overflow: "hidden", display: "flex", flexDirection: "column" }}>
@@ -429,14 +437,28 @@ export default function DocsView({
               <TitleBlock slide={slide} idx={selIdx} total={slides.length} T={sheetT} font={font} display={display} projectName={projectName} editable onUpdateSlide={onUpdateSlide} autoScale={autoScaleFor?.(slide)} />
               {/* Notes overlay (full sheet, above body, below title-block inputs) */}
               <svg width={sheet.w} height={sheet.h} style={{ position: "absolute", inset: 0, overflow: "visible", pointerEvents: "none" }}>
-                {notes.map(n => (
-                  <g key={n.id} style={{ pointerEvents: "auto", cursor: "move" }}
-                    onMouseDown={(e) => startNoteDrag(e, n.id, "move")}
-                    onDoubleClick={(e) => { e.stopPropagation(); setEditNoteId(n.id); setDraft(n.text); }}>
-                    <LabelAnnotation lbl={n} sel={selNoteId === n.id} tool="select" bg={sheetT.canvas} />
-                  </g>
-                ))}
-                {selNoteId && (() => {
+                {notes.map(n => {
+                  // While a note is being edited the textarea stands in for its box — drawing
+                  // the label underneath too showed the empty "Label…" placeholder poking out
+                  // from behind the editor. Keep only the leader so you still see what it
+                  // points at.
+                  if (n.id === editNoteId) {
+                    return n.lx == null ? null : (
+                      <g key={n.id} style={{ pointerEvents: "none" }}>
+                        <line x1={n.lx} y1={n.ly} x2={n.x} y2={n.y} stroke={n.color} strokeWidth={1} opacity={0.85} />
+                        <circle cx={n.lx} cy={n.ly} r={3} fill={n.color} opacity={0.85} />
+                      </g>
+                    );
+                  }
+                  return (
+                    <g key={n.id} style={{ pointerEvents: "auto", cursor: "move" }}
+                      onMouseDown={(e) => startNoteDrag(e, n.id, "move")}
+                      onDoubleClick={(e) => { e.stopPropagation(); setEditNoteId(n.id); setDraft(n.text); }}>
+                      <LabelAnnotation lbl={n} sel={selNoteId === n.id} tool="select" bg={sheetT.canvas} />
+                    </g>
+                  );
+                })}
+                {selNoteId && !editNoteId && (() => {
                   const n = notes.find(x => x.id === selNoteId);
                   if (!n) return null;
                   const hx = n.lx ?? n.x + 46, hy = n.ly ?? n.y + 34;
@@ -460,7 +482,9 @@ export default function DocsView({
                   onBlur={commitDraft}
                   onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); commitDraft(); } if (e.key === "Escape") { e.preventDefault(); commitDraft(); } e.stopPropagation(); }}
                   onMouseDown={e => e.stopPropagation()}
-                  style={{ position: "absolute", left: editNote.x, top: editNote.y - 9, width: 220, height: 54, background: sheetT.panelBg, border: "1.5px solid " + sheetT.brand, borderRadius: 5, color: sheetT.text, fontFamily: font, fontSize: 13, padding: 6, outline: "none", resize: "none", zIndex: 10 }} />
+                  // Centered on the note's anchor, so the editor sits exactly where the
+                  // finished label box will be (it used to hang down-right of the anchor).
+                  style={{ position: "absolute", left: editNote.x - NOTE_EDIT_W / 2, top: editNote.y - NOTE_EDIT_H / 2, width: NOTE_EDIT_W, height: NOTE_EDIT_H, background: sheetT.panelBg, border: "1.5px solid " + sheetT.brand, borderRadius: 5, color: sheetT.text, fontFamily: font, fontSize: 13, padding: 6, boxSizing: "border-box", textAlign: "center", outline: "none", resize: "none", zIndex: 10 }} />
               )}
             </div>
           </div>

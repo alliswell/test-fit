@@ -1,4 +1,4 @@
-import { useState, useMemo, useRef, useEffect } from "react";
+import { useState, useMemo, useRef, useEffect, useCallback } from "react";
 import { traceOuterBoundary, computeWallFootprints, junctionCapPolys } from "./geometry";
 import { footprintToLocal, buildWallSolidGeometry, buildCapSolidGeometry, solidEdgesGeometry, buildWallEdgeSegments } from "./wallGeo3d";
 import { DOOR_TYPE_STYLES } from "../constants/theme";
@@ -417,13 +417,17 @@ function WallSolid({ geometry, edges = null, color, material, wallId, onSelect, 
   const detailedRough = matSpec?.roughness ?? 0.92;
   const detailedMetal = matSpec?.metalness ?? 0.0;
   const tex = (style3d === "detailed" && !isDemo) ? getWallTextureSet(material) : null;
+  // Print style reads like a black-and-white line drawing: flat near-white surfaces with
+  // black outlines on every wall (hidden-line look), no textures/shadows/bloom.
+  const outlined = style3d === "xray" || style3d === "print" || isDemo;
+  const edgeColor = (style3d === "print" && !isDemo) ? "#111111" : color;
   // Outline: callers with CSG'd geometry pass procedural `edges` (T-vertices in CSG
   // output break EdgesGeometry); plain solids (caps) fall back to solidEdgesGeometry.
   const fallbackEdges = useMemo(
-    () => (!edges && (style3d === "xray" || isDemo)) ? solidEdgesGeometry(geometry) : null,
-    [edges, geometry, style3d, isDemo]);
+    () => (!edges && outlined) ? solidEdgesGeometry(geometry) : null,
+    [edges, geometry, outlined]);
   useEffect(() => () => fallbackEdges?.dispose(), [fallbackEdges]);
-  const edgesGeo = (style3d === "xray" || isDemo) ? (edges || fallbackEdges) : null;
+  const edgesGeo = outlined ? (edges || fallbackEdges) : null;
   const glowBB = useMemo(() => {
     if (!isSelected) return null;
     geometry.computeBoundingBox();
@@ -463,6 +467,8 @@ function WallSolid({ geometry, edges = null, color, material, wallId, onSelect, 
           bumpMap={tex?.bumpMap}
           bumpScale={tex?.bumpScale}
         />}
+        {!demoUnion && style3d === "print" && <meshLambertMaterial
+          color={(interactive && hov) ? "#DCE8F6" : "#F5F5F5"} emissive="#EDEDED" emissiveIntensity={0.5} />}
         {!demoUnion && style3d === "clay" && (() => {
           const claySelf = lightenHex(color, CLAY_WALL_LIGHTEN);
           return <meshLambertMaterial
@@ -473,7 +479,7 @@ function WallSolid({ geometry, edges = null, color, material, wallId, onSelect, 
         })()}
       </mesh>
       {edgesGeo && <lineSegments geometry={edgesGeo} renderOrder={isDemo ? 12 : undefined}>
-        <lineBasicMaterial color={color} />
+        <lineBasicMaterial color={edgeColor} />
       </lineSegments>}
       {isSelected && glowBB && (
         <group position={[(glowBB.min.x + glowBB.max.x) / 2, (glowBB.min.y + glowBB.max.y) / 2, (glowBB.min.z + glowBB.max.z) / 2]}>
@@ -717,14 +723,17 @@ function WindowGlow({ lenFt, winHFt, sillFt, thickFt }) {
 // ─── Wall with openings ────────────────────────────────────────────────────────
 function Wall3D({ w, fp, nodes, doors, windows, cx, cz, pxPerFoot, ceilingHeight, onSelect, selectedId, selType, showDims, style3d = "clay", interactive = true }) {
   const n1 = nodes.find(n => n.id === w.n1), n2 = nodes.find(n => n.id === w.n2);
-  if (!n1 || !n2 || !fp) return null;
   const wk       = WALL_KINDS[w.kind || "existing"];
   const thickFt  = (w.kind === "pony" ? (w.ponyDepth || 6) : (wk.thickness || 5)) / 12;
   const ceilFt   = ceilingHeight / 12;
   const heightFt = w.kind === "pony" ? (w.ponyHeight || 42) / 12 : ceilFt;
-  const x1 = n1.x, y1 = n1.y, x2 = n2.x, y2 = n2.y;
+  const x1 = n1?.x ?? 0, y1 = n1?.y ?? 0, x2 = n2?.x ?? 0, y2 = n2?.y ?? 0;
   const wLen     = dst(x1, y1, x2, y2);
-  if (wLen < 1) return null;
+  // A mounted wall can transition to/from degenerate (endpoint dragged onto the other
+  // node in split view, node deleted mid-frame) — hooks below must run UNCONDITIONALLY
+  // or React throws a hook-count error and the whole canvas ErrorBoundaries. Guard the
+  // hook BODIES instead and bail at the render at the bottom.
+  const ok = !!(n1 && n2 && fp) && wLen >= 1;
   const wallLenFt = wLen / pxPerFoot;
   const angle     = Math.atan2(y2 - y1, x2 - x1);
   const midX      = ((x1 + x2) / 2 - cx) / pxPerFoot;
@@ -734,6 +743,7 @@ function Wall3D({ w, fp, nodes, doors, windows, cx, cz, pxPerFoot, ceilingHeight
   const doorHFt   = Math.min(DOOR_HEIGHT_FT, heightFt);
 
   const segs = useMemo(() => {
+    if (!ok) return [];
     const doorIds = new Set(doors.map(d => d.id));
     const cuts = [];
     [...doors, ...windows].forEach(item => {
@@ -756,20 +766,23 @@ function Wall3D({ w, fp, nodes, doors, windows, cx, cz, pxPerFoot, ceilingHeight
     if (tS < 1) result.push({ t0: tS, t1: 1, solid: true });
     return result;
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [w, doors, windows, x1, y1, dx, dy, wLen, pxPerFoot]);
+  }, [w, doors, windows, x1, y1, dx, dy, wLen, pxPerFoot, ok]);
 
   // The wall body is ONE mitered-footprint extrusion with CSG-cut openings — walls tile
   // gap-free with zero overlap at junctions by construction (shared miter points from
   // computeWallFootprints), so there are no end extensions and no cover-up posts.
-  // Demo walls extrude uncut: the whole assembly — wall AND any doors/windows in it —
-  // is coming out, so it reads as one continuous translucent red volume (openings,
-  // casings and glass are deliberately not rendered on demo walls).
+  // Demo walls cut their openings too, so a demoed wall still SHOWS its doors/windows as
+  // real outlined holes in the translucent red mass (they'd otherwise vanish, hiding the
+  // fact there was an opening). The fixtures themselves — leaf, glass, casing, trim — are
+  // still not drawn: they're being removed with the wall, and solid finished parts inside
+  // a ghost wall read as "these stay", which is backwards.
   const isDemo = w.kind === "demo";
   const tileFt = (style3d === "detailed" && !isDemo) ? WALL_MATERIAL_TILE_FT[w.material] : null;
   const { solidGeo, edgeGeo } = useMemo(() => {
+    if (!ok) return { solidGeo: null, edgeGeo: null };
     const midPx = { x: (x1 + x2) / 2, y: (y1 + y2) / 2 };
     const localQuad = footprintToLocal(fp.quad, midPx, angle, pxPerFoot);
-    const cuts = isDemo ? [] : segs.filter(s => !s.solid).map(seg => {
+    const cuts = segs.filter(s => !s.solid).map(seg => {
       const x0 = (seg.t0 - 0.5) * wallLenFt, x1c = (seg.t1 - 0.5) * wallLenFt;
       if (seg.isDoor) return { x0, x1: x1c, y0: 0, y1: doorHFt };
       const sillFt = (seg.item?.sill ?? 30) / 12, winHFt = (seg.item?.height ?? 48) / 12;
@@ -781,9 +794,10 @@ function Wall3D({ w, fp, nodes, doors, windows, cx, cz, pxPerFoot, ceilingHeight
       edgeGeo: buildWallEdgeSegments(localQuad, heightFt, cuts),
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fp, segs, heightFt, doorHFt, wallLenFt, angle, pxPerFoot, isDemo, tileFt, x1, y1, x2, y2]);
-  useEffect(() => () => { solidGeo.dispose(); edgeGeo.dispose(); }, [solidGeo, edgeGeo]);
+  }, [fp, segs, heightFt, doorHFt, wallLenFt, angle, pxPerFoot, isDemo, tileFt, x1, y1, x2, y2, ok]);
+  useEffect(() => () => { solidGeo?.dispose(); edgeGeo?.dispose(); }, [solidGeo, edgeGeo]);
 
+  if (!ok || !solidGeo) return null;
   return (
     <group position={[midX, 0, midZ]} rotation={[0, -angle, 0]}>
       <WallSolid geometry={solidGeo} edges={edgeGeo} color={wk.color} material={w.material} wallId={w.id}
@@ -1366,8 +1380,10 @@ function DimLine3D({ dim, cx, cz, pxPerFoot }) {
   const x2 = (dim.x2 - cx) / pxPerFoot, z2 = (dim.y2 - cz) / pxPerFoot;
   const px  = Math.sqrt((dim.x2 - dim.x1) ** 2 + (dim.y2 - dim.y1) ** 2);
   const len = Math.sqrt((x2 - x1) ** 2 + (z2 - z1) ** 2);
-  if (len < 0.1) return null;
-  const dx = (x2 - x1) / len, dz = (z2 - z1) / len;
+  // Do NOT early-return before the hook: a mounted dim can be dragged to near-zero
+  // length, and skipping the useMemo then crashes the canvas with a hook-count error.
+  const ok = len >= 0.1;
+  const dx = ok ? (x2 - x1) / len : 1, dz = ok ? (z2 - z1) / len : 0;
   const nx = -dz, nz = dx;
   const offFt = (dim.offset ?? 20) / pxPerFoot;
   const lx1 = x1 + nx * offFt, lz1 = z1 + nz * offFt;
@@ -1378,6 +1394,7 @@ function DimLine3D({ dim, cx, cz, pxPerFoot }) {
     const mat = new THREE.LineBasicMaterial({ color: "#8A8478", transparent: true, opacity: 0.7 });
     return new THREE.Line(g, mat);
   }, [lx1, lz1, lx2, lz2]);
+  if (!ok) return null;
   return (
     <>
       <primitive object={line} />
@@ -1456,7 +1473,7 @@ function FloorPlane({ walls = [], nodes = [], zones, cx, cz, pxPerFoot, T, zoneL
   const baseBump = isDetailed ? getFloorBump(floorMaterial) : null;
   const baseMat = isDetailed
     ? <meshStandardMaterial color={baseTex ? "#ffffff" : (baseSpec?.color ?? T.canvas)} roughness={baseSpec?.roughness ?? 0.55} metalness={baseSpec?.metalness ?? 0.05} envMapIntensity={0.8} map={baseTex} bumpMap={baseBump?.bumpMap} bumpScale={baseBump?.bumpScale} side={THREE.DoubleSide} />
-    : <meshLambertMaterial color={T.canvas} side={THREE.DoubleSide} />;
+    : <meshLambertMaterial color={style3d === "print" ? "#FCFCFC" : T.canvas} side={THREE.DoubleSide} />;
 
   return (
     <group>
@@ -1478,7 +1495,7 @@ function FloorPlane({ walls = [], nodes = [], zones, cx, cz, pxPerFoot, T, zoneL
         return <mesh key={fr.id} geometry={geo} rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.004, 0]} receiveShadow={isDetailed}>
           {isDetailed
             ? <meshStandardMaterial color={rTex ? "#ffffff" : (rSpec?.color ?? "#C8A878")} roughness={rSpec?.roughness ?? 0.55} metalness={rSpec?.metalness ?? 0.05} envMapIntensity={0.8} map={rTex} bumpMap={rBump?.bumpMap} bumpScale={rBump?.bumpScale} side={THREE.DoubleSide} />
-            : <meshLambertMaterial color={rSpec?.color ?? "#C8A878"} side={THREE.DoubleSide} />}
+            : <meshLambertMaterial color={style3d === "print" ? "#EDEDED" : (rSpec?.color ?? "#C8A878")} side={THREE.DoubleSide} />}
         </mesh>;
       })}
       {zones.map(z => <ZoneFloor key={z.id} zone={z} cx={cx} cz={cz} pxPerFoot={pxPerFoot} zoneLibrary={zoneLibrary} style3d={style3d} />)}
@@ -1573,6 +1590,131 @@ function ShadowEnabler({ enabled }) {
 }
 
 // ─── Camera auto-fit on every mount ───────────────────────────────────────────
+// ─── Isometric camera ─────────────────────────────────────────────────────────
+// True isometric = PARALLEL projection down the (±1, 1, ±1) diagonal: all three axes
+// foreshorten equally and parallel edges stay parallel, so the drawing measures. Plan
+// axes map x→world x and y→world z, so plan-north is −z: hence the corner vectors below.
+export const ISO_CORNERS = {
+  ne: { label: "NE", v: [1, 1, -1] },
+  se: { label: "SE", v: [1, 1, 1] },
+  sw: { label: "SW", v: [-1, 1, 1] },
+  nw: { label: "NW", v: [-1, 1, -1] },
+};
+
+// Clockwise around the building — each neighbour is a 90° swing, so the rotate
+// arrows just step through this list.
+export const ISO_ORDER = ["ne", "se", "sw", "nw"];
+
+const Y_AXIS = new THREE.Vector3(0, 1, 0);
+const ISO_SPIN_S = 0.42;                       // seconds for a 90° swing
+const isoAz = (v) => Math.atan2(v[0], v[2]);   // horizontal azimuth of a direction
+// Shortest signed way round, so nw→ne swings +90° rather than −270°.
+const shortAngle = (a) => { while (a > Math.PI) a -= 2 * Math.PI; while (a <= -Math.PI) a += 2 * Math.PI; return a; };
+const easeInOutCubic = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
+const prefersReducedMotion = () =>
+  typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+
+// Places the orthographic camera on the chosen corner and sizes the frustum to fit.
+// r3f's default ortho frustum is the canvas size in world units, so visible height =
+// size.height / zoom — fit by solving that for the model's extent.
+//
+// Rotating (corner change) deliberately does NOT re-fit: it swings the camera 90° around
+// the CURRENT target, keeping zoom, pan and distance, so you orbit the building without
+// losing the framing you set up. `fitNonce` bumps to force an explicit re-fit (Reset).
+function IsoCameraRig({ corner, fitR, controlsRef, fitNonce = 0, initialCamera = null }) {
+  const { camera, size } = useThree();
+  const prev = useRef(null);
+  const fitted = useRef(false);
+  const spin = useRef(null); // { from: offset Vector3, angle, t, dur } — in-flight swing
+
+  // Drives the swing. Priority 0 runs AFTER drei's OrbitControls update (priority -1), so
+  // the tweened position is what survives to render. The pivot is read live each frame,
+  // so panning mid-swing still tracks.
+  useFrame((_, dt) => {
+    const a = spin.current;
+    if (!a) return;
+    a.t = Math.min(1, a.t + dt / a.dur);
+    const c = controlsRef?.current;
+    const pivot = c ? c.target : new THREE.Vector3();
+    camera.position.copy(pivot).add(a.from.clone().applyAxisAngle(Y_AXIS, a.angle * easeInOutCubic(a.t)));
+    camera.lookAt(pivot);
+    camera.updateProjectionMatrix();
+    c?.update();
+    if (a.t >= 1) spin.current = null;
+  });
+
+  const applyFit = useCallback(() => {
+    spin.current = null; // a re-fit supersedes any in-flight swing
+    const v = (ISO_CORNERS[corner] || ISO_CORNERS.se).v;
+    const D = 400; // ortho: distance doesn't scale the image, just keep it outside the model
+    const n = Math.sqrt(3);
+    camera.position.set((v[0] / n) * D, (v[1] / n) * D, (v[2] / n) * D);
+    camera.up.set(0, 1, 0);
+    camera.lookAt(0, 0, 0);
+    // 1.15 padding; the projected diagonal runs a bit wider than the plan radius.
+    const span = Math.max(fitR * 2 * 1.15, 1);
+    camera.zoom = Math.min(size.width, size.height) / span;
+    camera.updateProjectionMatrix();
+    const c = controlsRef?.current;
+    if (c) { c.target.set(0, 0, 0); c.update(); c.saveState(); }
+  }, [camera, corner, fitR, size.width, size.height, controlsRef]);
+
+  // First real frame → restore the saved pose (Docs slides) or fit. (Waits for a non-zero
+  // canvas size, else the fit's zoom would be 0.)
+  // A saved ortho pose MUST carry `zoom`: position alone doesn't set the image scale for
+  // an orthographic camera, so restoring position-only would silently re-fit the model.
+  useEffect(() => {
+    if (fitted.current || size.width <= 0 || size.height <= 0) return;
+    if (initialCamera?.position) {
+      const tgt = initialCamera.target ?? [0, 0, 0];
+      camera.position.fromArray(initialCamera.position);
+      camera.up.set(0, 1, 0);
+      camera.lookAt(tgt[0], tgt[1], tgt[2]);
+      if (initialCamera.zoom) camera.zoom = initialCamera.zoom;
+      camera.updateProjectionMatrix();
+      const c = controlsRef?.current;
+      if (c) { c.target.set(tgt[0], tgt[1], tgt[2]); c.update(); c.saveState(); }
+    } else {
+      applyFit();
+    }
+    fitted.current = true;
+    prev.current = corner;
+  }, [applyFit, size.width, size.height, corner, initialCamera, camera, controlsRef]);
+
+  // Corner change → swing about the current target, preserving zoom/pan/distance.
+  // The swing targets the corner's ABSOLUTE azimuth (not a relative +90°), so clicking
+  // again mid-animation re-aims from wherever the camera currently is and still lands
+  // exactly on a corner instead of drifting off-axis.
+  useEffect(() => {
+    if (!fitted.current || prev.current == null || prev.current === corner) { prev.current = corner; return; }
+    prev.current = corner;
+    const to = ISO_CORNERS[corner]?.v;
+    if (!to) return;
+    const c = controlsRef?.current;
+    const pivot = c ? c.target : new THREE.Vector3();
+    const from = camera.position.clone().sub(pivot);
+    const angle = shortAngle(isoAz(to) - Math.atan2(from.x, from.z));
+    if (Math.abs(angle) < 1e-6) return;
+    if (prefersReducedMotion()) {
+      spin.current = null;
+      camera.position.copy(pivot).add(from.applyAxisAngle(Y_AXIS, angle));
+      camera.lookAt(pivot);
+      camera.updateProjectionMatrix();
+      c?.update();
+      return;
+    }
+    spin.current = { from, angle, t: 0, dur: ISO_SPIN_S };
+  }, [corner, camera, controlsRef]);
+
+  // Explicit re-fit (Reset button).
+  useEffect(() => {
+    if (!fitNonce || !fitted.current) return;
+    applyFit();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fitNonce]);
+  return null;
+}
+
 // Runs inside the Canvas so it can access useThree(). Imperatively sets the
 // camera position and tells OrbitControls to treat it as the "home" state so
 // the reset button always returns to the same fit-all view.
@@ -1639,6 +1781,8 @@ export default function TestFit3D({
   show3dCeiling = true,   // toggleable ceiling slab (clay + detailed; never x-ray)
   controlsEnabled = true, // false → camera locked (Docs slides until "Edit view")
   initialCamera = null,   // { position:[3], target:[3] } — Docs slide pose restore
+  isoCorner = null,       // "ne"|"se"|"sw"|"nw" → locked orthographic isometric view
+  isoFitNonce = 0,        // bump to re-fit the isometric (Reset); rotation preserves zoom/pan
   preserveBuffer = false, // keep the drawing buffer readable (Docs capture instance)
   captureRef = null,      // ref filled with capture() → JPEG dataURL
   onCameraEnd = null,     // (pose) => void — fires when an orbit/pan/zoom gesture ends
@@ -1682,11 +1826,12 @@ export default function TestFit3D({
   }, [nodes, cx, cz, pxPerFoot]);
 
   const isDark = themeMode === "dark";
-  const bgColor   = style3d === "xray"     ? (isDark ? "#0d1117" : "#f0f4f8")
+  const bgColor   = style3d === "print"    ? "#ffffff"
+                  : style3d === "xray"     ? (isDark ? "#0d1117" : "#f0f4f8")
                   : style3d === "detailed" ? (isDark ? "#1a1d22" : "#e8ecf1")
                   : T.canvas;
-  const gridCell  = style3d === "xray" ? (isDark ? "#1a2233" : "#a0c0ff") : T.accentDim;
-  const gridSec   = style3d === "xray" ? (isDark ? "#2a3a55" : "#4060cc") : T.gridSub;
+  const gridCell  = style3d === "print" ? "#E4E4E4" : style3d === "xray" ? (isDark ? "#1a2233" : "#a0c0ff") : T.accentDim;
+  const gridSec   = style3d === "print" ? "#CFCFCF" : style3d === "xray" ? (isDark ? "#2a3a55" : "#4060cc") : T.gridSub;
 
   // Offset the grid so its lines align with the 2D 1-foot boundaries.
   // In 3D, world-origin = centroid of nodes. A 2D foot-boundary n is at
@@ -1699,10 +1844,13 @@ export default function TestFit3D({
   return (
     <div style={{ position: "absolute", inset: 0, background: bgColor }}>
       {controlsEnabled && <div style={{ position: "absolute", bottom: 12, left: 12, fontSize: 10, color: T.textFaint, zIndex: 10, userSelect: "none" }}>
-        Orbit: drag · Pan: right-drag · Zoom: scroll · Click to inspect
+        {isoCorner ? "Pan: drag · Zoom: scroll · Click to inspect — angle locked (isometric)"
+                   : "Orbit: drag · Pan: right-drag · Zoom: scroll · Click to inspect"}
       </div>}
 
       <Canvas
+        key={isoCorner ? "ortho" : "persp"} // switching projection needs a fresh camera
+        orthographic={!!isoCorner}
         shadows={style3d === "detailed" ? "soft" : false}
         dpr={[1, 1.5]}
         // offsetSize: measure layout size, not getBoundingClientRect — inside the Docs
@@ -1710,7 +1858,7 @@ export default function TestFit3D({
         // filling only a fraction of the slide body. Pane containers are untransformed,
         // so offset == rect there and behavior is unchanged.
         resize={{ offsetSize: true }}
-        camera={{ fov: 50, near: 0.1, far: 1000 }}
+        camera={isoCorner ? { near: -2000, far: 4000, zoom: 12 } : { fov: 50, near: 0.1, far: 1000 }}
         gl={{
           antialias: true,
           // Uniform depth precision across distance — without it the floor / grid /
@@ -1752,14 +1900,26 @@ export default function TestFit3D({
           <directionalLight position={[-12, 10, -8]} intensity={0.35} color="#bcd4ff" />
         </> : style3d === "xray" ? <>
           <ambientLight intensity={1.0} />
+        </> : style3d === "print" ? <>
+          {/* Bright + nearly flat: enough directional to hint the massing, but faces stay
+              pale so the black wall outlines carry the drawing. */}
+          <ambientLight intensity={0.9} />
+          <directionalLight position={[8, 16, 10]} intensity={0.45} />
         </> : <>
           <ambientLight intensity={0.65} />
           <directionalLight position={[8, 15, 8]} intensity={0.9} />
         </>}
 
-        <OrbitControls ref={controlsRef} enabled={controlsEnabled} enableDamping dampingFactor={0.08} zoomSpeed={0.5} minPolarAngle={0} maxPolarAngle={Math.PI / 2 - 0.04} target={[0, 0, 0]}
-          onEnd={onCameraEnd ? () => { const c = controlsRef?.current; if (c) onCameraEnd({ position: c.object.position.toArray(), target: c.target.toArray() }); } : undefined} />
-        <CameraRig camDist={camDist} controlsRef={controlsRef} initialCamera={initialCamera} />
+        {/* Isometric locks rotation (that's what keeps it isometric) but keeps pan/zoom;
+            left-drag pans since there's no orbit to spend it on. */}
+        <OrbitControls ref={controlsRef} enabled={controlsEnabled} enableDamping dampingFactor={0.08} zoomSpeed={0.5}
+          enableRotate={!isoCorner}
+          mouseButtons={isoCorner ? { LEFT: THREE.MOUSE.PAN, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.PAN } : undefined}
+          minPolarAngle={0} maxPolarAngle={Math.PI / 2 - 0.04} target={[0, 0, 0]}
+          onEnd={onCameraEnd ? () => { const c = controlsRef?.current; if (c) onCameraEnd({ position: c.object.position.toArray(), target: c.target.toArray(), zoom: c.object.zoom }); } : undefined} />
+        {isoCorner
+          ? <IsoCameraRig corner={isoCorner} fitR={camDist / 2.1} controlsRef={controlsRef} fitNonce={isoFitNonce} initialCamera={initialCamera} />
+          : <CameraRig camDist={camDist} controlsRef={controlsRef} initialCamera={initialCamera} />}
         {captureRef && <CaptureBridge captureRef={captureRef} />}
         {style3d === "detailed" && <PostFX />}
         <ShadowEnabler enabled={style3d === "detailed"} />

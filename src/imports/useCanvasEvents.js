@@ -352,8 +352,14 @@ export function useCanvasEvents(ctx) {
       return;
     }
     if (tool === "dim") {
-      const snap = findDimSnap(pos.x, pos.y);
-      const px = snap ? snap.x : sx, py = snap ? snap.y : sy;
+      // Shift while placing the span's END point locks it to the horizontal/vertical
+      // axis from the start point (like the wall tool). Ortho lock overrides geometry
+      // snapping and detaches the anchor — the point is now defined by the axis, not
+      // a piece of geometry that could drift off-axis.
+      const orthoLock = e.shiftKey && drawDim && !("x2" in drawDim);
+      const snap = orthoLock ? null : findDimSnap(pos.x, pos.y);
+      let px = snap ? snap.x : sx, py = snap ? snap.y : sy;
+      if (orthoLock) { const o = orthoSnap(drawDim.x1, drawDim.y1, sx, sy); px = o.x; py = o.y; }
       if (!drawDim) {
         setDrawDim({ x1: px, y1: py, anchor1Id: snap?.anchorId ?? null, anchor1Type: snap?.anchorType ?? null });
       } else if (!("x2" in drawDim)) {
@@ -1062,7 +1068,10 @@ export function useCanvasEvents(ctx) {
     } else if (proxHover) {
       setProxHover(null);
     }
-    if (tool === "dim") { const dsnap = findDimSnap(pos.x, pos.y); setGhostPos(dsnap ? { x: dsnap.x, y: dsnap.y, snapped: true } : { x: pos.x, y: pos.y, snapped: false }); }
+    if (tool === "dim") {
+      if (e.shiftKey && drawDim && !("x2" in drawDim)) { const o = orthoSnap(drawDim.x1, drawDim.y1, sx, sy); setGhostPos({ x: o.x, y: o.y, snapped: false }); }
+      else { const dsnap = findDimSnap(pos.x, pos.y); setGhostPos(dsnap ? { x: dsnap.x, y: dsnap.y, snapped: true } : { x: pos.x, y: pos.y, snapped: false }); }
+    }
     if (tool === "zone" || tool === "marker" || tool === "column") { setGhostPos({ x: sx, y: sy }); }
     if (tool === "revcloud") {
       const lp = drawRevCloud?.points?.[drawRevCloud.points.length - 1];

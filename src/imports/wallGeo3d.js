@@ -113,6 +113,9 @@ export function buildWallSolidGeometry(localQuad, heightFt, cuts = [], { cutDept
       geo = brush.geometry;
     } catch (err) {
       console.warn("wall CSG failed; rendering uncut prism", err);
+      // `geo` may already be disposed (the first successful subtract disposes the
+      // original extrude) — rebuild a fresh uncut prism rather than return a dead one.
+      geo = extrudePolyXZ(quad, heightFt);
     }
   }
   if (tileFt) applyBoxUVs(geo, tileFt.x || 1, tileFt.y || 1);

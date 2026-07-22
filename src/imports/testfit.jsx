@@ -11,7 +11,7 @@ import { useLayersStore } from "../store/layersStore";
 import { useSelectionStore } from "../store/selectionStore";
 import { useGeometryStore } from "../store/geometryStore";
 import { useDocsStore, DEFAULT_DOC_SETTINGS } from "../store/docsStore";
-import DocsView, { PrintDeck } from "../components/DocsView";
+import DocsView, { PrintDeck, DeckStrip } from "../components/DocsView";
 import BudgetSheet from "../components/BudgetSheet";
 import FnESheet from "../components/FnESheet";
 import TitleSheet from "../components/TitleSheet";
@@ -19,7 +19,7 @@ import { sheetDims, sheetInches, sheetBodyDims, fitRectToViewport, fitStandardSc
 import { useInteractionStore } from "../store/interactionStore";
 import { useCanvasEvents } from "./useCanvasEvents";
 // Extracted modules — see CLAUDE.md → "Code structure" for what belongs where.
-import { THEMES, cadCrosshair, WALL_KINDS, WALL_KINDS_LIGHT, WALL_MATERIALS, WALL_MATERIAL_HATCHES } from "../constants/theme";
+import { THEMES, cadCrosshair, WALL_KINDS, WALL_KINDS_LIGHT, WALL_KINDS_PRINT, WALL_MATERIALS, WALL_MATERIAL_HATCHES } from "../constants/theme";
 import { SPEC_COMPONENTS, SPEC_LAYERS, DOOR_TYPES, WINDOW_TYPES, FLOW_PATH_COLORS, PROX_DRAG_TYPES, SNAP_R, LABEL_MAX_W, DEFAULT_PHASES, COMPONENT_FINISHES, FINISH_COLORS, ACCESS_READER_COST, WALL_COST_PER_FT, DOOR_COST, WINDOW_COST, COLUMN_COST } from "../constants/specs";
 import { wrapLabelLines, labelBounds } from "../utils/labels";
 import { WallIcon, WindowIcon, ColumnIcon, RectRoomIcon } from "../components/icons";
@@ -29,9 +29,13 @@ import TopBar from "../components/TopBar";
 import ZoneLibraryModal from "../components/ZoneLibraryModal";
 
 export default function TestfitTool() {
-  const [themeMode, setThemeMode] = useState("light");
-  const T = THEMES[themeMode];
-  const wallKinds = themeMode === "light" ? WALL_KINDS_LIGHT : WALL_KINDS;
+  const [themeMode, setThemeMode] = useState("light"); // "light" (Vellum) | "dark" (Blueprint) | "print"
+  const T = THEMES[themeMode] || THEMES.light;
+  const wallKinds = themeMode === "dark" ? WALL_KINDS : themeMode === "print" ? WALL_KINDS_PRINT : WALL_KINDS_LIGHT;
+  // Docs slides are the printable output — NEVER dark. Vellum normally; pure-white Print
+  // when the Print theme is active (so screenshots/PDF are ink-light and high-contrast).
+  const docsSheetT = themeMode === "print" ? THEMES.print : THEMES.light;
+  const docsSheetWallKinds = themeMode === "print" ? WALL_KINDS_PRINT : WALL_KINDS_LIGHT;
   const [projectName, setProjectName] = useState("New Club");
   // Persistent plan geometry lives in a Zustand store (destructured to the same local
   // names, so every read/write site below is unchanged; setters honor the useState
@@ -260,7 +264,7 @@ export default function TestfitTool() {
   const splitDragRef = useRef(null); // { axis, startPos, containerPx }
   const splitContainerRef = useRef(null); // ref for the flex container holding the panes
   const ELEV_DIRS = ["front", "back", "left", "right"];
-  const PANE_VIEW_LABEL = { plan: "Plan", "3d": "3D", front: "Front", back: "Back", left: "Left", right: "Right" };
+  const PANE_VIEW_LABEL = { plan: "Plan", "3d": "3D", iso: "Isometric", front: "Front", back: "Back", left: "Left", right: "Right" };
   // Derived compatibility flags — full-screen 3D is retired (3D lives in aux panes),
   // so existing `view3d`/`splitView` reads keep working: plan is always visible.
   const view3d = false;
@@ -270,7 +274,22 @@ export default function TestfitTool() {
   const [show3dLabels, setShow3dLabels] = useState(false);
   const [show3dDims,   setShow3dDims]   = useState(false);
   const [show3dCeiling, setShow3dCeiling] = useState(true); // session-only, like the toggles above
-  const [style3d, setStyle3d] = useState("clay"); // "clay" | "xray" | "detailed"
+  const [style3d, setStyle3d] = useState("clay"); // "clay" | "xray" | "detailed" | "print"
+  const [isoCorner, setIsoCorner] = useState("se"); // which corner the Isometric view looks from
+  const [isoFitNonce, setIsoFitNonce] = useState(0); // bump → re-fit the isometric (Reset)
+  // Rotate arrows step 90° around the building. Order must match ISO_ORDER in testfit3d.jsx.
+  const rotateIso = (delta) => setIsoCorner(c => {
+    const order = ["ne", "se", "sw", "nw"];
+    return order[(order.indexOf(c) + delta + order.length) % order.length];
+  });
+  // The Print theme restyles all three surfaces together, so entering it switches the 3D
+  // view to the matching print style; leaving it reverts (only if still on print, so a
+  // manual style pick inside Print theme is preserved). The 3D style buttons still let you
+  // override per-view.
+  useEffect(() => {
+    if (themeMode === "print") setStyle3d("print");
+    else setStyle3d(s => s === "print" ? "clay" : s);
+  }, [themeMode]);
   const [doorWidth, setDoorWidth] = useState(36);
   const [windowWidth, setWindowWidth] = useState(36);
   const [columnSize, setColumnSize] = useState(12); // inches
@@ -306,7 +325,9 @@ export default function TestfitTool() {
   const [mode, setMode] = useState("build"); // build, zone, itmep, budget, docs
   const activeDocsSlide = slides.find(s => s.id === activeSlideId) || slides[0] || null;
   // 3D scene data is also needed when a Docs 3D slide is open (panes are unmounted there).
-  const show3d = panes.some(p => p.view === "3d") || (mode === "docs" && activeDocsSlide?.view === "3d");
+  // Isometric renders the same three.js scene, so it needs the 3D data prepped too.
+  const IS_3D_VIEW = (v) => v === "3d" || v === "iso";
+  const show3d = panes.some(p => IS_3D_VIEW(p.view)) || (mode === "docs" && IS_3D_VIEW(activeDocsSlide?.view));
 
   // Wall drawing: click-to-place sequential mode
   const [cursorPos, setCursorPos] = useState(null);
@@ -510,7 +531,7 @@ export default function TestfitTool() {
       const ctx = canvas.getContext("2d");
       ctx.scale(scale, scale);
       // Background fill matching current theme
-      ctx.fillStyle = themeMode === "dark" ? "#1A1812" : "#FAFAF8";
+      ctx.fillStyle = themeMode === "dark" ? "#1A1812" : themeMode === "print" ? "#FFFFFF" : "#FAFAF8";
       ctx.fillRect(0, 0, W, H);
       ctx.drawImage(img, 0, 0, W, H);
       URL.revokeObjectURL(url);
@@ -536,7 +557,7 @@ export default function TestfitTool() {
     clone.setAttribute("width", W);
     clone.setAttribute("height", H);
     const svgStr = serializer.serializeToString(clone);
-    const bgColor = themeMode === "dark" ? "#1A1812" : "#FAFAF8";
+    const bgColor = themeMode === "dark" ? "#1A1812" : themeMode === "print" ? "#FFFFFF" : "#FAFAF8";
     const win = window.open("", "_blank", "width=1200,height=800");
     if (!win) { alert("Allow pop-ups to export PDF"); return; }
     win.document.write(`<!DOCTYPE html><html><head><title>${projectName || "TestFit"}</title>
@@ -1454,7 +1475,6 @@ export default function TestfitTool() {
   // Condensed architectural display face — wordmark, section headers, big readouts.
   const display = "'Saira Condensed','IBM Plex Sans',system-ui,sans-serif";
   const nodeConns = useMemo(() => { const c = {}; walls.forEach(w => { c[w.n1] = (c[w.n1] || 0) + 1; c[w.n2] = (c[w.n2] || 0) + 1; }); return c; }, [walls]);
-  const nodeWallsMap = useMemo(() => { const m = {}; walls.forEach(w => { if (!m[w.n1]) m[w.n1] = []; if (!m[w.n2]) m[w.n2] = []; m[w.n1].push(w); m[w.n2].push(w); }); return m; }, [walls]);
 
   // 3D data — only resolved when 3D or split view is active
   const data3d = useMemo(() => {
@@ -1654,11 +1674,15 @@ export default function TestfitTool() {
       </g>;
     }
     const nx = -Math.sin(rad) * 3, ny = Math.cos(rad) * 3;
+    // Print keeps glazing monochrome (dark gray line + faint gray fill) so the sheet
+    // stays ink-light; other themes use the schematic window blue.
+    const winLine = sel ? T.nodeFill : (themeMode === "print" ? "#3A3A3A" : "#60A0C8");
+    const winFill = sel ? "#E8E0D088" : (themeMode === "print" ? "#0000000F" : "#60A0C844");
     return <g style={{ cursor: tool === "select" && mode === "build" ? "pointer" : "inherit" }}>
       <line x1={w.x - dx} y1={w.y - dy} x2={w.x + dx} y2={w.y + dy} stroke="transparent" strokeWidth={12} />
-      <line x1={w.x - dx + nx} y1={w.y - dy + ny} x2={w.x + dx + nx} y2={w.y + dy + ny} stroke={sel ? T.nodeFill : "#60A0C8"} strokeWidth={1.5} />
-      <line x1={w.x - dx - nx} y1={w.y - dy - ny} x2={w.x + dx - nx} y2={w.y + dy - ny} stroke={sel ? T.nodeFill : "#60A0C8"} strokeWidth={1.5} />
-      <line x1={w.x - dx} y1={w.y - dy} x2={w.x + dx} y2={w.y + dy} stroke={sel ? "#E8E0D088" : "#60A0C844"} strokeWidth={6} />
+      <line x1={w.x - dx + nx} y1={w.y - dy + ny} x2={w.x + dx + nx} y2={w.y + dy + ny} stroke={winLine} strokeWidth={1.5} />
+      <line x1={w.x - dx - nx} y1={w.y - dy - ny} x2={w.x + dx - nx} y2={w.y + dy - ny} stroke={winLine} strokeWidth={1.5} />
+      <line x1={w.x - dx} y1={w.y - dy} x2={w.x + dx} y2={w.y + dy} stroke={winFill} strokeWidth={6} />
     </g>;
   };
 
@@ -1992,10 +2016,9 @@ export default function TestfitTool() {
   );
   const renderSlideBody = (slide, { width, height, forPrint = false, sheetScale = 1 } = {}) => {
     // Every slide (on-screen preview AND print — both flow through this same function) is
-    // the printable output, so it always draws Vellum (light) regardless of the app's
-    // dark/light preference: dark colors would print wrong (or invisible, on a dark canvas
-    // background). Shadows the outer T for the rest of this function only.
-    const T = THEMES.light;
+    // the printable output, so it never draws the dark (Blueprint) theme: Vellum normally,
+    // pure-white Print when that theme is active. Shadows the outer T for this function.
+    const T = docsSheetT;
     // Section divider (no model geometry): a heading that indexes the slides nested under
     // it. The right-hand contents list auto-builds from the section's children (live —
     // includes collapsed ones; collapse only tidies the deck strip, not this sheet).
@@ -2020,7 +2043,7 @@ export default function TestfitTool() {
     // Plan + elevation share the crop-editing model: while editing, a working copy of the
     // slide's rect is panned (drag) and zoomed (wheel); Save persists it and rendering
     // re-snaps to the nearest true standard scale.
-    const rectEditing = !forPrint && docsCamEdit && docsEditRect && slide.view !== "3d";
+    const rectEditing = !forPrint && docsCamEdit && docsEditRect && !IS_3D_VIEW(slide.view);
     const rectControls = () => slideCamControls({
       editing: rectEditing,
       onEdit: () => { setDocsCamEdit(true); setDocsEditRect({ ...slide.rect }); },
@@ -2057,7 +2080,7 @@ export default function TestfitTool() {
         </div>
       );
     }
-    if (slide.view !== "3d") {
+    if (!IS_3D_VIEW(slide.view)) { // elevation slides (iso renders through the 3D branch)
       // Elevation slide: read-only ElevationView at the saved u/v crop; shows the live
       // elevation annotations + section cut, same as the planning pane.
       const dir = slide.view;
@@ -2100,12 +2123,13 @@ export default function TestfitTool() {
       if (!c || !pose) return;
       c.object.position.set(...pose.position);
       c.target.set(...pose.target);
+      if (pose.zoom) { c.object.zoom = pose.zoom; c.object.updateProjectionMatrix(); } // ortho iso
       c.update();
     };
     const saveView = () => {
       const c = docs3dControlsRef.current;
       if (c) {
-        const cam3d = { position: c.object.position.toArray(), target: c.target.toArray(), style3d: slide.cam3d?.style3d || "clay" };
+        const cam3d = { position: c.object.position.toArray(), target: c.target.toArray(), zoom: c.object.zoom, style3d: slide.cam3d?.style3d || "clay", isoCorner: slide.cam3d?.isoCorner ?? null };
         const image = docsCaptureRef.current ? docsCaptureRef.current() : slide.image;
         updateSlide(slide.id, { cam3d, image });
       }
@@ -2115,6 +2139,7 @@ export default function TestfitTool() {
       <div style={{ width, height, position: "relative", pointerEvents: "auto" }}>
         <Suspense fallback={placeholder("Loading 3D…")}>
           <TestFit3D key={slide.id}
+            isoCorner={slide.view === "iso" ? (slide.cam3d?.isoCorner || "se") : null}
             walls={data3d.walls} nodes={data3d.nodes} doors={data3d.doors} windows={data3d.windows}
             columns={data3d.columns} zones={data3d.zones} markers={data3d.markers} dims={dims}
             pxPerFoot={pxPerFoot} ceilingHeight={ceilingHeight} T={T} themeMode={themeMode}
@@ -2334,10 +2359,14 @@ export default function TestfitTool() {
       if (!r) return;
       // canvasRotation is deliberately ignored — slides render the plan unrotated.
       rect = { x: -viewOff.x / zoom, y: -viewOff.y / zoom, w: r.width / zoom, h: r.height / zoom };
-    } else if (view === "3d") {
+    } else if (IS_3D_VIEW(view)) {
       const c = controls3dRef.current;
       if (!c) return;
-      cam3d = { position: c.object.position.toArray(), target: c.target.toArray(), style3d };
+      // isoCorner rides along so the slide restores the same locked isometric.
+      // `zoom` matters for the ORTHOGRAPHIC isometric: moving an ortho camera doesn't
+      // change the image scale, only camera.zoom does — without it the slide would lose
+      // your framing and re-fit to the whole building.
+      cam3d = { position: c.object.position.toArray(), target: c.target.toArray(), zoom: c.object.zoom, style3d, isoCorner: view === "iso" ? isoCorner : null };
     } else {
       const v = elevViews[view];
       if (!v) return;
@@ -2346,7 +2375,7 @@ export default function TestfitTool() {
     addSlide({ name: defaultSlideName(view, slides.length), view, rect, cam3d, image: null });
     setSavedFlashPane(i);
     setTimeout(() => setSavedFlashPane(null), 1000);
-  }, [panes, viewOff, zoom, style3d, elevViews, slides.length, addSlide]);
+  }, [panes, viewOff, zoom, style3d, isoCorner, elevViews, slides.length, addSlide]);
 
   // Drag the camera marker along its ruler to pan that elevation. The cursor's position
   // along the edge → projected-u → the elevation centers there (handled via the panU prop).
@@ -2464,9 +2493,11 @@ export default function TestfitTool() {
   };
 
   // ── Pane rendering ───────────────────────────────────────────────────
-  const render3dPane = () => (
+  // isoCorner set → the same scene drawn as a locked orthographic isometric.
+  const render3dPane = (isoCorner = null) => (
     <div style={{ width: "100%", height: "100%", position: "relative", background: T.canvas }}>
       {data3d && <Suspense fallback={<div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", color: T.textMuted, fontSize: 11, fontFamily: font }}>Loading 3D…</div>}><TestFit3D
+        isoCorner={isoCorner} isoFitNonce={isoFitNonce}
         walls={data3d.walls} nodes={data3d.nodes} doors={data3d.doors} windows={data3d.windows}
         columns={data3d.columns} zones={data3d.zones} markers={data3d.markers} dims={dims}
         pxPerFoot={pxPerFoot} ceilingHeight={ceilingHeight} T={T} themeMode={themeMode}
@@ -2479,9 +2510,27 @@ export default function TestfitTool() {
         visibleBuildElectrical={visibleBuildElectrical} visibleBuildLighting={visibleBuildLighting}
         onSelect={(id, type) => { setSelectedId(id); setSelType(type); setSelectedIds(id ? [id] : []); }}
       /></Suspense>}
+      {/* Isometric rotation — swings 90° around the building per press, keeping the
+          current zoom/pan; Reset re-fits. Sits with the other camera controls. */}
+      {isoCorner && (
+        <div style={{ position: "absolute", bottom: 12, right: 52, display: "flex", gap: 2, alignItems: "center", background: T.panelBg, border: "1px solid " + T.border, borderRadius: 8, padding: 3, backdropFilter: "blur(12px)", boxShadow: T.panelShadow, zIndex: 10 }}>
+          {[
+            ["iso-rot-left", <ChevronLeft key="l" size={14} />, "Rotate left 90°", () => rotateIso(-1)],
+            ["iso-fit", <RotateCcw key="r" size={13} />, "Reset view (fit)", () => setIsoFitNonce(n => n + 1)],
+            ["iso-rot-right", <ChevronRight key="r2" size={14} />, "Rotate right 90°", () => rotateIso(1)],
+          ].map(([id, icon, tip, fn]) => (
+            <button key={id} data-testid={id} onClick={fn} title={`${tip} · viewing from ${isoCorner.toUpperCase()}`}
+              style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: "5px 7px", borderRadius: 5, border: "none", cursor: "pointer", background: "transparent", color: T.textMuted }}
+              onMouseEnter={e => { e.currentTarget.style.background = T.accent + "30"; e.currentTarget.style.color = T.textBright; }}
+              onMouseLeave={e => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = T.textMuted; }}>
+              {icon}
+            </button>
+          ))}
+        </div>
+      )}
       {/* 3D style switcher */}
       <div style={{ position: "absolute", bottom: 12, left: "50%", transform: "translateX(-50%)", display: "flex", gap: 4, background: T.panelBg, border: "1px solid " + T.border, borderRadius: 8, padding: 4, backdropFilter: "blur(12px)", zIndex: 10 }}>
-        {[["clay", "Clay"], ["xray", "X-Ray"], ["detailed", "Detailed"]].map(([k, label]) => (
+        {[["clay", "Clay"], ["xray", "X-Ray"], ["detailed", "Detailed"], ["print", "Print"]].map(([k, label]) => (
           <button key={k} onClick={() => setStyle3d(k)}
             style={{ padding: "4px 12px", borderRadius: 5, border: "none", cursor: "pointer", background: style3d === k ? T.accent + "40" : "transparent", color: style3d === k ? T.textBright : T.textMuted, fontSize: 10, fontFamily: "inherit", fontWeight: style3d === k ? 600 : 400, outline: style3d === k ? "1px solid " + T.accent : "none" }}>
             {label}
@@ -2489,18 +2538,20 @@ export default function TestfitTool() {
         ))}
       </div>
       <button onClick={() => setShow3dCeiling(v => !v)} title="Ceiling"
-        style={{ position: "absolute", bottom: 12, right: 52, zIndex: 10, display: "flex", alignItems: "center", justifyContent: "center", padding: "6px 8px", borderRadius: 6, border: "1px solid " + T.border, background: show3dCeiling ? T.accent : T.panelBg, color: show3dCeiling ? "#fff" : T.textMuted, cursor: "pointer", backdropFilter: "blur(8px)", boxShadow: T.panelShadow }}>
+        style={{ position: "absolute", bottom: 12, right: isoCorner ? 12 : 52, zIndex: 10, display: "flex", alignItems: "center", justifyContent: "center", padding: "6px 8px", borderRadius: 6, border: "1px solid " + T.border, background: show3dCeiling ? T.accent : T.panelBg, color: show3dCeiling ? "#fff" : T.textMuted, cursor: "pointer", backdropFilter: "blur(8px)", boxShadow: T.panelShadow }}>
         <PanelTop size={14} />
       </button>
-      <button onClick={() => controls3dRef.current?.reset()} title="Reset camera"
+      {/* Isometric has its own Reset inside the rotate group — don't show two. */}
+      {!isoCorner && <button onClick={() => controls3dRef.current?.reset()} title="Reset camera"
         style={{ position: "absolute", bottom: 12, right: 12, zIndex: 10, display: "flex", alignItems: "center", justifyContent: "center", padding: "6px 8px", borderRadius: 6, border: "1px solid " + T.border, background: T.panelBg, color: T.textMuted, cursor: "pointer", backdropFilter: "blur(8px)", boxShadow: T.panelShadow }}>
         <RotateCcw size={14} />
-      </button>
+      </button>}
     </div>
   );
   const renderAuxPane = (i) => {
     const view = panes[i]?.view;
     if (view === "3d") return render3dPane();
+    if (view === "iso") return render3dPane(isoCorner);
     // elevation
     const dir = view;
     const anno = elevAnnotations[dir];
@@ -2549,6 +2600,7 @@ export default function TestfitTool() {
         style={{ padding: "3px 6px", borderRadius: 6, background: T.panelBg, border: "1px solid " + T.border, color: T.textBright, fontSize: 10, fontWeight: 600, fontFamily: "inherit", backdropFilter: "blur(8px)", cursor: "pointer", outline: "none" }}>
         {i === 0 && <option value="plan">Plan</option>}
         <option value="3d">3D</option>
+        <option value="iso">Isometric</option>
         {ELEV_DIRS.map(d => <option key={d} value={d}>{PANE_VIEW_LABEL[d]}</option>)}
       </select>
       {camBtn}
@@ -2591,8 +2643,8 @@ export default function TestfitTool() {
     // live app theme — dark-mode colors would print wrong (or invisible, on a dark canvas
     // background). Shadows T/wallKinds for the rest of this function only; the live editable
     // canvas (interactive:true) keeps following the user's theme toggle as before.
-    const T = interactive ? outerT : THEMES.light;
-    const wallKinds = interactive ? outerWallKinds : WALL_KINDS_LIGHT;
+    const T = interactive ? outerT : docsSheetT;
+    const wallKinds = interactive ? outerWallKinds : docsSheetWallKinds;
     return (
           <svg ref={interactive ? cvs : undefined} data-testid={interactive ? "plan-canvas" : "docs-slide-canvas"}
             width={interactive ? "100%" : width} height={interactive ? "100%" : height}
@@ -3728,11 +3780,16 @@ export default function TestfitTool() {
             {mode === "docs" && <>
               <div style={S.sec}>
                 <div style={S.sh}>Documentation</div>
-                <div style={S.cr}><span>Slides</span><span style={{ fontWeight: 500 }}>{slides.length}</span></div>
                 <div style={S.cr}><span>Sheet</span><span style={{ fontWeight: 500, textTransform: "capitalize" }}>{docSettings.size} · {docSettings.orientation}</span></div>
                 <div style={{ fontSize: 9, color: T.textMuted, lineHeight: 1.6, marginTop: 8 }}>
                   Slides live-render the current model — edits in stages 1–4 update the deck automatically. Use the camera button on any pane to add a slide.
                 </div>
+              </div>
+              <div style={S.sec}>
+                <DeckStrip T={T} font={font} slides={slides} activeSlideId={activeSlideId}
+                  onSelectSlide={setActiveSlideId} onUpdateSlide={updateSlide} onDeleteSlide={removeSlide}
+                  onDropSlide={dropSlide}
+                  onAddTemplate={(view) => addSlide({ name: defaultSlideName(view, slides.length), view, rect: null, cam3d: null, image: null })} />
               </div>
             </>}
             {mode === "budget" && <>
@@ -3860,8 +3917,10 @@ export default function TestfitTool() {
               </div>
             </>}
           </div>
-          {/* ── Visibility panel — all modes ── */}
-          {(() => {
+          {/* ── Visibility panel — planning modes only. Docs uses the per-slide Layers
+              panel in the slide inspector instead, so the live-layer toggles here would
+              be redundant (and misleading — they don't drive the deck's rendering). ── */}
+          {mode !== "docs" && (() => {
             const isLightComp = isLightComponent;
             const rows = [
               // Universal items (lockable = items can be locked from selection/editing)
@@ -4160,13 +4219,11 @@ export default function TestfitTool() {
 
         {/* ── Canvas area — Docs stage swaps the pane workspace for the slide deck ── */}
         {mode === "docs" ? (
-          <DocsView T={T} font={font} display={display} projectName={projectName}
+          <DocsView T={T} sheetTheme={docsSheetT} font={font} display={display} projectName={projectName}
             slides={slides} docSettings={docSettings} activeSlideId={activeSlideId}
-            onSelectSlide={setActiveSlideId} onUpdateSlide={updateSlide} onDeleteSlide={removeSlide}
-            onDropSlide={dropSlide} onUpdateSettings={(p) => setDocSettings(s => ({ ...s, ...p }))}
+            onUpdateSlide={updateSlide} onUpdateSettings={(p) => setDocSettings(s => ({ ...s, ...p }))}
             onEditModel={editModelFromSlide} renderSlideBody={renderSlideBody}
-            onPrint={() => setPrinting(true)} captureRef={docsCaptureRef} autoScaleFor={slideAutoScale}
-            onAddTemplate={(view) => addSlide({ name: defaultSlideName(view, slides.length), view, rect: null, cam3d: null, image: null })} />
+            onPrint={() => setPrinting(true)} captureRef={docsCaptureRef} autoScaleFor={slideAutoScale} />
         ) : (
         <div ref={splitContainerRef} style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", position: "relative" }}>
         {/* Row 1 (plan + aux pane 1) */}
@@ -4286,7 +4343,7 @@ export default function TestfitTool() {
             <div style={{ position: "absolute", bottom: 112, left: "50%", transform: "translateX(-50%)",
               display: "flex", gap: 4, background: T.panelBg, border: "1px solid " + T.border,
               borderRadius: 8, padding: 4, backdropFilter: "blur(12px)", zIndex: 10 }}>
-              {[["clay","Clay"],["xray","X-Ray"],["detailed","Detailed"]].map(([k, label]) => (
+              {[["clay","Clay"],["xray","X-Ray"],["detailed","Detailed"],["print","Print"]].map(([k, label]) => (
                 <button key={k} onClick={() => setStyle3d(k)}
                   style={{ padding: "5px 14px", borderRadius: 5, border: "none", cursor: "pointer",
                     background: style3d === k ? T.accent + "40" : "transparent",
@@ -5443,7 +5500,7 @@ export default function TestfitTool() {
             body { margin: 0; }
           }
         `}</style>
-        <PrintDeck slides={slides} docSettings={docSettings} T={T} font={font} display={display}
+        <PrintDeck slides={slides} docSettings={docSettings} T={T} sheetTheme={docsSheetT} font={font} display={display}
           projectName={projectName} renderSlideBody={renderSlideBody} autoScaleFor={slideAutoScale} />
       </>);
     })()}

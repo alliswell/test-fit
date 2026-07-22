@@ -42,6 +42,33 @@ src/
                        testfit.jsx. Reads geometry/interaction/selection via their stores;
                        receives helper callbacks, UI scalars, refs & tool-config via `ctx`.
     testfit3d.jsx      <TestFit3D> react-three-fiber 3D view (lazy chunk; imports M3D).
+                       ISOMETRIC: pane view "iso" renders this same scene through an
+                       ORTHOGRAPHIC camera locked to the (±1,1,±1) diagonal — true
+                       isometric, so parallel edges stay parallel and the drawing measures.
+                       `isoCorner` (ne/se/sw/nw, ISO_CORNERS holds the vectors; plan-north
+                       is −z) picks the corner; the ◄ ⟲ ► controls step 90° through
+                       ISO_ORDER. IsoCameraRig fits ONCE on the first sized frame (r3f ortho
+                       frustum = canvas size in world units, so visible height =
+                       size.height / zoom); a corner change then only swings the camera
+                       about the CURRENT target — zoom, pan and distance are preserved, so
+                       rotating never loses your framing. Re-fit is explicit via the
+                       `isoFitNonce` prop (Reset button).
+                       The swing is ANIMATED (~0.42s, easeInOutCubic) by a useFrame tween at
+                       priority 0 — i.e. after drei's OrbitControls update (priority −1), so
+                       the tweened pose is what renders; the pivot is read live each frame so
+                       panning mid-swing tracks. It aims at the corner's ABSOLUTE azimuth
+                       (not a relative +90°), so clicking again mid-animation re-aims from
+                       the current pose and still lands exactly on a corner instead of
+                       drifting off-axis. Honors prefers-reduced-motion (snaps instead).
+                       cam3d SAVES `zoom` — an orthographic camera's position does NOT set
+                       the image scale (only camera.zoom does), so a position-only pose made
+                       iso slides silently re-fit to the whole building. IsoCameraRig
+                       restores initialCamera (position+target+zoom) when present and only
+                       falls back to applyFit() for a fresh view. Orbit rotation is disabled (that's
+                       what keeps it isometric); pan/zoom stay, and left-drag pans. Iso slides save/restore the corner via
+                       cam3d.isoCorner and render through the 3D slide branch — note
+                       IS_3D_VIEW() in testfit.jsx gates data3d prep AND the elevation-vs-3D
+                       slide branch, so "iso" must go through it, never the elevation path.
                        WALLS (Pascal-style, reworked): each wall is ONE WallSolid mesh —
                        its mitered footprint quad (scene-level computeWallFootprints memo,
                        shared with the 2D plan) extruded via wallGeo3d.js, with door/window
@@ -54,8 +81,11 @@ src/
                        Outlines (xray ghosts, demo red) come from buildWallEdgeSegments —
                        procedural, because CSG output has T-vertices that break
                        EdgesGeometry (caps use solidEdgesGeometry: position-only weld).
-                       Demo walls extrude UNCUT (openings/casings/glass not rendered —
-                       they're being demoed too), skip shadows (noAutoShadow), and keep the
+                       Demo walls DO cut their openings (a demoed wall must still show its
+                       doors/windows as outlined holes — an uncut red mass erased them), but
+                       skip the fixtures themselves (leaf/glass/casing/trim: they're being
+                       removed, and solid finished parts inside a ghost wall read as
+                       "staying"). They skip shadows (noAutoShadow), and keep the
                        two-pass union in WallSolid: depth-only prepass (renderOrder 10)
                        then UNLIT color at depthFunc EqualDepth (renderOrder 11) so the
                        whole demo run — including overlapping cap wedges — blends exactly
@@ -91,9 +121,21 @@ src/
                        floating zones with no walls on their edges render no overlay)
     *.test.js          Vitest specs for model/geometry
   constants/
-    theme.js           THEMES (dark/light), cadCrosshair, WALL_KINDS(_LIGHT),
-                       WALL_MATERIALS(_HATCHES), DOOR_TYPE_STYLES, WINDOW_TYPE_STYLES
-                       (per-type elevation + 3D material styling; pinned by theme.test.js)
+    theme.js           THEMES (light=Vellum / dark=Blueprint / print=white paper+black
+                       ink), cadCrosshair, WALL_KINDS(_LIGHT/_PRINT), WALL_MATERIALS(_HATCHES),
+                       DOOR_TYPE_STYLES, WINDOW_TYPE_STYLES (per-type elevation + 3D material
+                       styling; pinned by theme.test.js).
+                       PRINT theme (themeMode "print", topbar Light/Dark/Print segmented
+                       control): a printer-friendly style spanning all three surfaces at once.
+                       2D → THEMES.print + WALL_KINDS_PRINT (grayscale, value+dash not hue).
+                       Docs → docsSheetT = print ? THEMES.print : THEMES.light (NEVER dark);
+                       threaded to DocsView/PrintDeck as sheetTheme + used by renderSlideBody /
+                       renderPlanCanvas's non-interactive branch → pure-white sheets. 3D →
+                       style3d "print" (flat near-white walls + black edges everywhere, white
+                       bg, no shadows/bloom/textures/HDRI); auto-selected when entering the
+                       Print theme (effect in testfit.jsx), reverts to clay on leave, still
+                       overridable via the 3D style buttons. Window glazing desaturates to gray
+                       in print (WindowSvg, shared by canvas + docs).
     specs.js           SPEC_COMPONENTS (IT/MEP catalog: normalized {symbol,color,mount,
                        finish?,directional?,product?} — drives plan symbol + elevation glyph
                        + 3D shape; pinned by specs.test.js), SPEC_LAYERS, COMPONENT_FINISHES,
@@ -123,7 +165,12 @@ src/
     ui.jsx             SliderInput, LabelAnnotation, AlignBtn
     ElevationView.jsx  one elevation pane (own pan/zoom camera + dim/label/revcloud tools);
                        doors/windows/columns flagged `isNew` render a brand "NEW" tag +
-                       heavier outline (as-built items read plainly). Dims are scoped to the
+                       heavier outline (as-built items read plainly). DEMO walls render a red
+                       diagonal hatch (#elev-demo-hatch) + dashed red outline + "DEMO" tag;
+                       openings riding a demo wall (found via hostWallOf — they attach by
+                       position, not reference) get the same treatment and drop their
+                       finished detailing (panels/lites/knob) so they never read as staying.
+                       Dims are scoped to the
                        section cut they're drawn under (dim.cut = cut pos | null): only the
                        active cut's dims render (dimInView), so measurements stay tied to the
                        wall they annotate. migrate (v16) drops legacy untagged dims. A dim

@@ -161,7 +161,19 @@ export default function TopBar({
           <TooltipContent>Redo (⌘⇧Z / ⌘Y)</TooltipContent>
         </Tooltip>
         <div style={{ width: 1, height: 20, background: T.border, margin: "0 3px" }} />
-        <button style={S.smBtn} onClick={() => setThemeMode(m => m === "dark" ? "light" : "dark")}>{themeMode === "dark" ? "Light" : "Dark"}</button>
+        {/* Theme: Vellum (light) · Blueprint (dark) · Print (white paper / black ink,
+            for exporting and printing). Print restyles the 2D canvas, docs sheets, and
+            the 3D view together. */}
+        <div style={{ display: "flex", gap: 2, alignItems: "center", background: T.bg2, borderRadius: 6, padding: 2 }}>
+          {[["light", "Light"], ["dark", "Dark"], ["print", "Print"]].map(([m, label]) => (
+            <button key={m} onClick={() => setThemeMode(m)}
+              style={{ padding: "3px 8px", borderRadius: 4, border: "none", cursor: "pointer", fontFamily: "inherit",
+                fontSize: 10, fontWeight: themeMode === m ? 600 : 500,
+                background: themeMode === m ? T.brand + "22" : "transparent",
+                color: themeMode === m ? T.textBright : T.textMuted,
+                outline: themeMode === m ? "1px solid " + T.brand : "none" }}>{label}</button>
+          ))}
+        </div>
         <div style={{ width: 1, height: 20, background: T.border, margin: "0 3px" }} />
         <div style={{ position: "relative" }}>
           <button style={{ ...S.smBtn, display: "flex", alignItems: "center", gap: 4 }} onClick={e => { setSaveMenuRect(e.currentTarget.getBoundingClientRect()); setShowSaveMenu(v => !v); }}>

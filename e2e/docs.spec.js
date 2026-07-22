@@ -89,6 +89,14 @@ test("slide notes: place, edit, persist, delete — model untouched", async ({ p
   await page.getByTestId("note-tool").click();
   const sheet = page.getByTestId("docs-sheet");
   await sheet.click({ position: { x: 200, y: 150 } });
+  // A note being edited shows ONLY its editor — the empty "Label…" placeholder used to
+  // render underneath and poke out from behind the textarea.
+  await expect(sheet).not.toContainText("Label…");
+  // …and the editor is centered on the note anchor (not hanging down-right of it).
+  const ed = await page.getByTestId("note-editor").boundingBox();
+  const sh = await sheet.boundingBox();
+  expect(Math.abs((ed.x + ed.width / 2) - (sh.x + 200))).toBeLessThan(6);
+  expect(Math.abs((ed.y + ed.height / 2) - (sh.y + 150))).toBeLessThan(6);
   await page.getByTestId("note-editor").fill("Verify clearances");
   await page.keyboard.press("Enter");
   await expect(sheet).toContainText("Verify clearances");
@@ -543,6 +551,21 @@ test("slides stay Vellum (light) for correct printing even when the app is in Da
   expect(sheetBg).toBe("rgb(236, 228, 213)"); // Vellum canvas #ECE4D5
   const deckBg = await page.evaluate(() => getComputedStyle(document.querySelector('[data-testid="docs-view"]')).backgroundColor);
   expect(deckBg).not.toBe("rgb(236, 228, 213)"); // chrome still follows the dark theme
+});
+
+test("Print theme renders docs sheets on pure-white paper", async ({ page }) => {
+  await page.goto("/");
+  await newProject(page);
+  const { cx, cy } = await planCenter(page);
+  await drawWall(page, cx - 120, cy, cx + 120, cy);
+
+  await page.getByRole("button", { name: "Print", exact: true }).click();
+  await page.getByTestId("save-to-docs-0").click();
+  await page.keyboard.press("5");
+
+  // The sheet is pure white in Print mode (vs. warm Vellum #ECE4D5 normally).
+  const sheetBg = await page.evaluate(() => getComputedStyle(document.querySelector('[data-testid="docs-sheet"]')).backgroundColor);
+  expect(sheetBg).toBe("rgb(255, 255, 255)");
 });
 
 test("print output stays Vellum (light) even when the app is in Dark mode", async ({ page }) => {

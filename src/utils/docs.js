@@ -194,7 +194,7 @@ export const fitRectToViewport = (rect, vw, vh, pad = 0) => {
   return { zoom, viewOff: { x: vw / 2 - cx * zoom, y: vh / 2 - cy * zoom } };
 };
 
-const VIEW_TITLES = { plan: "Plan", front: "Front Elevation", back: "Back Elevation", left: "Left Elevation", right: "Right Elevation", "3d": "3D View", budget: "Budget", ffe: "FF&E Schedule", title: "Section" };
+const VIEW_TITLES = { plan: "Plan", front: "Front Elevation", back: "Back Elevation", left: "Left Elevation", right: "Right Elevation", "3d": "3D View", iso: "Isometric", budget: "Budget", ffe: "FF&E Schedule", title: "Section" };
 export const viewTitle = (view) => VIEW_TITLES[view] || "View";
 
 // "Plan 01", "Front Elevation 02" — count is how many slides exist BEFORE this one.
