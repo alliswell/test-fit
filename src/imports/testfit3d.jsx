@@ -410,7 +410,7 @@ function WarmGlow({ r = 0.28, intensity = 1.0, distance = 9, position = [0, 0, 0
 // frame, floor at y=0). Material branches mirror WallBox; the demo two-pass
 // depth-prepass/EqualDepth union carries over unchanged (exact footprints eliminate
 // wall-wall overlap, but junction cap solids still overlap demo quads).
-function WallSolid({ geometry, edges = null, color, material, wallId, onSelect, isDemo, isSelected, style3d = "clay", interactive = true }) {
+function WallSolid({ geometry, edges = null, openingEdges = null, color, material, wallId, onSelect, isDemo, isSelected, style3d = "clay", interactive = true, monoTier = null, monoT = null }) {
   const [hov, setHov] = useState(false);
   const matSpec = WALL_MATERIAL_PBR[material || "Drywall"];
   const detailedColor = matSpec?.color ?? color;
@@ -419,8 +419,13 @@ function WallSolid({ geometry, edges = null, color, material, wallId, onSelect, 
   const tex = (style3d === "detailed" && !isDemo) ? getWallTextureSet(material) : null;
   // Print style reads like a black-and-white line drawing: flat near-white surfaces with
   // black outlines on every wall (hidden-line look), no textures/shadows/bloom.
-  const outlined = style3d === "xray" || style3d === "print" || isDemo;
-  const edgeColor = (style3d === "print" && !isDemo) ? "#111111" : color;
+  // Mono: the drawing is one ink, so the wall becomes a pale paper-toned mass carrying
+  // tier-coloured edges — T1 envelope / T2 partition on the shell, T3 on the openings.
+  // (WebGL caps line width at 1px in practice, so the tier's WEIGHT can't be drawn here;
+  // the ramp's lightness is what separates the tiers in 3D.)
+  const mono = !!monoTier;
+  const outlined = mono || style3d === "xray" || style3d === "print" || isDemo;
+  const edgeColor = mono ? monoTier.color : (style3d === "print" && !isDemo) ? "#111111" : color;
   // Outline: callers with CSG'd geometry pass procedural `edges` (T-vertices in CSG
   // output break EdgesGeometry); plain solids (caps) fall back to solidEdgesGeometry.
   const fallbackEdges = useMemo(
@@ -457,8 +462,12 @@ function WallSolid({ geometry, edges = null, color, material, wallId, onSelect, 
           color={(interactive && hov) ? "#ffffff" : color}
           transparent opacity={hov ? 0.7 : 0.4}
           depthWrite={false} depthFunc={THREE.EqualDepth} />}
-        {!demoUnion && style3d === "xray" && <meshBasicMaterial color={(interactive && hov) ? "#ffffff" : color} transparent opacity={hov ? 0.25 : 0.08} depthWrite={false} />}
-        {!demoUnion && style3d === "detailed" && <meshStandardMaterial
+        {/* Mono surface: unlit + paper-toned, so no lighting gradient competes with the
+            tier ink. The edges carry the drawing. */}
+        {!demoUnion && mono && <meshBasicMaterial
+          color={(interactive && hov) ? monoT?.tiers?.[3]?.color ?? "#ffffff" : (monoT?.canvas ?? "#ffffff")} />}
+        {!demoUnion && !mono && style3d === "xray" && <meshBasicMaterial color={(interactive && hov) ? "#ffffff" : color} transparent opacity={hov ? 0.25 : 0.08} depthWrite={false} />}
+        {!demoUnion && !mono && style3d === "detailed" && <meshStandardMaterial
           color={interactive && hov ? "#ffffff" : (tex ? "#ffffff" : detailedColor)}
           roughness={detailedRough}
           metalness={detailedMetal}
@@ -467,9 +476,9 @@ function WallSolid({ geometry, edges = null, color, material, wallId, onSelect, 
           bumpMap={tex?.bumpMap}
           bumpScale={tex?.bumpScale}
         />}
-        {!demoUnion && style3d === "print" && <meshLambertMaterial
+        {!demoUnion && !mono && style3d === "print" && <meshLambertMaterial
           color={(interactive && hov) ? "#DCE8F6" : "#F5F5F5"} emissive="#EDEDED" emissiveIntensity={0.5} />}
-        {!demoUnion && style3d === "clay" && (() => {
+        {!demoUnion && !mono && style3d === "clay" && (() => {
           const claySelf = lightenHex(color, CLAY_WALL_LIGHTEN);
           return <meshLambertMaterial
             color={(interactive && hov) ? "#ffffff" : claySelf}
@@ -480,6 +489,10 @@ function WallSolid({ geometry, edges = null, color, material, wallId, onSelect, 
       </mesh>
       {edgesGeo && <lineSegments geometry={edgesGeo} renderOrder={isDemo ? 12 : undefined}>
         <lineBasicMaterial color={edgeColor} />
+      </lineSegments>}
+      {/* Openings sit a tier below the wall that holds them (T3 joinery). */}
+      {outlined && openingEdges && <lineSegments geometry={openingEdges} renderOrder={isDemo ? 12 : undefined}>
+        <lineBasicMaterial color={mono ? (monoT?.tiers?.[2]?.color ?? edgeColor) : edgeColor} />
       </lineSegments>}
       {isSelected && glowBB && (
         <group position={[(glowBB.min.x + glowBB.max.x) / 2, (glowBB.min.y + glowBB.max.y) / 2, (glowBB.min.z + glowBB.max.z) / 2]}>
@@ -598,7 +611,7 @@ function WindowFrame({ segLenFt, winHFt, sillFt, thickFt, style3d = "clay" }) {
   );
 }
 
-function DoorSwing3D({ door, segLenFt, heightFt, offsetFt, thickFt, onSelect, isSelected, style3d = "clay", interactive = true }) {
+function DoorSwing3D({ door, segLenFt, heightFt, offsetFt, thickFt, onSelect, isSelected, style3d = "clay", interactive = true, monoInk = null }) {
   const isCaseOpening = door.doorType === "Case Opening";
   const isGlass       = door.doorType === "Glass";
   const st            = DOOR_TYPE_STYLES[door.doorType] || DOOR_TYPE_STYLES.Wood;
@@ -643,7 +656,7 @@ function DoorSwing3D({ door, segLenFt, heightFt, offsetFt, thickFt, onSelect, is
                 <boxGeometry args={[0.02, doorH - 2 * fw, segLenFt - 2 * fw]} />
                 {isDetailed
                   ? <meshPhysicalMaterial {...st.pbr} thickness={0.4} ior={1.5} transparent envMapIntensity={1.2} side={THREE.DoubleSide} />
-                  : <meshLambertMaterial color={st.clay.color} transparent opacity={st.clay.opacity} side={THREE.DoubleSide} depthWrite={false} />}
+                  : <meshLambertMaterial color={monoInk ?? st.clay.color} transparent opacity={st.clay.opacity} side={THREE.DoubleSide} depthWrite={false} />}
               </mesh>
             </>;
           })() : (
@@ -651,7 +664,7 @@ function DoorSwing3D({ door, segLenFt, heightFt, offsetFt, thickFt, onSelect, is
               <boxGeometry args={[0.08, doorH, segLenFt]} />
               {isDetailed
                 ? <meshStandardMaterial {...st.pbr} envMapIntensity={0.7} />
-                : <meshLambertMaterial color={st.clay.color} transparent opacity={st.clay.opacity} />}
+                : <meshLambertMaterial color={monoInk ?? st.clay.color} transparent opacity={st.clay.opacity} />}
             </mesh>
           )}
           {/* Knob — latch edge (free end of the leaf), through both faces, brass in detailed */}
@@ -701,7 +714,7 @@ function DoorSwing3D({ door, segLenFt, heightFt, offsetFt, thickFt, onSelect, is
 }
 
 // ─── Window glass / glow ───────────────────────────────────────────────────────
-function WindowGlass({ lenFt, winHFt, sillFt, thickFt, style3d = "clay" }) {
+function WindowGlass({ lenFt, winHFt, sillFt, thickFt, style3d = "clay", monoInk = null }) {
   return (
     <mesh position={[0, sillFt + winHFt / 2, 0]}>
       <boxGeometry args={[lenFt, winHFt, thickFt * 0.1]} />
@@ -709,7 +722,7 @@ function WindowGlass({ lenFt, winHFt, sillFt, thickFt, style3d = "clay" }) {
         ? <meshPhysicalMaterial color="#a8c8e0" roughness={0.05} metalness={0}
             transmission={0.85} thickness={0.4} ior={1.5}
             transparent opacity={0.55} envMapIntensity={1.2} side={THREE.DoubleSide} />
-        : <meshLambertMaterial color="#90CAF9" transparent opacity={0.28} side={THREE.DoubleSide} />}
+        : <meshLambertMaterial color={monoInk ?? "#90CAF9"} transparent opacity={monoInk ? 0.18 : 0.28} side={THREE.DoubleSide} />}
     </mesh>
   );
 }
@@ -721,7 +734,7 @@ function WindowGlow({ lenFt, winHFt, sillFt, thickFt }) {
 }
 
 // ─── Wall with openings ────────────────────────────────────────────────────────
-function Wall3D({ w, fp, nodes, doors, windows, cx, cz, pxPerFoot, ceilingHeight, onSelect, selectedId, selType, showDims, style3d = "clay", interactive = true }) {
+function Wall3D({ w, fp, nodes, doors, windows, cx, cz, pxPerFoot, ceilingHeight, onSelect, selectedId, selType, showDims, style3d = "clay", interactive = true, monoTier = null, monoT = null }) {
   const n1 = nodes.find(n => n.id === w.n1), n2 = nodes.find(n => n.id === w.n2);
   const wk       = WALL_KINDS[w.kind || "existing"];
   const thickFt  = (w.kind === "pony" ? (w.ponyDepth || 6) : (wk.thickness || 5)) / 12;
@@ -778,8 +791,8 @@ function Wall3D({ w, fp, nodes, doors, windows, cx, cz, pxPerFoot, ceilingHeight
   // a ghost wall read as "these stay", which is backwards.
   const isDemo = w.kind === "demo";
   const tileFt = (style3d === "detailed" && !isDemo) ? WALL_MATERIAL_TILE_FT[w.material] : null;
-  const { solidGeo, edgeGeo } = useMemo(() => {
-    if (!ok) return { solidGeo: null, edgeGeo: null };
+  const { solidGeo, edgeGeo, openEdgeGeo } = useMemo(() => {
+    if (!ok) return { solidGeo: null, edgeGeo: null, openEdgeGeo: null };
     const midPx = { x: (x1 + x2) / 2, y: (y1 + y2) / 2 };
     const localQuad = footprintToLocal(fp.quad, midPx, angle, pxPerFoot);
     const cuts = segs.filter(s => !s.solid).map(seg => {
@@ -788,19 +801,23 @@ function Wall3D({ w, fp, nodes, doors, windows, cx, cz, pxPerFoot, ceilingHeight
       const sillFt = (seg.item?.sill ?? 30) / 12, winHFt = (seg.item?.height ?? 48) / 12;
       return { x0, x1: x1c, y0: sillFt, y1: Math.min(sillFt + winHFt, heightFt) };
     });
+    const edges = buildWallEdgeSegments(localQuad, heightFt, cuts);
     return {
       // cutDepth safely exceeds any miter-widened footprint (runaway cap ≤ 6×halfT per side)
       solidGeo: buildWallSolidGeometry(localQuad, heightFt, cuts, { cutDepth: 12, tileFt }),
-      edgeGeo: buildWallEdgeSegments(localQuad, heightFt, cuts),
+      edgeGeo: edges.shell,
+      openEdgeGeo: edges.openings,
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fp, segs, heightFt, doorHFt, wallLenFt, angle, pxPerFoot, isDemo, tileFt, x1, y1, x2, y2, ok]);
-  useEffect(() => () => { solidGeo?.dispose(); edgeGeo?.dispose(); }, [solidGeo, edgeGeo]);
+  useEffect(() => () => { solidGeo?.dispose(); edgeGeo?.dispose(); openEdgeGeo?.dispose(); },
+    [solidGeo, edgeGeo, openEdgeGeo]);
 
   if (!ok || !solidGeo) return null;
   return (
     <group position={[midX, 0, midZ]} rotation={[0, -angle, 0]}>
-      <WallSolid geometry={solidGeo} edges={edgeGeo} color={wk.color} material={w.material} wallId={w.id}
+      <WallSolid geometry={solidGeo} edges={edgeGeo} openingEdges={openEdgeGeo}
+        color={wk.color} material={w.material} wallId={w.id} monoTier={monoTier} monoT={monoT}
         onSelect={onSelect} isDemo={isDemo} isSelected={wallSel && interactive}
         style3d={style3d} interactive={interactive} />
       {!isDemo && segs.map((seg, i) => {
@@ -813,7 +830,7 @@ function Wall3D({ w, fp, nodes, doors, windows, cx, cz, pxPerFoot, ceilingHeight
         </group>;
         if (seg.isDoor) return (
           <group key={i}>
-            <DoorSwing3D door={seg.item} segLenFt={segLenFt} heightFt={doorHFt} offsetFt={offsetFt} thickFt={thickFt} onSelect={onSelect} isSelected={selectedId === seg.item.id && selType === "door" && interactive} style3d={style3d} interactive={interactive} />
+            <DoorSwing3D door={seg.item} segLenFt={segLenFt} heightFt={doorHFt} offsetFt={offsetFt} thickFt={thickFt} onSelect={onSelect} isSelected={selectedId === seg.item.id && selType === "door" && interactive} style3d={style3d} interactive={interactive} monoInk={monoT?.tiers?.[2]?.color ?? null} />
             <DoorCasing segLenFt={segLenFt} heightFt={doorHFt} thickFt={thickFt} offsetFt={offsetFt} style3d={style3d} />
           </group>
         );
@@ -823,7 +840,7 @@ function Wall3D({ w, fp, nodes, doors, windows, cx, cz, pxPerFoot, ceilingHeight
         return (
           <group key={i} position={[offsetFt, 0, 0]} onClick={interactive ? (e => { e.stopPropagation(); onSelect(seg.item.id, "window"); }) : undefined}>
             <mesh position={[0, sillFt + winHFt / 2, 0]}><boxGeometry args={[segLenFt, winHFt, thickFt * 2.5]} /><meshLambertMaterial transparent opacity={0} depthWrite={false} /></mesh>
-            {!isCut && <WindowGlass lenFt={segLenFt} winHFt={winHFt} sillFt={sillFt} thickFt={thickFt} style3d={style3d} />}
+            {!isCut && <WindowGlass lenFt={segLenFt} winHFt={winHFt} sillFt={sillFt} thickFt={thickFt} style3d={style3d} monoInk={monoT?.tiers?.[2]?.color ?? null} />}
             <WindowFrame segLenFt={segLenFt} winHFt={winHFt} sillFt={sillFt} thickFt={thickFt} style3d={style3d} />
             {sillFt > 0.4 && <Baseboard segLenFt={segLenFt} thickFt={thickFt} offsetFt={0} style3d={style3d} />}
             {sillFt > 0.05 && <BaseAOStrip segLenFt={segLenFt} thickFt={thickFt} offsetFt={0} style3d={style3d} />}
@@ -1480,7 +1497,7 @@ function FloorPlane({ walls = [], nodes = [], zones, cx, cz, pxPerFoot, T, zoneL
   const baseBump = isDetailed ? getFloorBump(floorMaterial) : null;
   const baseMat = isDetailed
     ? <meshStandardMaterial color={baseTex ? "#ffffff" : (baseSpec?.color ?? T.canvas)} roughness={baseSpec?.roughness ?? 0.55} metalness={baseSpec?.metalness ?? 0.05} envMapIntensity={0.8} map={baseTex} bumpMap={baseBump?.bumpMap} bumpScale={baseBump?.bumpScale} side={THREE.DoubleSide} />
-    : <meshLambertMaterial color={style3d === "print" ? "#FCFCFC" : T.canvas} side={THREE.DoubleSide} />;
+    : <meshLambertMaterial color={T.mono ? T.canvas : style3d === "print" ? "#FCFCFC" : T.canvas} side={THREE.DoubleSide} />;
 
   return (
     <group>
@@ -1502,7 +1519,7 @@ function FloorPlane({ walls = [], nodes = [], zones, cx, cz, pxPerFoot, T, zoneL
         return <mesh key={fr.id} geometry={geo} rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.004, 0]} receiveShadow={isDetailed}>
           {isDetailed
             ? <meshStandardMaterial color={rTex ? "#ffffff" : (rSpec?.color ?? "#C8A878")} roughness={rSpec?.roughness ?? 0.55} metalness={rSpec?.metalness ?? 0.05} envMapIntensity={0.8} map={rTex} bumpMap={rBump?.bumpMap} bumpScale={rBump?.bumpScale} side={THREE.DoubleSide} />
-            : <meshLambertMaterial color={style3d === "print" ? "#EDEDED" : (rSpec?.color ?? "#C8A878")} side={THREE.DoubleSide} />}
+            : <meshLambertMaterial color={T.mono ? T.tiers[3].color : style3d === "print" ? "#EDEDED" : (rSpec?.color ?? "#C8A878")} side={THREE.DoubleSide} />}
         </mesh>;
       })}
       {zones.map(z => <ZoneFloor key={z.id} zone={z} cx={cx} cz={cz} pxPerFoot={pxPerFoot} zoneLibrary={zoneLibrary} style3d={style3d} />)}
@@ -1825,8 +1842,9 @@ export default function TestFit3D({
   // reads like a dollhouse instead of a closed box. Only BOUNDARY walls qualify: dropping
   // interior partitions would remove the very layout you opened the cutaway to see.
   // "Outward" = the wall normal pointing away from the node centroid (the world origin).
-  const hiddenWallIds = useMemo(() => {
-    if (!hideNearWalls || !isoCorner) return new Set();
+  // Walls on the outer envelope. Shared by the cutaway (only shell walls may be hidden)
+  // and the mono drawing tiers (envelope = T1, partitions = T2), so the two always agree.
+  const exteriorWallIds = useMemo(() => {
     const loop = traceOuterBoundary(nodes, walls);
     if (!loop) return new Set();
     const onLoop = new Set();
@@ -1834,11 +1852,16 @@ export default function TestFit3D({
       const a = loop[i].id, b = loop[(i + 1) % loop.length].id;
       onLoop.add(a + "|" + b); onLoop.add(b + "|" + a);
     }
+    return new Set(walls.filter(w => onLoop.has(w.n1 + "|" + w.n2)).map(w => w.id));
+  }, [walls, nodes]);
+
+  const hiddenWallIds = useMemo(() => {
+    if (!hideNearWalls || !isoCorner) return new Set();
     const v = (ISO_CORNERS[isoCorner] || ISO_CORNERS.se).v; // camera direction (x, _, z)
     const nodeMap = new Map(nodes.map(n => [n.id, n]));
     const out = new Set();
     for (const w of walls) {
-      if (!onLoop.has(w.n1 + "|" + w.n2)) continue;
+      if (!exteriorWallIds.has(w.id)) continue;
       const A = nodeMap.get(w.n1), B = nodeMap.get(w.n2); if (!A || !B) continue;
       const ax = (A.x - cx) / pxPerFoot, az = (A.y - cz) / pxPerFoot;
       const bx = (B.x - cx) / pxPerFoot, bz = (B.y - cz) / pxPerFoot;
@@ -1851,7 +1874,7 @@ export default function TestFit3D({
       if (nx * v[0] + nz * v[2] > 0.15) out.add(w.id);
     }
     return out;
-  }, [hideNearWalls, isoCorner, walls, nodes, cx, cz, pxPerFoot]);
+  }, [hideNearWalls, isoCorner, walls, nodes, exteriorWallIds, cx, cz, pxPerFoot]);
 
   // Mitered wall footprints (plan px), shared with the 2D renderer — computed once at
   // scene level because each wall's miters depend on ALL its neighbours.
@@ -1867,12 +1890,15 @@ export default function TestFit3D({
   }, [nodes, cx, cz, pxPerFoot]);
 
   const isDark = themeMode === "dark";
-  const bgColor   = style3d === "print"    ? "#ffffff"
+  // Mono overrides every style's paper/grid: the drawing is one ink on one paper, and the
+  // style switcher only governs how surfaces are shaded underneath it.
+  const bgColor   = T.mono                 ? T.canvas
+                  : style3d === "print"    ? "#ffffff"
                   : style3d === "xray"     ? (isDark ? "#0d1117" : "#f0f4f8")
                   : style3d === "detailed" ? (isDark ? "#1a1d22" : "#e8ecf1")
                   : T.canvas;
-  const gridCell  = style3d === "print" ? "#E4E4E4" : style3d === "xray" ? (isDark ? "#1a2233" : "#a0c0ff") : T.accentDim;
-  const gridSec   = style3d === "print" ? "#CFCFCF" : style3d === "xray" ? (isDark ? "#2a3a55" : "#4060cc") : T.gridSub;
+  const gridCell  = T.mono ? T.tiers[3].color + "33" : style3d === "print" ? "#E4E4E4" : style3d === "xray" ? (isDark ? "#1a2233" : "#a0c0ff") : T.accentDim;
+  const gridSec   = T.mono ? T.tiers[3].color + "66" : style3d === "print" ? "#CFCFCF" : style3d === "xray" ? (isDark ? "#2a3a55" : "#4060cc") : T.gridSub;
 
   // Offset the grid so its lines align with the 2D 1-foot boundaries.
   // In 3D, world-origin = centroid of nodes. A 2D foot-boundary n is at
@@ -1988,6 +2014,7 @@ export default function TestFit3D({
         {walls.filter(w => !hiddenWallIds.has(w.id)).map(w => (
           <Wall3D key={w.id} w={w} fp={wallFps.get(w.id)} nodes={nodes} doors={doors} windows={windows}
             cx={cx} cz={cz} pxPerFoot={pxPerFoot} ceilingHeight={w.ceilingHeight ?? ceilingHeight}
+            monoTier={T.mono ? T.tiers[exteriorWallIds.has(w.id) ? 0 : 1] : null} monoT={T.mono ? T : null}
             onSelect={safeSelect} selectedId={effSelectedId} selType={effSelType} showDims={show3dDims} style3d={style3d} interactive={interactive} />
         ))}
         <CapSolids fps={wallFps} walls={walls} hiddenWallIds={hiddenWallIds} cx={cx} cz={cz} pxPerFoot={pxPerFoot} ceilingHeight={ceilingHeight} style3d={style3d} />

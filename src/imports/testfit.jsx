@@ -291,6 +291,7 @@ export default function TestfitTool() {
   const [style3d, setStyle3d] = useState("clay"); // "clay" | "xray" | "detailed" | "print"
   const [isoCorner, setIsoCorner] = useState("se"); // which corner the Isometric view looks from
   const [isoFitNonce, setIsoFitNonce] = useState(0); // bump → re-fit the isometric (Reset)
+  const [isoCutaway, setIsoCutaway] = useState(false); // hide shell walls facing the camera
   // Rotate arrows step 90° around the building. Order must match ISO_ORDER in testfit3d.jsx.
   const rotateIso = (delta) => setIsoCorner(c => {
     const order = ["ne", "se", "sw", "nw"];
@@ -2540,7 +2541,7 @@ export default function TestfitTool() {
   const render3dPane = (isoCorner = null) => (
     <div style={{ width: "100%", height: "100%", position: "relative", background: canvasT.canvas }}>
       {data3d && <Suspense fallback={<div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", color: T.textMuted, fontSize: 11, fontFamily: font }}>Loading 3D…</div>}><TestFit3D
-        isoCorner={isoCorner} isoFitNonce={isoFitNonce}
+        isoCorner={isoCorner} isoFitNonce={isoFitNonce} hideNearWalls={isoCutaway}
         walls={data3d.walls} nodes={data3d.nodes} doors={data3d.doors} windows={data3d.windows}
         columns={data3d.columns} zones={data3d.zones} markers={data3d.markers} dims={dims}
         pxPerFoot={pxPerFoot} ceilingHeight={ceilingHeight} T={canvasT} themeMode={monoDraw ? "mono" : themeMode}
@@ -2555,8 +2556,10 @@ export default function TestfitTool() {
       /></Suspense>}
       {/* Isometric rotation — swings 90° around the building per press, keeping the
           current zoom/pan; Reset re-fits. Sits with the other camera controls. */}
+      {/* Own row above the cutaway/ceiling buttons — in a split pane the centered style
+          switcher would otherwise clip a horizontal cluster this wide. */}
       {isoCorner && (
-        <div style={{ position: "absolute", bottom: 12, right: 92, display: "flex", gap: 2, alignItems: "center", background: T.panelBg, border: "1px solid " + T.border, borderRadius: 8, padding: 3, backdropFilter: "blur(12px)", boxShadow: T.panelShadow, zIndex: 10 }}>
+        <div style={{ position: "absolute", bottom: 52, right: 12, display: "flex", gap: 2, alignItems: "center", background: T.panelBg, border: "1px solid " + T.border, borderRadius: 8, padding: 3, backdropFilter: "blur(12px)", boxShadow: T.panelShadow, zIndex: 10 }}>
           {[
             ["iso-rot-left", <ChevronLeft key="l" size={14} />, "Rotate left 90°", () => rotateIso(-1)],
             ["iso-fit", <RotateCcw key="r" size={13} />, "Reset view (fit)", () => setIsoFitNonce(n => n + 1)],
@@ -2580,6 +2583,12 @@ export default function TestfitTool() {
           </button>
         ))}
       </div>
+      {/* Cutaway — isometric only: drops the shell walls between you and the interior. */}
+      {isoCorner && <button data-testid="iso-cutaway" onClick={() => setIsoCutaway(v => !v)}
+        title={isoCutaway ? "Show all walls" : "Hide walls facing the camera (cutaway)"}
+        style={{ position: "absolute", bottom: 12, right: 52, zIndex: 10, display: "flex", alignItems: "center", justifyContent: "center", padding: "6px 8px", borderRadius: 6, border: "1px solid " + T.border, background: isoCutaway ? T.accent : T.panelBg, color: isoCutaway ? "#fff" : T.textMuted, cursor: "pointer", backdropFilter: "blur(8px)", boxShadow: T.panelShadow }}>
+        {isoCutaway ? <EyeOff size={14} /> : <Eye size={14} />}
+      </button>}
       <button onClick={() => setShow3dCeiling(v => !v)} title="Ceiling"
         style={{ position: "absolute", bottom: 12, right: isoCorner ? 12 : 52, zIndex: 10, display: "flex", alignItems: "center", justifyContent: "center", padding: "6px 8px", borderRadius: 6, border: "1px solid " + T.border, background: show3dCeiling ? T.accent : T.panelBg, color: show3dCeiling ? "#fff" : T.textMuted, cursor: "pointer", backdropFilter: "blur(8px)", boxShadow: T.panelShadow }}>
         <PanelTop size={14} />

@@ -65,7 +65,17 @@ src/
                        iso slides silently re-fit to the whole building. IsoCameraRig
                        restores initialCamera (position+target+zoom) when present and only
                        falls back to applyFit() for a fresh view. Orbit rotation is disabled (that's
-                       what keeps it isometric); pan/zoom stay, and left-drag pans. Iso slides save/restore the corner via
+                       what keeps it isometric); pan/zoom stay, and left-drag pans.
+                       CUTAWAY (`hideNearWalls`, eye button — isometric only): hides the shell
+                       walls whose OUTWARD face points at the camera, so the view reads as a
+                       dollhouse. Outward = the wall normal pointing away from the node
+                       centroid (world origin); a wall qualifies only if it's on
+                       traceOuterBoundary — dropping interior partitions would remove the very
+                       layout you opened the cutaway to see. A 0.15 dot epsilon keeps edge-on
+                       walls standing. Junction caps and baseboard plinths that belong solely
+                       to hidden walls drop with them, else they float in mid-air. Recomputed
+                       on rotate, so the open side follows the corner.
+                       Iso slides save/restore the corner via
                        cam3d.isoCorner and render through the 3D slide branch — note
                        IS_3D_VIEW() in testfit.jsx gates data3d prep AND the elevation-vs-3D
                        slide branch, so "iso" must go through it, never the elevation path.
@@ -153,8 +163,17 @@ src/
                        via dash only. Mono colours are emitted as HEX, never `hsl(...)`: the
                        renderers append 8-digit alpha (`color + "25"`) everywhere and hsl+alpha
                        is invalid CSS that silently renders BLACK.
+                       Iso/3D mapping (testfit3d): mono overrides every style3d's paper, grid,
+                       floor and wall material — surfaces go unlit paper-tone so no lighting
+                       gradient competes, and the EDGES carry the drawing: shell walls T1,
+                       partitions T2 (exteriorWallIds, the same boundary trace the cutaway
+                       uses), openings T3 (buildWallEdgeSegments returns {shell, openings} as
+                       separate geometries precisely so they can differ), door leaf + glass T3
+                       via `monoInk`. NOTE: WebGL caps line width at 1px in practice, so tier
+                       WEIGHT can't be drawn in 3D — only the ramp's lightness separates tiers
+                       there. Real weights would need three.js Line2/fat lines.
                        NOT YET TIERED: ElevationView (also still imports WALL_KINDS directly
-                       rather than the themed set) and the isometric/3D edges.
+                       rather than the themed set).
     specs.js           SPEC_COMPONENTS (IT/MEP catalog: normalized {symbol,color,mount,
                        finish?,directional?,product?} — drives plan symbol + elevation glyph
                        + 3D shape; pinned by specs.test.js), SPEC_LAYERS, COMPONENT_FINISHES,
