@@ -5,7 +5,7 @@ import { Tooltip, TooltipTrigger, TooltipContent } from "../app/components/ui/to
 import { ChevronDown, PanelLeft, PanelLeftClose, Plus, Redo2, RotateCcw, Settings, Undo2, X } from "lucide-react";
 
 export default function TopBar({
-  $, MODES, S, T, activeSnapshotId, canRedo, canUndo, cost, deleteSnapshot, display, exportPdf, exportPng, exportProject, font, importProject, liveDirty, loadRef, markers, mode, modeMenuRect, newProject, newSnapMode, redo, renameSnapshot, renamingSnapId, saveMenuRect, setMode, setModeMenuRect, setNewSnapMode, setRenamingSnapId, setSaveMenuRect, setShowModeMenu, setShowSaveMenu, setShowSettings, setShowSnapMenu, setSidebarOpen, setSnapDraftName, setSnapMenuRect, setT, setThemeMode, showModeMenu, showSaveMenu, showSnapMenu, sidebarOpen, slidesCount = 0, snapDraftName, snapMenuRect, snapshot, snapshots, switchSnapshot, takeSnapshot, themeMode, undo, updateSnapshot, walls, zones, panes, setLayout, setSelType, setSelectedId, setSelectedIds,
+  $, MODES, S, T, activeSnapshotId, canRedo, canUndo, cost, deleteSnapshot, display, exportPdf, exportPng, exportProject, font, importProject, liveDirty, loadRef, markers, mode, modeMenuRect, newProject, newSnapMode, redo, renameSnapshot, renamingSnapId, saveMenuRect, setMode, setModeMenuRect, setNewSnapMode, setRenamingSnapId, setSaveMenuRect, setShowModeMenu, setShowSaveMenu, setShowSettings, setShowSnapMenu, setSidebarOpen, setSnapDraftName, setSnapMenuRect, setT, setMonoDraw, monoDraw, setThemeMode, showModeMenu, showSaveMenu, showSnapMenu, sidebarOpen, slidesCount = 0, snapDraftName, snapMenuRect, snapshot, snapshots, switchSnapshot, takeSnapshot, themeMode, undo, updateSnapshot, walls, zones, panes, setLayout, setSelType, setSelectedId, setSelectedIds,
 }) {
   return (
       <div style={S.bar}>
@@ -174,6 +174,14 @@ export default function TopBar({
                 outline: themeMode === m ? "1px solid " + T.brand : "none" }}>{label}</button>
           ))}
         </div>
+        {/* Mono is a DRAWING style, not a UI theme — it restyles the canvas (plan,
+            elevation, isometric, 3D, sheets) and leaves the chrome on Light/Dark/Print. */}
+        <Tooltip><TooltipTrigger asChild>
+          <button data-testid="mono-toggle" onClick={() => setMonoDraw(v => !v)}
+            style={{ ...S.smBtn, marginLeft: 4, borderColor: monoDraw ? T.brand : undefined,
+              background: monoDraw ? T.brand + "22" : undefined, color: monoDraw ? T.textBright : undefined,
+              fontWeight: monoDraw ? 600 : undefined }}>Mono</button>
+        </TooltipTrigger><TooltipContent>Monochrome drawing style (canvas only)</TooltipContent></Tooltip>
         <div style={{ width: 1, height: 20, background: T.border, margin: "0 3px" }} />
         <div style={{ position: "relative" }}>
           <button style={{ ...S.smBtn, display: "flex", alignItems: "center", gap: 4 }} onClick={e => { setSaveMenuRect(e.currentTarget.getBoundingClientRect()); setShowSaveMenu(v => !v); }}>

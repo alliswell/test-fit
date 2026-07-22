@@ -5,13 +5,14 @@ import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "../app
 // Lazy-loaded so three.js / r3f / drei (a large bundle) only download when a 3D pane is shown.
 const TestFit3D = lazy(() => import("./testfit3d"));
 import { uid, sn, dst, ptSeg, polyArea, polyCentroid, pointInPoly, orthoSnap, isLightComponent, parseDimInput, migrateProjectData, PROJECT_VERSION, AUTOSAVE_KEY, dedupeWalls, splitWallThroughNodes, splitWallAtNode, weldWallCrossings } from "./model";
-import { wallResizeCursor, applySmartGuides, lineInt, revCloudPath, insetFloorPolygon, computeWallFootprints, junctionCapPolys } from "./geometry";
+import { wallResizeCursor, applySmartGuides, lineInt, revCloudPath, insetFloorPolygon, computeWallFootprints, junctionCapPolys, traceOuterBoundary } from "./geometry";
 import { useViewStore } from "../store/viewStore";
 import { useLayersStore } from "../store/layersStore";
 import { useSelectionStore } from "../store/selectionStore";
 import { useGeometryStore } from "../store/geometryStore";
 import { useDocsStore, DEFAULT_DOC_SETTINGS } from "../store/docsStore";
 import DocsView, { PrintDeck, DeckStrip } from "../components/DocsView";
+import MonoSkinPanel from "../components/MonoSkinPanel";
 import BudgetSheet from "../components/BudgetSheet";
 import FnESheet from "../components/FnESheet";
 import TitleSheet from "../components/TitleSheet";
@@ -19,7 +20,7 @@ import { sheetDims, sheetInches, sheetBodyDims, fitRectToViewport, fitStandardSc
 import { useInteractionStore } from "../store/interactionStore";
 import { useCanvasEvents } from "./useCanvasEvents";
 // Extracted modules — see CLAUDE.md → "Code structure" for what belongs where.
-import { THEMES, cadCrosshair, WALL_KINDS, WALL_KINDS_LIGHT, WALL_KINDS_PRINT, WALL_MATERIALS, WALL_MATERIAL_HATCHES } from "../constants/theme";
+import { THEMES, cadCrosshair, WALL_KINDS, WALL_KINDS_LIGHT, WALL_KINDS_PRINT, WALL_KINDS_MONO, WALL_MATERIALS, WALL_MATERIAL_HATCHES, buildMonoTheme, MONO_DEFAULT_SKIN } from "../constants/theme";
 import { SPEC_COMPONENTS, SPEC_LAYERS, DOOR_TYPES, WINDOW_TYPES, FLOW_PATH_COLORS, PROX_DRAG_TYPES, SNAP_R, LABEL_MAX_W, DEFAULT_PHASES, COMPONENT_FINISHES, FINISH_COLORS, ACCESS_READER_COST, WALL_COST_PER_FT, DOOR_COST, WINDOW_COST, COLUMN_COST } from "../constants/specs";
 import { wrapLabelLines, labelBounds } from "../utils/labels";
 import { WallIcon, WindowIcon, ColumnIcon, RectRoomIcon } from "../components/icons";
@@ -29,13 +30,26 @@ import TopBar from "../components/TopBar";
 import ZoneLibraryModal from "../components/ZoneLibraryModal";
 
 export default function TestfitTool() {
-  const [themeMode, setThemeMode] = useState("light"); // "light" (Vellum) | "dark" (Blueprint) | "print"
-  const T = THEMES[themeMode] || THEMES.light;
-  const wallKinds = themeMode === "dark" ? WALL_KINDS : themeMode === "print" ? WALL_KINDS_PRINT : WALL_KINDS_LIGHT;
+  const [themeMode, setThemeMode] = useState("light"); // "light" Vellum | "dark" Blueprint | "print"
+  // MONO — a monochrome DRAWING system: one hue, four fixed tiers, hierarchy carried by
+  // line weight + lightness. It is an axis of its own, NOT a UI theme: it restyles the
+  // drawing surfaces (plan / elevation / iso / 3D / doc sheets) while the app chrome keeps
+  // following Light/Dark/Print. `skin` (hue/sat/paper/polarity) is swappable.
+  const [monoDraw, setMonoDraw] = useState(false);
+  const [monoSkin, setMonoSkin] = useState(MONO_DEFAULT_SKIN);
+  const monoT = useMemo(() => buildMonoTheme(monoSkin), [monoSkin]);
+  const T = THEMES[themeMode] || THEMES.light;           // UI chrome
+  const canvasT = monoDraw ? monoT : T;                   // everything that draws
+  // wallKinds stays the UI set (kind buttons, legend, cost rows keep their phase colours);
+  // canvasWallKinds is what the drawing surfaces use.
+  const wallKinds = themeMode === "dark" ? WALL_KINDS
+    : themeMode === "print" ? WALL_KINDS_PRINT : WALL_KINDS_LIGHT;
+  const canvasWallKinds = monoDraw ? WALL_KINDS_MONO : wallKinds;
   // Docs slides are the printable output — NEVER dark. Vellum normally; pure-white Print
-  // when the Print theme is active (so screenshots/PDF are ink-light and high-contrast).
-  const docsSheetT = themeMode === "print" ? THEMES.print : THEMES.light;
-  const docsSheetWallKinds = themeMode === "print" ? WALL_KINDS_PRINT : WALL_KINDS_LIGHT;
+  // when the Print theme is active; the mono drawing skin when mono is on.
+  const docsSheetT = monoDraw ? monoT : (themeMode === "print" ? THEMES.print : THEMES.light);
+  const docsSheetWallKinds = monoDraw ? WALL_KINDS_MONO
+    : (themeMode === "print" ? WALL_KINDS_PRINT : WALL_KINDS_LIGHT);
   const [projectName, setProjectName] = useState("New Club");
   // Persistent plan geometry lives in a Zustand store (destructured to the same local
   // names, so every read/write site below is unchanged; setters honor the useState
@@ -598,6 +612,26 @@ export default function TestfitTool() {
     setPhases(DEFAULT_PHASES); setActivePhase("existing"); setSnapshots([]); setActiveSnapshotId(null);
     setSlides([]); setDocSettings({ ...DEFAULT_DOC_SETTINGS }); setActiveSlideId(null);
   }, []);
+
+  // ── Mono drawing tiers ──────────────────────────────────────────────────
+  // Which walls sit on the outer envelope: in the mono PLAN profile those are T1
+  // (external wall / structure) and everything else is T2 (internal wall). Derived
+  // from the same boundary trace the 3D floor uses, so the two views agree.
+  const exteriorWallIds = useMemo(() => {
+    const loop = traceOuterBoundary(nodes, walls);
+    if (!loop) return new Set();
+    const edge = new Set();
+    for (let i = 0; i < loop.length; i++) {
+      const a = loop[i].id, b = loop[(i + 1) % loop.length].id;
+      edge.add(a + "|" + b); edge.add(b + "|" + a);
+    }
+    return new Set(walls.filter(w => edge.has(w.n1 + "|" + w.n2)).map(w => w.id));
+  }, [walls, nodes]);
+  // Tier token lookup. Takes the theme explicitly because the canvas and the chrome now
+  // use DIFFERENT themes — inside renderPlanCanvas `T` is the shadowed canvas theme, which
+  // is what these must read. Returns null outside mono so every call site keeps its
+  // existing look with a single `?? existing` fallback.
+  const tierOf = (theme, i) => (theme?.mono ? theme.tiers[Math.max(0, Math.min(3, i))] : null);
 
   const fitAll = useCallback((ns = nodes) => {
     if (!ns.length || !cvs.current) return;
@@ -1599,7 +1633,10 @@ export default function TestfitTool() {
   };
 
   // Door SVG: arc swing + line
-  const DoorSvg = ({ d, sel }) => {
+  // `tt` is the CANVAS theme (mono-aware); call sites inside renderPlanCanvas pass the
+  // shadowed T so openings follow the drawing style, not the app chrome.
+  const DoorSvg = ({ d, sel, tt = canvasT }) => {
+    const T = tt;
     const wpx = inToPx(d.width);
     const wallRad = (d.angle * Math.PI) / 180;
     // Wall direction unit vector
@@ -1630,9 +1667,11 @@ export default function TestfitTool() {
         <circle cx={d.x - wdx * wpx / 2} cy={d.y - wdy * wpx / 2} r={2.5} fill={sel ? T.nodeFill : T.uiDoor} />
         <circle cx={d.x + wdx * wpx / 2} cy={d.y + wdy * wpx / 2} r={2.5} fill={sel ? T.nodeFill : T.uiDoor} />
       </> : <>
-        <line x1={hx} y1={hy} x2={ex} y2={ey} stroke={sel ? T.nodeFill : T.uiDoor} strokeWidth={2} />
+        {/* Mono: the leaf is joinery (T3) and the swing is entourage (T4) — the arc must
+            sit a tier below the thing it describes or it competes with the opening. */}
+        <line x1={hx} y1={hy} x2={ex} y2={ey} stroke={sel ? T.nodeFill : T.uiDoor} strokeWidth={tierOf(T, 2)?.w ?? 2} />
         <path d={`M ${fx} ${fy} A ${wpx} ${wpx} 0 0 ${sweep} ${ex} ${ey}`}
-          fill="none" stroke={sel ? T.nodeFill : T.uiDoor + "88"} strokeWidth={1} strokeDasharray="4 2" />
+          fill="none" stroke={sel ? T.nodeFill : (tierOf(T, 3)?.color ?? T.uiDoor + "88")} strokeWidth={tierOf(T, 3)?.w ?? 1} strokeDasharray="4 2" />
         <circle cx={hx} cy={hy} r={3} fill={sel ? T.nodeFill : T.uiDoor} />
       </>}
       {/* Access reader (Openpath) at the jamb, on the approach side */}
@@ -1650,7 +1689,8 @@ export default function TestfitTool() {
   };
 
   // Window SVG: double line with gap (or dashed line for Cut Opening)
-  const WindowSvg = ({ w, sel }) => {
+  const WindowSvg = ({ w, sel, tt = canvasT }) => {
+    const T = tt;
     const wpx = inToPx(w.width);
     const rad = (w.angle * Math.PI) / 180;
     const dx = Math.cos(rad) * wpx / 2, dy = Math.sin(rad) * wpx / 2;
@@ -1676,12 +1716,15 @@ export default function TestfitTool() {
     const nx = -Math.sin(rad) * 3, ny = Math.cos(rad) * 3;
     // Print keeps glazing monochrome (dark gray line + faint gray fill) so the sheet
     // stays ink-light; other themes use the schematic window blue.
-    const winLine = sel ? T.nodeFill : (themeMode === "print" ? "#3A3A3A" : "#60A0C8");
-    const winFill = sel ? "#E8E0D088" : (themeMode === "print" ? "#0000000F" : "#60A0C844");
+    // Mono: glazing is joinery — T3 ink and T3 weight, with the glass band a faint wash
+    // of the same ink so no second hue enters the drawing.
+    const t3 = tierOf(T, 2);
+    const winLine = sel ? T.nodeFill : (t3?.color ?? (themeMode === "print" ? "#3A3A3A" : "#60A0C8"));
+    const winFill = sel ? "#E8E0D088" : (t3 ? t3.color + "26" : themeMode === "print" ? "#0000000F" : "#60A0C844");
     return <g style={{ cursor: tool === "select" && mode === "build" ? "pointer" : "inherit" }}>
       <line x1={w.x - dx} y1={w.y - dy} x2={w.x + dx} y2={w.y + dy} stroke="transparent" strokeWidth={12} />
-      <line x1={w.x - dx + nx} y1={w.y - dy + ny} x2={w.x + dx + nx} y2={w.y + dy + ny} stroke={winLine} strokeWidth={1.5} />
-      <line x1={w.x - dx - nx} y1={w.y - dy - ny} x2={w.x + dx - nx} y2={w.y + dy - ny} stroke={winLine} strokeWidth={1.5} />
+      <line x1={w.x - dx + nx} y1={w.y - dy + ny} x2={w.x + dx + nx} y2={w.y + dy + ny} stroke={winLine} strokeWidth={t3?.w ?? 1.5} />
+      <line x1={w.x - dx - nx} y1={w.y - dy - ny} x2={w.x + dx - nx} y2={w.y + dy - ny} stroke={winLine} strokeWidth={t3?.w ?? 1.5} />
       <line x1={w.x - dx} y1={w.y - dy} x2={w.x + dx} y2={w.y + dy} stroke={winFill} strokeWidth={6} />
     </g>;
   };
@@ -2090,10 +2133,10 @@ export default function TestfitTool() {
       const dispZoom = fitRectToViewport(rect, width, height, 8).zoom; // matches ElevationView's contain-fit
       const elevMV = slideLayersFor(slide).markerVisible; // per-slide IT/MEP layer filter
       return (
-        <div key={width + "x" + height} style={{ width, height, background: T.canvas, position: "relative", pointerEvents: rectEditing ? "auto" : "none" }}>
+        <div key={width + "x" + height} style={{ width, height, background: docsSheetT.canvas, position: "relative", pointerEvents: rectEditing ? "auto" : "none" }}>
           <ElevationView dir={dir} nodes={nodes} walls={walls} doors={doors} windows={windows} columns={columns}
             markers={markers.filter(elevMV)}
-            ceilingHeight={ceilingHeight} pxPerFoot={pxPerFoot} T={T} ft={ft} tool="select"
+            ceilingHeight={ceilingHeight} pxPerFoot={pxPerFoot} T={canvasT} ft={ft} tool="select"
             cut={cut ? cut.pos : null} scrub={null} onView={null} panU={null}
             selectedId={null} selType={null} onSelect={() => {}}
             anno={elevAnnotations[dir] || { dims: [], labels: [], revClouds: [] }}
@@ -2142,7 +2185,7 @@ export default function TestfitTool() {
             isoCorner={slide.view === "iso" ? (slide.cam3d?.isoCorner || "se") : null}
             walls={data3d.walls} nodes={data3d.nodes} doors={data3d.doors} windows={data3d.windows}
             columns={data3d.columns} zones={data3d.zones} markers={data3d.markers} dims={dims}
-            pxPerFoot={pxPerFoot} ceilingHeight={ceilingHeight} T={T} themeMode={themeMode}
+            pxPerFoot={pxPerFoot} ceilingHeight={ceilingHeight} T={docsSheetT} themeMode={monoDraw ? "mono" : themeMode}
             controlsRef={docs3dControlsRef} mode={mode} selectedId={null} selType={null}
             show3dLabels={show3dLabels} setShow3dLabels={setShow3dLabels}
             show3dDims={show3dDims} setShow3dDims={setShow3dDims}
@@ -2208,7 +2251,7 @@ export default function TestfitTool() {
     main: { display: "flex", flex: 1, overflow: "hidden" },
     side: { width: sidebarOpen ? "clamp(190px, 18vw, 240px)" : "0px", background: T.bg1, backgroundImage: `linear-gradient(${T.gridSub}12 1px, transparent 1px), linear-gradient(90deg, ${T.gridSub}12 1px, transparent 1px)`, backgroundSize: "18px 18px", borderRight: sidebarOpen ? "1px solid " + T.border : "none", display: "flex", flexDirection: "column", flexShrink: 0, overflow: "hidden", transition: "width 0.2s cubic-bezier(0.4,0,0.2,1)" },
     body: { flex: 1, overflow: "auto", padding: "12px" },
-    cv: { flex: 1, position: "relative", overflow: "hidden", background: T.canvas },
+    cv: { flex: 1, position: "relative", overflow: "hidden", background: canvasT.canvas },
     sb: { position: "absolute", bottom: 0, left: 0, right: 0, background: T.bg1, borderTop: "1px solid " + T.bg3, padding: "4px 12px", display: "flex", justifyContent: "space-between", fontSize: "10px", color: T.textDim, zIndex: 10 },
     btn: (a, c) => ({
       display: "flex",
@@ -2495,12 +2538,12 @@ export default function TestfitTool() {
   // ── Pane rendering ───────────────────────────────────────────────────
   // isoCorner set → the same scene drawn as a locked orthographic isometric.
   const render3dPane = (isoCorner = null) => (
-    <div style={{ width: "100%", height: "100%", position: "relative", background: T.canvas }}>
+    <div style={{ width: "100%", height: "100%", position: "relative", background: canvasT.canvas }}>
       {data3d && <Suspense fallback={<div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", color: T.textMuted, fontSize: 11, fontFamily: font }}>Loading 3D…</div>}><TestFit3D
         isoCorner={isoCorner} isoFitNonce={isoFitNonce}
         walls={data3d.walls} nodes={data3d.nodes} doors={data3d.doors} windows={data3d.windows}
         columns={data3d.columns} zones={data3d.zones} markers={data3d.markers} dims={dims}
-        pxPerFoot={pxPerFoot} ceilingHeight={ceilingHeight} T={T} themeMode={themeMode}
+        pxPerFoot={pxPerFoot} ceilingHeight={ceilingHeight} T={canvasT} themeMode={monoDraw ? "mono" : themeMode}
         controlsRef={controls3dRef} mode={mode} selectedId={selectedId} selType={selType}
         show3dLabels={show3dLabels} setShow3dLabels={setShow3dLabels}
         show3dDims={show3dDims} setShow3dDims={setShow3dDims}
@@ -2513,7 +2556,7 @@ export default function TestfitTool() {
       {/* Isometric rotation — swings 90° around the building per press, keeping the
           current zoom/pan; Reset re-fits. Sits with the other camera controls. */}
       {isoCorner && (
-        <div style={{ position: "absolute", bottom: 12, right: 52, display: "flex", gap: 2, alignItems: "center", background: T.panelBg, border: "1px solid " + T.border, borderRadius: 8, padding: 3, backdropFilter: "blur(12px)", boxShadow: T.panelShadow, zIndex: 10 }}>
+        <div style={{ position: "absolute", bottom: 12, right: 92, display: "flex", gap: 2, alignItems: "center", background: T.panelBg, border: "1px solid " + T.border, borderRadius: 8, padding: 3, backdropFilter: "blur(12px)", boxShadow: T.panelShadow, zIndex: 10 }}>
           {[
             ["iso-rot-left", <ChevronLeft key="l" size={14} />, "Rotate left 90°", () => rotateIso(-1)],
             ["iso-fit", <RotateCcw key="r" size={13} />, "Reset view (fit)", () => setIsoFitNonce(n => n + 1)],
@@ -2568,7 +2611,7 @@ export default function TestfitTool() {
     const scrub = guideScrub && guideScrub.dir === dir ? { x: guideScrub.x, y: guideScrub.y } : null;
     return <ElevationView dir={dir} nodes={nodes} walls={walls} doors={doors} windows={windows} columns={columns}
       markers={visibleITMEP ? markers : []}
-      ceilingHeight={ceilingHeight} pxPerFoot={pxPerFoot} T={T} ft={ft} tool={tool} cut={cut ? cut.pos : null} scrub={scrub}
+      ceilingHeight={ceilingHeight} pxPerFoot={pxPerFoot} T={canvasT} ft={ft} tool={tool} cut={cut ? cut.pos : null} scrub={scrub}
       onView={onElevView} panU={cameraPan && cameraPan.dir === dir ? cameraPan.u : null}
       selectedId={selectedId} selType={selType}
       onSelect={(id, type) => { setSelectedId(id); setSelType(type); setSelectedIds(id ? [id] : []); }}
@@ -2638,11 +2681,11 @@ export default function TestfitTool() {
   const renderPlanCanvas = ({ zoom, viewOff, width = null, height = null, interactive = true,
     showGrid, visibleDims, visibleZones, visibleLabels, visibleRevClouds, visibleFlowPaths,
     visibleFloorRegions, visibleGuides, visibleLayers, visibleBuildElectrical, visibleBuildLighting, markerVisible,
-    T: outerT = T, wallKinds: outerWallKinds = wallKinds }) => {
-    // Docs slides + print (interactive:false) always draw Vellum (light), regardless of the
-    // live app theme — dark-mode colors would print wrong (or invisible, on a dark canvas
-    // background). Shadows T/wallKinds for the rest of this function only; the live editable
-    // canvas (interactive:true) keeps following the user's theme toggle as before.
+    T: outerT = canvasT, wallKinds: outerWallKinds = canvasWallKinds }) => {
+    // Everything below draws, so it uses the CANVAS theme (Mono when the drawing style is
+    // on), never the UI chrome theme. Docs slides + print (interactive:false) always draw
+    // light — dark-mode colours would print wrong. Shadows T/wallKinds for this function
+    // only; the surrounding app chrome keeps the outer `T`.
     const T = interactive ? outerT : docsSheetT;
     const wallKinds = interactive ? outerWallKinds : docsSheetWallKinds;
     return (
@@ -2865,8 +2908,12 @@ export default function TestfitTool() {
                   cuts.sort((a,b) => a.t0 - b.t0); const merged = []; cuts.forEach(cu => { if (merged.length && cu.t0 <= merged[merged.length-1].t1) merged[merged.length-1].t1 = Math.max(merged[merged.length-1].t1, cu.t1); else merged.push({...cu}); });
                   const segs = []; let tS = 0; merged.forEach(cu => { if (cu.t0 > tS) segs.push({t0:tS,t1:cu.t0}); tS = cu.t1; }); if (tS < 1) segs.push({t0:tS,t1:1});
                   const hatchId = w.material && WALL_MATERIAL_HATCHES[w.material] ? WALL_MATERIAL_HATCHES[w.material] : ({demo:"hatch-demo",new:"hatch-new",pony:"hatch-pony"}[w.kind] ?? "hatch-existing");
-                  const edgeColor = sel ? T.nodeFill : wk.color;
-                  const edgeW = sel ? 2 : 1.5;
+                  // Mono: the wall's tier comes from its ROLE (envelope vs partition), not
+                  // its phase — phase stays legible through the dash pattern. Cut walls are
+                  // poché'd solid in the tier ink, which is what makes a mono plan read.
+                  const mTier = tierOf(T, exteriorWallIds.has(w.id) ? 0 : 1);
+                  const edgeColor = sel ? T.nodeFill : (mTier?.color ?? wk.color);
+                  const edgeW = sel ? 2 : (mTier?.w ?? 1.5);
                   const { mN1, mN2 } = fp;
                   // Pre-compute segment corner points
                   const segPts = segs.map(seg => {
@@ -2879,7 +2926,7 @@ export default function TestfitTool() {
                     const eR = isLast  ? mN2.R : {x: bx-nx*halfT, y: by-ny*halfT};
                     return { sL, sR, eL, eR, isFirst, isLast, pts: `${sL.x},${sL.y} ${eL.x},${eL.y} ${eR.x},${eR.y} ${sR.x},${sR.y}` };
                   });
-                  return { w, c, wk, sel, halfT, nx, ny, dx, dy, hatchId, edgeColor, edgeW, mN1, mN2, segs, segPts, glowEffect: mode === "budget" && sel };
+                  return { w, c, wk, sel, halfT, nx, ny, dx, dy, hatchId, edgeColor, edgeW, mTier, mN1, mN2, segs, segPts, glowEffect: mode === "budget" && sel };
                 }).filter(Boolean);
 
                 // Junction fill caps — where ≥2 walls meet, the per-wall mitered quads can leave a
@@ -2894,7 +2941,12 @@ export default function TestfitTool() {
                   wallData.map(d => ({ id: d.w.id, c: d.c, mN1: d.mN1, mN2: d.mN2 })),
                 ).map((cp, i) => {
                   const d0 = wallData.find(d => d.w.id === cp.wallIds[0]); // first-touch wall styles the wedge
-                  return { nid: Math.round(cp.x) + "_" + Math.round(cp.y) + "_" + i, points: cp.pts.map(p => `${p.x},${p.y}`).join(" "), hatchId: d0.hatchId, color: d0.wk.color };
+                  // Mono: the wedge takes the HEAVIEST tier meeting here, so an envelope
+                  // corner stays T1 rather than being lightened by a partition landing on it.
+                  const monoColor = T.mono
+                    ? (cp.wallIds.some(id => exteriorWallIds.has(id)) ? T.tiers[0] : T.tiers[1]).color
+                    : null;
+                  return { nid: Math.round(cp.x) + "_" + Math.round(cp.y) + "_" + i, points: cp.pts.map(p => `${p.x},${p.y}`).join(" "), hatchId: d0.hatchId, color: d0.wk.color, monoColor };
                 });
 
                 // Terminators (more open ends) render first; through-walls render last so their
@@ -2905,10 +2957,14 @@ export default function TestfitTool() {
                 return <>
                   {capPolys.map(c => <g key={"cap"+c.nid} style={{ pointerEvents: "none" }}>
                     <polygon points={c.points} fill={T.canvas} stroke="none" />
-                    <polygon points={c.points} fill={c.color + "18"} stroke="none" />
-                    <polygon points={c.points} fill={`url(#${c.hatchId})`} stroke="none" />
+                    {T.mono
+                      ? <polygon points={c.points} fill={c.monoColor} stroke="none" />
+                      : <>
+                          <polygon points={c.points} fill={c.color + "18"} stroke="none" />
+                          <polygon points={c.points} fill={`url(#${c.hatchId})`} stroke="none" />
+                        </>}
                   </g>)}
-                  {fillOrder.map(({ w, wk, sel, hatchId, edgeColor, edgeW, mN1, mN2, segPts, glowEffect }) =>
+                  {fillOrder.map(({ w, wk, sel, hatchId, edgeColor, edgeW, mTier, mN1, mN2, segPts, glowEffect }) =>
                     <g key={"f"+w.id} style={{ pointerEvents: "none" }} filter={glowEffect ? "url(#glow-budget)" : undefined}>
                       {segPts.map((sp, i) => <g key={i}>
                         <polygon points={sp.pts} fill={T.canvas} stroke="none" />
@@ -2916,8 +2972,14 @@ export default function TestfitTool() {
                         <line x1={sp.sR.x} y1={sp.sR.y} x2={sp.eR.x} y2={sp.eR.y} stroke={edgeColor} strokeWidth={edgeW} strokeLinecap="butt" strokeDasharray={sel ? undefined : wk.dash} />
                         {sp.isFirst && mN1.free && <line x1={sp.sL.x} y1={sp.sL.y} x2={sp.sR.x} y2={sp.sR.y} stroke={edgeColor} strokeWidth={edgeW} strokeLinecap="square" />}
                         {sp.isLast  && mN2.free && <line x1={sp.eL.x} y1={sp.eL.y} x2={sp.eR.x} y2={sp.eR.y} stroke={edgeColor} strokeWidth={edgeW} strokeLinecap="square" />}
-                        {!sel && <polygon points={sp.pts} fill={wk.color + "18"} stroke="none" />}
-                        <polygon points={sp.pts} fill={sel ? edgeColor + "22" : `url(#${hatchId})`} stroke="none" />
+                        {/* Mono poché: the cut is filled solid in the wall's own tier ink —
+                            no material hatch, since hue/pattern would break the one-ink rule. */}
+                        {mTier
+                          ? <polygon points={sp.pts} fill={sel ? edgeColor + "55" : mTier.color} stroke="none" />
+                          : <>
+                              {!sel && <polygon points={sp.pts} fill={wk.color + "18"} stroke="none" />}
+                              <polygon points={sp.pts} fill={sel ? edgeColor + "22" : `url(#${hatchId})`} stroke="none" />
+                            </>}
                       </g>)}
                     </g>
                   )}
@@ -2932,7 +2994,12 @@ export default function TestfitTool() {
               })()}
 
               {/* Zones */}
-              {visibleZones && zones.map(z => { if (!phaseVisible(z.phase)) return null; const lib = zoneLibrary[z.type], sel = (selectedId === z.id && selType === "zone") || selectedIds.includes(z.id);
+              {visibleZones && zones.map(z => { if (!phaseVisible(z.phase)) return null;
+                // Mono: zones are programme, not construction — the lightest tier, and the
+                // library hue is dropped so the drawing stays one ink.
+                const zLib = zoneLibrary[z.type];
+                const lib = T.mono ? { ...zLib, color: T.tiers[3].color } : zLib;
+                const sel = (selectedId === z.id && selType === "zone") || selectedIds.includes(z.id);
                 const glowEffect = mode === "budget" && sel;
                 if (z.points) { const rpts = resolvePoints(z); const pts = rpts.map(p => `${p.x},${p.y}`).join(" "); const c = polyCentroid(rpts); const sf = Math.round(polyArea(rpts) / (pxPerFoot * pxPerFoot));
                   return <g key={z.id} filter={glowEffect ? "url(#glow-budget)" : undefined}><polygon points={pts} fill={lib.color + "25"} stroke={sel ? T.nodeFill : lib.color + "88"} strokeWidth={sel ? 2 : 1} strokeDasharray={sel ? "none" : "4 2"} strokeLinejoin="round" />
@@ -3060,7 +3127,7 @@ export default function TestfitTool() {
                 const sel = (selectedId === d.id && selType === "door") || selectedIds.includes(d.id);
                 const glowEffect = mode === "budget" && sel;
                 return <g key={d.id} filter={glowEffect ? "url(#glow-budget)" : undefined}>
-                  <DoorSvg d={{ ...d, ...rp }} sel={sel} />
+                  <DoorSvg d={{ ...d, ...rp }} sel={sel} tt={T} />
                 </g>;
               })}
               {windows.map(w => {
@@ -3069,7 +3136,7 @@ export default function TestfitTool() {
                 const sel = (selectedId === w.id && selType === "window") || selectedIds.includes(w.id);
                 const glowEffect = mode === "budget" && sel;
                 return <g key={w.id} filter={glowEffect ? "url(#glow-budget)" : undefined}>
-                  <WindowSvg w={{ ...w, ...rp }} sel={sel} />
+                  <WindowSvg w={{ ...w, ...rp }} sel={sel} tt={T} />
                 </g>;
               })}
 
@@ -3431,8 +3498,8 @@ export default function TestfitTool() {
                   <text x={ghostPos.x} y={ghostPos.y + 4} textAnchor="middle" fontSize={11} fill={l.color + "66"}>{icon}</text>
                 </g>; 
               })()}
-              {tool === "door" && ghostPos && <g style={{ pointerEvents: "none" }}><DoorSvg d={{ x: ghostPos.x, y: ghostPos.y, angle: ghostPos.angle || 0, width: doorWidth, flipped: false, hingeRight: false, doorType, id: "_g" }} sel={false} /></g>}
-              {tool === "window" && ghostPos && <g style={{ pointerEvents: "none" }}><WindowSvg w={{ x: ghostPos.x, y: ghostPos.y, angle: ghostPos.angle || 0, width: windowWidth, type: windowType, id: "_g" }} sel={false} /></g>}
+              {tool === "door" && ghostPos && <g style={{ pointerEvents: "none" }}><DoorSvg d={{ x: ghostPos.x, y: ghostPos.y, angle: ghostPos.angle || 0, width: doorWidth, flipped: false, hingeRight: false, doorType, id: "_g" }} sel={false} tt={T} /></g>}
+              {tool === "window" && ghostPos && <g style={{ pointerEvents: "none" }}><WindowSvg w={{ x: ghostPos.x, y: ghostPos.y, angle: ghostPos.angle || 0, width: windowWidth, type: windowType, id: "_g" }} sel={false} tt={T} /></g>}
               {tool === "column" && ghostPos && (() => {
                 const r = inToPx(columnSize) / 2;
                 return <g style={{ pointerEvents: "none", opacity: 0.5 }}>
@@ -3578,7 +3645,7 @@ export default function TestfitTool() {
     <TooltipProvider>
     <div className="tf-app-root" style={S.root}>
       {/* ── Top Mode Bar ──────────────────────────────────────────── */}
-      <TopBar $={$} MODES={MODES} S={S} T={T} activeSnapshotId={activeSnapshotId} canRedo={canRedo} canUndo={canUndo} cost={cost} deleteSnapshot={deleteSnapshot} display={display} exportPdf={exportPdf} exportPng={exportPng} exportProject={exportProject} font={font} importProject={importProject} liveDirty={liveDirty} loadRef={loadRef} markers={markers} mode={mode} modeMenuRect={modeMenuRect} newProject={newProject} newSnapMode={newSnapMode} redo={redo} renameSnapshot={renameSnapshot} renamingSnapId={renamingSnapId} saveMenuRect={saveMenuRect} setMode={setMode} setModeMenuRect={setModeMenuRect} setNewSnapMode={setNewSnapMode} setRenamingSnapId={setRenamingSnapId} setSaveMenuRect={setSaveMenuRect} setShowModeMenu={setShowModeMenu} setShowSaveMenu={setShowSaveMenu} setShowSettings={setShowSettings} setShowSnapMenu={setShowSnapMenu} setSidebarOpen={setSidebarOpen} setSnapDraftName={setSnapDraftName} setSnapMenuRect={setSnapMenuRect} setT={setT} setThemeMode={setThemeMode} showModeMenu={showModeMenu} showSaveMenu={showSaveMenu} showSnapMenu={showSnapMenu} sidebarOpen={sidebarOpen} snapDraftName={snapDraftName} snapMenuRect={snapMenuRect} snapshot={snapshot} snapshots={snapshots} switchSnapshot={switchSnapshot} takeSnapshot={takeSnapshot} themeMode={themeMode} undo={undo} updateSnapshot={updateSnapshot} walls={walls} zones={zones} panes={panes} setLayout={setLayout} setSelType={setSelType} setSelectedId={setSelectedId} setSelectedIds={setSelectedIds} slidesCount={slides.length} />
+      <TopBar $={$} MODES={MODES} S={S} T={T} activeSnapshotId={activeSnapshotId} canRedo={canRedo} canUndo={canUndo} cost={cost} deleteSnapshot={deleteSnapshot} display={display} exportPdf={exportPdf} exportPng={exportPng} exportProject={exportProject} font={font} importProject={importProject} liveDirty={liveDirty} loadRef={loadRef} markers={markers} mode={mode} modeMenuRect={modeMenuRect} newProject={newProject} newSnapMode={newSnapMode} redo={redo} renameSnapshot={renameSnapshot} renamingSnapId={renamingSnapId} saveMenuRect={saveMenuRect} setMode={setMode} setModeMenuRect={setModeMenuRect} setNewSnapMode={setNewSnapMode} setRenamingSnapId={setRenamingSnapId} setSaveMenuRect={setSaveMenuRect} setShowModeMenu={setShowModeMenu} setShowSaveMenu={setShowSaveMenu} setShowSettings={setShowSettings} setShowSnapMenu={setShowSnapMenu} setSidebarOpen={setSidebarOpen} setSnapDraftName={setSnapDraftName} setSnapMenuRect={setSnapMenuRect} setT={setT} setThemeMode={setThemeMode} monoDraw={monoDraw} setMonoDraw={setMonoDraw} showModeMenu={showModeMenu} showSaveMenu={showSaveMenu} showSnapMenu={showSnapMenu} sidebarOpen={sidebarOpen} snapDraftName={snapDraftName} snapMenuRect={snapMenuRect} snapshot={snapshot} snapshots={snapshots} switchSnapshot={switchSnapshot} takeSnapshot={takeSnapshot} themeMode={themeMode} undo={undo} updateSnapshot={updateSnapshot} walls={walls} zones={zones} panes={panes} setLayout={setLayout} setSelType={setSelType} setSelectedId={setSelectedId} setSelectedIds={setSelectedIds} slidesCount={slides.length} />
 
       <div style={S.main}>
         {/* ── Sidebar ──────────────────────────────────────────────── */}
@@ -3588,6 +3655,9 @@ export default function TestfitTool() {
             <input data-testid="project-name" style={{ background: "none", border: "none", color: T.textBright, fontSize: 14, fontFamily: "inherit", fontWeight: 600, width: "100%", outline: "none" }} value={projectName} onChange={e => setProjectName(e.target.value)} />
           </div>
           <div style={S.body}>
+            {/* Mono is a drawing STYLE, so its skin controls sit above the stage panels —
+                they apply to every stage and every view. */}
+            {monoDraw && <MonoSkinPanel skin={monoSkin} onChange={setMonoSkin} T={T} tiers={monoT.tiers} S={S} />}
 
             {/* ── BUILD ─────────────────────────────────────────── */}
             {mode === "build" && <>
@@ -4240,7 +4310,7 @@ export default function TestfitTool() {
           {/* Single-pane non-plan view: overlay the aux view on top of the dormant plan canvas.
               The chip stays clickable (zIndex 50 > 40) so the user can swap back. */}
           {panes.length === 1 && panes[0].view !== "plan" && (
-            <div style={{ position: "absolute", inset: 0, zIndex: 40, background: T.canvas }}>
+            <div style={{ position: "absolute", inset: 0, zIndex: 40, background: canvasT.canvas }}>
               {renderAuxPane(0)}
             </div>
           )}
@@ -4320,7 +4390,7 @@ export default function TestfitTool() {
               zones={data3d.zones}
               markers={data3d.markers}
               dims={dims}
-              pxPerFoot={pxPerFoot} ceilingHeight={ceilingHeight} T={T} themeMode={themeMode}
+              pxPerFoot={pxPerFoot} ceilingHeight={ceilingHeight} T={canvasT} themeMode={monoDraw ? "mono" : themeMode}
               controlsRef={controls3dRef} mode={mode}
               selectedId={selectedId} selType={selType}
               show3dLabels={show3dLabels} setShow3dLabels={setShow3dLabels}

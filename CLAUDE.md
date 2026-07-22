@@ -122,7 +122,7 @@ src/
     *.test.js          Vitest specs for model/geometry
   constants/
     theme.js           THEMES (light=Vellum / dark=Blueprint / print=white paper+black
-                       ink), cadCrosshair, WALL_KINDS(_LIGHT/_PRINT), WALL_MATERIALS(_HATCHES),
+                       ink) + MONO, cadCrosshair, WALL_KINDS(_LIGHT/_PRINT/_MONO), WALL_MATERIALS(_HATCHES),
                        DOOR_TYPE_STYLES, WINDOW_TYPE_STYLES (per-type elevation + 3D material
                        styling; pinned by theme.test.js).
                        PRINT theme (themeMode "print", topbar Light/Dark/Print segmented
@@ -136,6 +136,25 @@ src/
                        Print theme (effect in testfit.jsx), reverts to clay on leave, still
                        overridable via the 3D style buttons. Window glazing desaturates to gray
                        in print (WindowSvg, shared by canvas + docs).
+                       MONO drawing system (buildMonoTheme + MONO_* tokens): one hue, four
+                       FIXED tiers (MONO_TIER_WEIGHT + MONO_RAMP lightness); hierarchy is
+                       carried by weight+value, never hue, so the scale reads the same in
+                       every view and only the MAPPING changes (MONO_PROFILES). It is its own
+                       axis, NOT a themeMode: `monoDraw` toggles it and the app keeps
+                       following Light/Dark/Print. Hence TWO themes in play —
+                       `T` = UI chrome, `canvasT` = drawing (mono when on); renderPlanCanvas
+                       shadows T/wallKinds with the canvas pair, ElevationView/TestFit3D get
+                       canvasT, doc sheets get docsSheetT, and DoorSvg/WindowSvg take a `tt`
+                       theme prop because they'd otherwise close over the CHROME theme.
+                       tierOf(theme, i) takes the theme explicitly for the same reason.
+                       Plan mapping: exterior wall (from traceOuterBoundary) T1 / interior T2 /
+                       openings T3 / zones + swing T4, walls poché'd solid in their tier ink
+                       (no material hatch — a pattern breaks the one-ink rule); phase survives
+                       via dash only. Mono colours are emitted as HEX, never `hsl(...)`: the
+                       renderers append 8-digit alpha (`color + "25"`) everywhere and hsl+alpha
+                       is invalid CSS that silently renders BLACK.
+                       NOT YET TIERED: ElevationView (also still imports WALL_KINDS directly
+                       rather than the themed set) and the isometric/3D edges.
     specs.js           SPEC_COMPONENTS (IT/MEP catalog: normalized {symbol,color,mount,
                        finish?,directional?,product?} — drives plan symbol + elevation glyph
                        + 3D shape; pinned by specs.test.js), SPEC_LAYERS, COMPONENT_FINISHES,

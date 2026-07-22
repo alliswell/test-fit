@@ -867,12 +867,17 @@ function CapSolid({ poly, heightFt, material, color, allDemo, style3d }) {
     isDemo={allDemo} isSelected={false} style3d={style3d} interactive={false} />;
 }
 
-function CapSolids({ fps, walls = [], cx, cz, pxPerFoot, ceilingHeight, style3d = "clay" }) {
+function CapSolids({ fps, walls = [], hiddenWallIds, cx, cz, pxPerFoot, ceilingHeight, style3d = "clay" }) {
   const caps = useMemo(() => {
     const entries = [...fps.entries()].map(([id, e]) => ({ id, ...e }));
     const wallById = new Map(walls.map(w => [w.id, w]));
+    const hidden = hiddenWallIds || new Set();
     return junctionCapPolys(entries).map((cp, i) => {
-      const adj = cp.wallIds.map(id => wallById.get(id)).filter(Boolean);
+      // Cutaway: a wedge only survives if some wall still standing there needs it —
+      // otherwise it floats in mid-air where the hidden wall used to be.
+      const visibleIds = cp.wallIds.filter(id => !hidden.has(id));
+      if (!visibleIds.length) return null;
+      const adj = visibleIds.map(id => wallById.get(id)).filter(Boolean);
       if (!adj.length) return null;
       const allDemo = adj.every(w => (w.kind || "existing") === "demo");
       const pick = allDemo ? adj : adj.filter(w => (w.kind || "existing") !== "demo");
@@ -887,7 +892,7 @@ function CapSolids({ fps, walls = [], cx, cz, pxPerFoot, ceilingHeight, style3d 
       const poly = cp.pts.map(p => ({ x: (p.x - cx) / pxPerFoot, z: (p.y - cz) / pxPerFoot }));
       return { key: i + "_" + Math.round(cp.x) + "_" + Math.round(cp.y), poly, heightFt, material, color, allDemo };
     }).filter(Boolean);
-  }, [fps, walls, cx, cz, pxPerFoot, ceilingHeight]);
+  }, [fps, walls, hiddenWallIds, cx, cz, pxPerFoot, ceilingHeight]);
   return caps.map(c => <CapSolid key={c.key} poly={c.poly} heightFt={c.heightFt}
     material={c.material} color={c.color} allDemo={c.allDemo} style3d={style3d} />);
 }
@@ -897,11 +902,13 @@ function CapSolids({ fps, walls = [], cx, cz, pxPerFoot, ceilingHeight, style3d 
 // top faces — a slightly taller, prouder block swallows the overlap so nothing
 // z-fights. (The old full-height corner "posts" are gone: mitered footprints make
 // walls tile exactly, so there is nothing to cover up.)
-function JunctionTrim({ walls = [], nodes = [], cx, cz, pxPerFoot, style3d = "clay" }) {
+function JunctionTrim({ walls = [], nodes = [], hiddenWallIds, cx, cz, pxPerFoot, style3d = "clay" }) {
   const ni = useMemo(() => Object.fromEntries(nodes.map(n => [n.id, n])), [nodes]);
   const junctions = useMemo(() => {
+    const hidden = hiddenWallIds || new Set();
     const byNode = {};
-    walls.forEach(w => { (byNode[w.n1] ||= []).push(w); (byNode[w.n2] ||= []).push(w); });
+    // A cutaway-hidden wall takes its baseboard with it, so it must not seed a plinth.
+    walls.filter(w => !hidden.has(w.id)).forEach(w => { (byNode[w.n1] ||= []).push(w); (byNode[w.n2] ||= []).push(w); });
     const out = [];
     for (const [id, adj] of Object.entries(byNode)) {
       const node = ni[id];
@@ -925,7 +932,7 @@ function JunctionTrim({ walls = [], nodes = [], cx, cz, pxPerFoot, style3d = "cl
       out.push({ id, x: (node.x - cx) / pxPerFoot, z: (node.y - cz) / pxPerFoot, thickFt });
     }
     return out;
-  }, [walls, ni, cx, cz, pxPerFoot]);
+  }, [walls, hiddenWallIds, ni, cx, cz, pxPerFoot]);
 
   if (style3d !== "detailed") return null;
   return junctions.map(j => {
@@ -1783,6 +1790,7 @@ export default function TestFit3D({
   initialCamera = null,   // { position:[3], target:[3] } — Docs slide pose restore
   isoCorner = null,       // "ne"|"se"|"sw"|"nw" → locked orthographic isometric view
   isoFitNonce = 0,        // bump to re-fit the isometric (Reset); rotation preserves zoom/pan
+  hideNearWalls = false,  // isometric cutaway: drop the shell walls facing the camera
   preserveBuffer = false, // keep the drawing buffer readable (Docs capture instance)
   captureRef = null,      // ref filled with capture() → JPEG dataURL
   onCameraEnd = null,     // (pose) => void — fires when an orbit/pan/zoom gesture ends
@@ -1811,6 +1819,39 @@ export default function TestFit3D({
     if (!nodes.length) return { cx: 0, cz: 0 };
     return { cx: nodes.reduce((s, n) => s + n.x, 0) / nodes.length, cz: nodes.reduce((s, n) => s + n.y, 0) / nodes.length };
   }, [nodes]);
+
+  // ── Cutaway ───────────────────────────────────────────────────────────────
+  // Hide the outer-shell walls whose outward face points at the camera, so the isometric
+  // reads like a dollhouse instead of a closed box. Only BOUNDARY walls qualify: dropping
+  // interior partitions would remove the very layout you opened the cutaway to see.
+  // "Outward" = the wall normal pointing away from the node centroid (the world origin).
+  const hiddenWallIds = useMemo(() => {
+    if (!hideNearWalls || !isoCorner) return new Set();
+    const loop = traceOuterBoundary(nodes, walls);
+    if (!loop) return new Set();
+    const onLoop = new Set();
+    for (let i = 0; i < loop.length; i++) {
+      const a = loop[i].id, b = loop[(i + 1) % loop.length].id;
+      onLoop.add(a + "|" + b); onLoop.add(b + "|" + a);
+    }
+    const v = (ISO_CORNERS[isoCorner] || ISO_CORNERS.se).v; // camera direction (x, _, z)
+    const nodeMap = new Map(nodes.map(n => [n.id, n]));
+    const out = new Set();
+    for (const w of walls) {
+      if (!onLoop.has(w.n1 + "|" + w.n2)) continue;
+      const A = nodeMap.get(w.n1), B = nodeMap.get(w.n2); if (!A || !B) continue;
+      const ax = (A.x - cx) / pxPerFoot, az = (A.y - cz) / pxPerFoot;
+      const bx = (B.x - cx) / pxPerFoot, bz = (B.y - cz) / pxPerFoot;
+      const dx = bx - ax, dz = bz - az, L = Math.hypot(dx, dz) || 1;
+      let nx = -dz / L, nz = dx / L;
+      const mx = (ax + bx) / 2, mz = (az + bz) / 2;
+      if (nx * mx + nz * mz < 0) { nx = -nx; nz = -nz; }   // flip to face outward
+      // Epsilon keeps walls that are edge-on to this corner (they read as thin slivers,
+      // and dropping them would open the box on a side you're not looking through).
+      if (nx * v[0] + nz * v[2] > 0.15) out.add(w.id);
+    }
+    return out;
+  }, [hideNearWalls, isoCorner, walls, nodes, cx, cz, pxPerFoot]);
 
   // Mitered wall footprints (plan px), shared with the 2D renderer — computed once at
   // scene level because each wall's miters depend on ALL its neighbours.
@@ -1944,13 +1985,13 @@ export default function TestFit3D({
           <Grid args={[500, 500]} cellSize={1} sectionSize={10} cellColor={gridCell} sectionColor={gridSec} position={[gridOffX, 0.02, gridOffZ]} fadeDistance={camDist * 2.5} fadeStrength={1.2} />
         )}
 
-        {walls.map(w => (
+        {walls.filter(w => !hiddenWallIds.has(w.id)).map(w => (
           <Wall3D key={w.id} w={w} fp={wallFps.get(w.id)} nodes={nodes} doors={doors} windows={windows}
             cx={cx} cz={cz} pxPerFoot={pxPerFoot} ceilingHeight={w.ceilingHeight ?? ceilingHeight}
             onSelect={safeSelect} selectedId={effSelectedId} selType={effSelType} showDims={show3dDims} style3d={style3d} interactive={interactive} />
         ))}
-        <CapSolids fps={wallFps} walls={walls} cx={cx} cz={cz} pxPerFoot={pxPerFoot} ceilingHeight={ceilingHeight} style3d={style3d} />
-        <JunctionTrim walls={walls} nodes={nodes} cx={cx} cz={cz} pxPerFoot={pxPerFoot} style3d={style3d} />
+        <CapSolids fps={wallFps} walls={walls} hiddenWallIds={hiddenWallIds} cx={cx} cz={cz} pxPerFoot={pxPerFoot} ceilingHeight={ceilingHeight} style3d={style3d} />
+        <JunctionTrim walls={walls} nodes={nodes} hiddenWallIds={hiddenWallIds} cx={cx} cz={cz} pxPerFoot={pxPerFoot} style3d={style3d} />
         {show3dCeiling && <CeilingPlane walls={walls} nodes={nodes} cx={cx} cz={cz} pxPerFoot={pxPerFoot} ceilingHeight={ceilingHeight} style3d={style3d} />}
         {columns.map(col => (
           <Column3D key={col.id} col={col} cx={cx} cz={cz} pxPerFoot={pxPerFoot} ceilingHeight={ceilingHeight}
