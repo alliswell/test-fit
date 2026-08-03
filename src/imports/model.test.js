@@ -2,8 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   sn, dst, ptSeg, polyArea, polyCentroid, pointInPoly, orthoSnap,
   isLightComponent, parseDimInput, migrateProjectData, PROJECT_VERSION, dedupeWalls,
-  splitWallAtNode, mergeNode, splitWallThroughNodes, weldWallCrossings,
-} from "./model";
+  splitWallAtNode, mergeNode, splitWallThroughNodes, weldWallCrossings, furnitureInZone} from "./model";
 
 describe("geometry", () => {
   it("dst — euclidean distance", () => {
@@ -353,5 +352,42 @@ describe("migrateProjectData — the persistence seam", () => {
     expect(typeof m.slides[1].ts).toBe("number");
     // invalid enums normalized
     expect(m.docSettings).toEqual({ size: "letter", orientation: "landscape" });
+  });
+});
+
+describe("furnitureInZone — what a zone carries when it moves", () => {
+  const rect = { id: "z1", x: 100, y: 100, w: 200, h: 100 };
+  const poly = { id: "z2", points: [{ x: 0, y: 0 }, { x: 100, y: 0 }, { x: 100, y: 100 }, { x: 0, y: 100 }] };
+  const at = (id, x, y) => ({ id, x, y });
+
+  it("takes the pieces whose center falls inside a rect zone", () => {
+    const got = furnitureInZone([at("in", 150, 150), at("out", 400, 150), at("above", 150, 40)], rect, null);
+    expect(got.map(f => f.id)).toEqual(["in"]);
+  });
+
+  it("takes the pieces inside a polygon zone", () => {
+    const got = furnitureInZone([at("in", 50, 50), at("out", 150, 50)], poly, poly.points);
+    expect(got.map(f => f.id)).toEqual(["in"]);
+  });
+
+  it("uses the RESOLVED polygon it is handed, not the zone's base points", () => {
+    // A phase override moves the zone 500px right; furniture there should be picked up.
+    const moved = poly.points.map(p => ({ x: p.x + 500, y: p.y }));
+    expect(furnitureInZone([at("f", 550, 50)], poly, moved).map(f => f.id)).toEqual(["f"]);
+    expect(furnitureInZone([at("f", 550, 50)], poly, poly.points)).toEqual([]);
+  });
+
+  it("is positional, not provenance — a piece dragged out of its origin zone is dropped", () => {
+    const strayed = { id: "s", x: 900, y: 900, fromZone: "z1" };
+    expect(furnitureInZone([strayed], rect, null)).toEqual([]);
+  });
+
+  it("picks up a piece dragged IN from elsewhere, whatever it came from", () => {
+    const adopted = { id: "a", x: 150, y: 150, fromZone: "someOtherZone" };
+    expect(furnitureInZone([adopted], rect, null).map(f => f.id)).toEqual(["a"]);
+  });
+
+  it("handles an empty room", () => {
+    expect(furnitureInZone([], rect, null)).toEqual([]);
   });
 });

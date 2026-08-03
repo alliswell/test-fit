@@ -32,7 +32,7 @@ test("save plan view → slide appears in Docs with sheet + title block; persist
 
   // Save the plan pane's view to the deck.
   await page.getByTestId("save-to-docs-0").click();
-  await page.keyboard.press("5");
+  await page.keyboard.press("6");
 
   // Docs stage shows the deck entry, the sheet, the readonly slide canvas + title block.
   await expect(page.getByTestId("docs-view")).toBeVisible();
@@ -62,7 +62,7 @@ test("elevation slide: save a Front pane view → readonly elevation renders on 
   await page.locator("select").first().selectOption("front");
   await expect(page.getByText("FRONT ELEVATION")).toBeVisible();
   await page.getByTestId("save-to-docs-1").click();
-  await page.keyboard.press("5");
+  await page.keyboard.press("6");
 
   await expect(page.getByTestId("deck-slide-0")).toContainText("Front Elevation 01");
   // The sheet contains the elevation svg with wall faces (rects/polygons present).
@@ -83,7 +83,7 @@ test("slide notes: place, edit, persist, delete — model untouched", async ({ p
   const { cx, cy } = await planCenter(page);
   await drawWall(page, cx - 120, cy, cx + 120, cy);
   await page.getByTestId("save-to-docs-0").click();
-  await page.keyboard.press("5");
+  await page.keyboard.press("6");
 
   // Note tool → click the sheet → type → Enter commits.
   await page.getByTestId("note-tool").click();
@@ -124,12 +124,12 @@ test("Edit model returns to Build with the plan canvas visible", async ({ page }
   const { cx, cy } = await planCenter(page);
   await drawWall(page, cx - 120, cy, cx + 120, cy);
   await page.getByTestId("save-to-docs-0").click();
-  await page.keyboard.press("5");
+  await page.keyboard.press("6");
   await expect(page.getByTestId("docs-view")).toBeVisible();
 
   await page.getByTestId("edit-model").click();
   await expect(page.getByTestId("plan-canvas")).toBeVisible();
-  await expect(page.getByTitle("Workflow stage (1–5)")).toContainText("Build");
+  await expect(page.getByTitle("Workflow stage (1–6)")).toContainText("Build");
 });
 
 test("plan slide renders at a true standard scale shown in the title block", async ({ page }) => {
@@ -138,7 +138,7 @@ test("plan slide renders at a true standard scale shown in the title block", asy
   const { cx, cy } = await planCenter(page);
   await drawWall(page, cx - 120, cy, cx + 120, cy);
   await page.getByTestId("save-to-docs-0").click();
-  await page.keyboard.press("5");
+  await page.keyboard.press("6");
 
   // The scale cell shows the auto-computed standard scale (input placeholder on the
   // editable sheet) — e.g. 1/2" = 1'-0" depending on viewport; assert the format.
@@ -158,7 +158,7 @@ test("3D slide camera is locked until Edit view; Save/Reset controls appear", as
   await page.locator("select").first().selectOption("3d");
   await page.waitForTimeout(2000); // lazy 3D chunk
   await page.getByTestId("save-to-docs-1").click();
-  await page.keyboard.press("5");
+  await page.keyboard.press("6");
   await page.waitForTimeout(1500);
 
   // Locked: only "Edit view" is offered.
@@ -177,7 +177,7 @@ test("plan slide crop editing: Edit view → drag → Save persists a shifted re
   const { cx, cy } = await planCenter(page);
   await drawWall(page, cx - 120, cy, cx + 120, cy);
   await page.getByTestId("save-to-docs-0").click();
-  await page.keyboard.press("5");
+  await page.keyboard.press("6");
   await page.waitForTimeout(1000);
   const before = (await readModel(page)).slides[0].rect;
 
@@ -197,13 +197,73 @@ test("plan slide crop editing: Edit view → drag → Save persists a shifted re
   expect(after.w).toBeCloseTo(before.w, 5); // pan only — no zoom in this gesture
 });
 
+test("plan slide crop editing: wheel-zoom matches the plan canvas's speed (factor = 1 - deltaY*0.001)", async ({ page }) => {
+  await page.goto("/");
+  await newProject(page);
+  const { cx, cy } = await planCenter(page);
+  await drawWall(page, cx - 120, cy, cx + 120, cy);
+  await page.getByTestId("save-to-docs-0").click();
+  await page.keyboard.press("6");
+  await page.waitForTimeout(1000);
+  const before = (await readModel(page)).slides[0].rect;
+
+  await page.getByTestId("slide-cam-edit").click();
+  const sheet = await page.getByTestId("docs-sheet").boundingBox();
+  await page.mouse.move(sheet.x + sheet.width / 2, sheet.y + sheet.height / 2);
+  // A SMALL delta (trackpad-sized), not a full mouse-wheel notch: the old code only looked
+  // at deltaY's sign, so any nonzero scroll produced the same fixed ±10% jump. If this test
+  // is passing against unfixed code, the fix regressed — that's the whole point of using a
+  // small delta here rather than one large enough for both formulas to coincide.
+  await page.mouse.wheel(0, -50);
+  await page.getByTestId("slide-cam-save").click();
+  await page.waitForTimeout(1000);
+
+  const after = (await readModel(page)).slides[0].rect;
+  expect(after.w).toBeLessThan(before.w); // negative deltaY zooms IN — crop shrank
+  // factor = 1 - (-50)*0.001 = 1.05, matching onWheel's coefficient exactly.
+  expect(after.w).toBeCloseTo(before.w / 1.05, 1);
+  // The old fixed-step formula would have landed here instead — pin that it does NOT.
+  expect(after.w).not.toBeCloseTo(before.w / 1.1, 1);
+});
+
+test("plan slide crop editing: opening Edit view and saving with no changes doesn't jump the camera", async ({ page }) => {
+  await page.goto("/");
+  await newProject(page);
+  const { cx, cy } = await planCenter(page);
+  await drawWall(page, cx - 120, cy, cx + 120, cy);
+  await page.getByTestId("save-to-docs-0").click();
+  await page.keyboard.press("6");
+  await page.waitForTimeout(1000);
+
+  // The slide's rendered zoom (locked view snaps to a true architectural scale — Edit view
+  // used to force a raw exact-fit instead, which is what produced the ~2% jump).
+  const slideZoom = () => page.evaluate(() => {
+    const g = document.querySelector('[data-testid="docs-slide-canvas"] g');
+    const m = g?.getAttribute("transform")?.match(/scale\(([\d.]+)\)/);
+    return m ? Number(m[1]) : null;
+  });
+
+  const locked = await slideZoom();
+  expect(locked).not.toBeNull();
+
+  await page.getByTestId("slide-cam-edit").click();
+  await expect(page.getByTestId("slide-cam-save")).toBeVisible();
+  const editing = await slideZoom();
+  expect(editing).toBeCloseTo(locked, 5); // entering Edit view must not itself change the zoom
+
+  await page.getByTestId("slide-cam-save").click();
+  await expect(page.getByTestId("slide-cam-edit")).toBeVisible();
+  const savedAgain = await slideZoom();
+  expect(savedAgain).toBeCloseTo(locked, 5); // and saving unmodified must land back exactly
+});
+
 test("note drag-placement creates a leader callout (label-tool style)", async ({ page }) => {
   await page.goto("/");
   await newProject(page);
   const { cx, cy } = await planCenter(page);
   await drawWall(page, cx - 120, cy, cx + 120, cy);
   await page.getByTestId("save-to-docs-0").click();
-  await page.keyboard.press("5");
+  await page.keyboard.press("6");
 
   await page.getByTestId("note-tool").click();
   const sheet = await page.getByTestId("docs-sheet").boundingBox();
@@ -230,7 +290,7 @@ test("per-slide layers: presets set slide.vis; toggling a layer pins a custom se
   const { cx, cy } = await planCenter(page);
   await drawWall(page, cx - 120, cy, cx + 120, cy);
   await page.getByTestId("save-to-docs-0").click();
-  await page.keyboard.press("5");
+  await page.keyboard.press("6");
   await page.waitForTimeout(1000);
   // Fresh slide inherits the editor layers.
   expect((await readModel(page)).slides[0].vis).toBeNull();
@@ -268,7 +328,7 @@ test("budget slide: add from deck strip → live totals + item schedule render",
   await page.mouse.click(cx, cy - 60);
   await page.keyboard.press("Escape");
 
-  await page.keyboard.press("5");
+  await page.keyboard.press("6");
   await page.getByTestId("add-template").click();
   await page.getByTestId("add-budget-slide").click();
   await expect(page.getByTestId("budget-sheet")).toBeVisible();
@@ -295,7 +355,7 @@ test("budget: an as-built door is excluded from construction", async ({ page }) 
   await page.mouse.click(cx - 20, cy);
   await page.keyboard.press("Escape");
 
-  await page.keyboard.press("5");
+  await page.keyboard.press("6");
   await page.getByTestId("add-template").click();
   await page.getByTestId("add-budget-slide").click();
   const sheet = page.getByTestId("budget-sheet");
@@ -315,7 +375,7 @@ test("budget: flagging a door \"New\" rolls its cost into the total", async ({ p
   await page.getByTestId("new-construction").check(); // flag it new construction
   await page.mouse.click(cx, cy - 150); // blur the checkbox so the stage shortcut fires
 
-  await page.keyboard.press("5");
+  await page.keyboard.press("6");
   await page.getByTestId("add-template").click();
   await page.getByTestId("add-budget-slide").click();
   const sheet = page.getByTestId("budget-sheet");
@@ -334,7 +394,7 @@ test("FF&E schedule slide: zone items render with subtotals via the template men
   await page.mouse.click(cx - 80, cy - 60);
   await page.keyboard.press("Escape");
 
-  await page.keyboard.press("5");
+  await page.keyboard.press("6");
   await page.getByTestId("add-template").click();
   await page.getByTestId("add-ffe-slide").click();
   const sheet = page.getByTestId("ffe-sheet");
@@ -355,14 +415,14 @@ test("plan slide live-renders model changes made after it was saved", async ({ p
   await drawWall(page, cx - 120, cy, cx + 120, cy);
 
   await page.getByTestId("save-to-docs-0").click();
-  await page.keyboard.press("5");
+  await page.keyboard.press("6");
   // The slide canvas culls to its own viewport; wall polygons render inside it.
   const polysBefore = await page.getByTestId("docs-slide-canvas").locator("polygon").count();
 
   // Back to Build, draw a second (separate) wall, return to Docs.
   await page.keyboard.press("1");
   await drawWall(page, cx - 120, cy + 80, cx + 120, cy + 80);
-  await page.keyboard.press("5");
+  await page.keyboard.press("6");
 
   const polysAfter = await page.getByTestId("docs-slide-canvas").locator("polygon").count();
   expect(polysAfter).toBeGreaterThan(polysBefore); // new wall appeared on the slide
@@ -374,7 +434,7 @@ async function threeSlideDeck(page) {
   const { cx, cy } = await planCenter(page);
   await drawWall(page, cx - 120, cy, cx + 120, cy);
   await page.getByTestId("save-to-docs-0").click();
-  await page.keyboard.press("5");
+  await page.keyboard.press("6");
   await page.getByTestId("add-template").click();
   await page.getByTestId("add-budget-slide").click();
   await page.getByTestId("add-template").click();
@@ -435,7 +495,7 @@ test("sheet zoom: chip buttons zoom the sheet view; Fit restores 100%", async ({
   const { cx, cy } = await planCenter(page);
   await drawWall(page, cx - 120, cy, cx + 120, cy);
   await page.getByTestId("save-to-docs-0").click();
-  await page.keyboard.press("5");
+  await page.keyboard.press("6");
 
   await expect(page.getByTestId("sheet-zoom-pct")).toHaveText("100%");
   const w0 = (await page.getByTestId("docs-sheet").boundingBox()).width;
@@ -458,7 +518,7 @@ async function planPlusSection(page) {
   const { cx, cy } = await planCenter(page);
   await drawWall(page, cx - 120, cy, cx + 120, cy);
   await page.getByTestId("save-to-docs-0").click();
-  await page.keyboard.press("5");
+  await page.keyboard.press("6");
   await page.getByTestId("add-template").click();
   await page.getByTestId("add-title-slide").click();
 }
@@ -503,7 +563,7 @@ test("collapse state persists across a reload", async ({ page }) => {
 
   // Reload → return to Docs. The section is still collapsed and its child stays hidden.
   await page.reload();
-  await page.keyboard.press("5");
+  await page.keyboard.press("6");
   await expect(page.getByTestId("deck-slide-0")).toContainText("Section");
   await expect(page.getByTestId("deck-slide-1")).toHaveCount(0);
   // Expanding after reload reveals the persisted child.
@@ -529,7 +589,7 @@ test("the + Template button sits above the deck rows", async ({ page }) => {
   const { cx, cy } = await planCenter(page);
   await drawWall(page, cx - 120, cy, cx + 120, cy);
   await page.getByTestId("save-to-docs-0").click();
-  await page.keyboard.press("5");
+  await page.keyboard.press("6");
   const btn = await page.getByTestId("add-template").boundingBox();
   const row = await page.getByTestId("deck-slide-0").boundingBox();
   expect(btn.y).toBeLessThan(row.y);
@@ -543,7 +603,7 @@ test("slides stay Vellum (light) for correct printing even when the app is in Da
 
   await page.getByRole("button", { name: "Dark", exact: true }).click();
   await page.getByTestId("save-to-docs-0").click();
-  await page.keyboard.press("5");
+  await page.keyboard.press("6");
 
   // The on-screen sheet (paper background + title block) renders Vellum, not the dark
   // canvas color — while the surrounding chrome (deck strip) stays dark as expected.
@@ -561,7 +621,7 @@ test("Print theme renders docs sheets on pure-white paper", async ({ page }) => 
 
   await page.getByRole("button", { name: "Print", exact: true }).click();
   await page.getByTestId("save-to-docs-0").click();
-  await page.keyboard.press("5");
+  await page.keyboard.press("6");
 
   // The sheet is pure white in Print mode (vs. warm Vellum #ECE4D5 normally).
   const sheetBg = await page.evaluate(() => getComputedStyle(document.querySelector('[data-testid="docs-sheet"]')).backgroundColor);
@@ -579,7 +639,7 @@ test("print output stays Vellum (light) even when the app is in Dark mode", asyn
 
   await page.getByRole("button", { name: "Dark", exact: true }).click();
   await page.getByTestId("save-to-docs-0").click();
-  await page.keyboard.press("5");
+  await page.keyboard.press("6");
   await page.getByTestId("print-deck").click();
   await page.waitForTimeout(400);
 

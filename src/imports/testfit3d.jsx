@@ -1,8 +1,9 @@
 import { useState, useMemo, useRef, useEffect, useCallback } from "react";
-import { traceOuterBoundary, computeWallFootprints, junctionCapPolys } from "./geometry";
+import { traceOuterBoundary, computeWallFootprints, junctionCapPolys, cutawayHiddenWalls } from "./geometry";
 import { footprintToLocal, buildWallSolidGeometry, buildCapSolidGeometry, solidEdgesGeometry, buildWallEdgeSegments } from "./wallGeo3d";
 import { DOOR_TYPE_STYLES } from "../constants/theme";
 import { DOOR_KNOB_HEIGHT_IN, FINISH_COLORS } from "../constants/specs";
+import { FURNITURE_CATALOG } from "../constants/furniture";
 import { M3D } from "./markerMount";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { OrbitControls, Grid, Text, Billboard, Environment, ContactShadows } from "@react-three/drei";
@@ -335,7 +336,6 @@ const WARM_HALO   = "#FF9A3C"; // visible halo sphere color
 const LIGHT_TYPES = new Set([
   "light_can_4","light_can_6",
   "light_pendant",
-  "light_linear_2","light_linear_4",
   "light_sconce",
   "htrack_4","htrack_8",
 ]);
@@ -410,7 +410,7 @@ function WarmGlow({ r = 0.28, intensity = 1.0, distance = 9, position = [0, 0, 0
 // frame, floor at y=0). Material branches mirror WallBox; the demo two-pass
 // depth-prepass/EqualDepth union carries over unchanged (exact footprints eliminate
 // wall-wall overlap, but junction cap solids still overlap demo quads).
-function WallSolid({ geometry, edges = null, openingEdges = null, color, material, wallId, onSelect, isDemo, isSelected, style3d = "clay", interactive = true, monoTier = null, monoT = null }) {
+function WallSolid({ geometry, edges = null, openingEdges = null, color, material, wallId, onSelect, isDemo, isSelected, style3d = "clay", interactive = true, monoTier = null, monoT = null, suppressEdges = false, sinkBehind = false }) {
   const [hov, setHov] = useState(false);
   const matSpec = WALL_MATERIAL_PBR[material || "Drywall"];
   const detailedColor = matSpec?.color ?? color;
@@ -424,7 +424,14 @@ function WallSolid({ geometry, edges = null, openingEdges = null, color, materia
   // (WebGL caps line width at 1px in practice, so the tier's WEIGHT can't be drawn here;
   // the ramp's lightness is what separates the tiers in 3D.)
   const mono = !!monoTier;
-  const outlined = mono || style3d === "xray" || style3d === "print" || isDemo;
+  const outlined = !suppressEdges && (mono || style3d === "xray" || style3d === "print" || isDemo);
+  // Junction wedges OVERLAP the wall footprints they fill between (verified: at a
+  // perpendicular T the wedge is the whole junction block, sitting inside the through
+  // wall). In 2D that's invisible — caps are painted behind. In 3D the coincident
+  // coplanar faces z-fight, which is the flickering stripe at 3-wall junctions. Sinking
+  // the cap in the depth buffer makes the wall win deterministically, so the wedge only
+  // shows where there is genuinely nothing else.
+  const sink = sinkBehind ? { polygonOffset: true, polygonOffsetFactor: 2, polygonOffsetUnits: 2 } : {};
   const edgeColor = mono ? monoTier.color : (style3d === "print" && !isDemo) ? "#111111" : color;
   // Outline: callers with CSG'd geometry pass procedural `edges` (T-vertices in CSG
   // output break EdgesGeometry); plain solids (caps) fall back to solidEdgesGeometry.
@@ -443,7 +450,11 @@ function WallSolid({ geometry, edges = null, openingEdges = null, color, materia
     <group>
       {demoUnion && (
         <mesh key={style3d + "-demoprep"} geometry={geometry} renderOrder={10} userData={{ noAutoShadow: true }}>
-          <meshBasicMaterial transparent colorWrite={false} depthWrite />
+          {/* LessDepth, not the default LessEqual: a demo wall butting a solid wall has its
+              END FACE exactly coplanar with that wall's face, and LessEqual PASSES at equal
+              depth — so the prepass claimed the solid wall's surface and the colour pass
+              painted a red strip onto it. Strict less-than makes coplanar lose. */}
+          <meshBasicMaterial transparent colorWrite={false} depthWrite depthFunc={THREE.LessDepth} />
         </mesh>
       )}
       <mesh
@@ -464,10 +475,10 @@ function WallSolid({ geometry, edges = null, openingEdges = null, color, materia
           depthWrite={false} depthFunc={THREE.EqualDepth} />}
         {/* Mono surface: unlit + paper-toned, so no lighting gradient competes with the
             tier ink. The edges carry the drawing. */}
-        {!demoUnion && mono && <meshBasicMaterial
+        {!demoUnion && mono && <meshBasicMaterial {...sink}
           color={(interactive && hov) ? monoT?.tiers?.[3]?.color ?? "#ffffff" : (monoT?.canvas ?? "#ffffff")} />}
-        {!demoUnion && !mono && style3d === "xray" && <meshBasicMaterial color={(interactive && hov) ? "#ffffff" : color} transparent opacity={hov ? 0.25 : 0.08} depthWrite={false} />}
-        {!demoUnion && !mono && style3d === "detailed" && <meshStandardMaterial
+        {!demoUnion && !mono && style3d === "xray" && <meshBasicMaterial {...sink} color={(interactive && hov) ? "#ffffff" : color} transparent opacity={hov ? 0.25 : 0.08} depthWrite={false} />}
+        {!demoUnion && !mono && style3d === "detailed" && <meshStandardMaterial {...sink}
           color={interactive && hov ? "#ffffff" : (tex ? "#ffffff" : detailedColor)}
           roughness={detailedRough}
           metalness={detailedMetal}
@@ -476,11 +487,11 @@ function WallSolid({ geometry, edges = null, openingEdges = null, color, materia
           bumpMap={tex?.bumpMap}
           bumpScale={tex?.bumpScale}
         />}
-        {!demoUnion && !mono && style3d === "print" && <meshLambertMaterial
+        {!demoUnion && !mono && style3d === "print" && <meshLambertMaterial {...sink}
           color={(interactive && hov) ? "#DCE8F6" : "#F5F5F5"} emissive="#EDEDED" emissiveIntensity={0.5} />}
         {!demoUnion && !mono && style3d === "clay" && (() => {
           const claySelf = lightenHex(color, CLAY_WALL_LIGHTEN);
-          return <meshLambertMaterial
+          return <meshLambertMaterial {...sink}
             color={(interactive && hov) ? "#ffffff" : claySelf}
             emissive={(interactive && hov) ? "#000000" : claySelf}
             emissiveIntensity={0.4}
@@ -875,16 +886,21 @@ const NOOP = () => {};
 // pony; the taller wall's exposed mitered end face above it is correct). All-demo
 // junctions get the demo treatment (they join the EqualDepth union); mixed junctions
 // stay solid and take their look from the first non-demo wall (textured material wins).
-function CapSolid({ poly, heightFt, material, color, allDemo, style3d }) {
+function CapSolid({ poly, heightFt, material, color, allDemo, style3d, monoTier = null, monoT = null }) {
   const tileFt = (style3d === "detailed" && !allDemo) ? WALL_MATERIAL_TILE_FT[material] : null;
   const geo = useMemo(() => buildCapSolidGeometry(poly, heightFt, { tileFt }), [poly, heightFt, tileFt]);
   useEffect(() => () => geo?.dispose(), [geo]);
   if (!geo) return null;
+  // suppressEdges: the wedge is gap FILLER, not an object — outlining it drew a box
+  // inside the wall (the stripe at 3-wall junctions). sinkBehind: lose the depth fight
+  // where it overlaps a wall, so it only shows in genuinely uncovered slivers.
   return <WallSolid geometry={geo} color={color} material={material} wallId={null} onSelect={NOOP}
-    isDemo={allDemo} isSelected={false} style3d={style3d} interactive={false} />;
+    isDemo={allDemo} isSelected={false} style3d={style3d} interactive={false}
+    suppressEdges sinkBehind
+    monoTier={monoTier} monoT={monoT} />;
 }
 
-function CapSolids({ fps, walls = [], hiddenWallIds, cx, cz, pxPerFoot, ceilingHeight, style3d = "clay" }) {
+function CapSolids({ fps, walls = [], hiddenWallIds, cx, cz, pxPerFoot, ceilingHeight, style3d = "clay", monoT = null, exteriorWallIds }) {
   const caps = useMemo(() => {
     const entries = [...fps.entries()].map(([id, e]) => ({ id, ...e }));
     const wallById = new Map(walls.map(w => [w.id, w]));
@@ -907,11 +923,16 @@ function CapSolids({ fps, walls = [], hiddenWallIds, cx, cz, pxPerFoot, ceilingH
         if (!material || (TEXTURED_WALL_MATERIALS.has(w.material) && !TEXTURED_WALL_MATERIALS.has(material))) material = w.material;
       }
       const poly = cp.pts.map(p => ({ x: (p.x - cx) / pxPerFoot, z: (p.y - cz) / pxPerFoot }));
-      return { key: i + "_" + Math.round(cp.x) + "_" + Math.round(cp.y), poly, heightFt, material, color, allDemo };
+      // Mono: the wedge takes the HEAVIEST tier meeting here, matching the 2D plan — an
+      // envelope corner stays T1 rather than being lightened by a partition landing on it.
+      const monoTier = monoT
+        ? monoT.tiers[visibleIds.some(id => exteriorWallIds?.has(id)) ? 0 : 1]
+        : null;
+      return { key: i + "_" + Math.round(cp.x) + "_" + Math.round(cp.y), poly, heightFt, material, color, allDemo, monoTier };
     }).filter(Boolean);
-  }, [fps, walls, hiddenWallIds, cx, cz, pxPerFoot, ceilingHeight]);
+  }, [fps, walls, hiddenWallIds, monoT, exteriorWallIds, cx, cz, pxPerFoot, ceilingHeight]);
   return caps.map(c => <CapSolid key={c.key} poly={c.poly} heightFt={c.heightFt}
-    material={c.material} color={c.color} allDemo={c.allDemo} style3d={style3d} />);
+    material={c.material} color={c.color} allDemo={c.allDemo} style3d={style3d} monoTier={c.monoTier} monoT={monoT} />);
 }
 
 // ─── Junction baseboard plinths ────────────────────────────────────────────────
@@ -998,7 +1019,11 @@ function Marker3D({ marker, cx, cz, pxPerFoot, ceilingHeight, onSelect, isSelect
   const cfg = M3D[marker.componentType] ?? { y: 2.0, shape: "sphere", color: "#9A9488" };
   const baseColor = finishColor(marker, cfg);
   const c = hov ? "#ffffff" : isSelected ? GLOW_COLOR : baseColor;
-  const wy = resolveY(cfg.y, cH);
+  // A per-marker mount height (inches AFF, from the inspector slider) overrides the
+  // catalog default — same rule the elevation view applies via markerMountYFt.
+  const wy = typeof marker.mountY === "number"
+    ? Math.min(marker.mountY / 12, cH - 0.1)
+    : resolveY(cfg.y, cH);
 
   const click = interactive ? (e => { e.stopPropagation(); onSelect(marker.id, "marker"); }) : undefined;
   const hp    = { onPointerOver: e => { e.stopPropagation(); setHov(true); }, onPointerOut: () => setHov(false) };
@@ -1169,25 +1194,6 @@ function Marker3D({ marker, cx, cz, pxPerFoot, ceilingHeight, onSelect, isSelect
       </group>
     );
   }
-
-  // ── Linear fixture ────────────────────────────────────────────────────────
-  if (shape === "linear") return (
-    <group position={[wx, wy, wz]} rotation={floorRot} onClick={click} {...hp}>
-      <mesh><boxGeometry args={[cfg.len, 0.067, 0.267]} /><meshLambertMaterial color={c} /></mesh>
-      {/* Diffuser face */}
-      <mesh position={[0, -0.033, 0]}><boxGeometry args={[cfg.len - 0.04, 0.005, 0.24]} />
-        {isLight
-          ? <meshStandardMaterial color={WARM_HALO} emissive={WARM_HALO} emissiveIntensity={4.0} transparent opacity={0.9} toneMapped={false} />
-          : <meshLambertMaterial color="#FFFFFF" transparent opacity={0.6} />}
-      </mesh>
-      {isSelected && <BoxGlow w={cfg.len} h={0.067} d={0.267} />}
-      {isLight && <>
-        <WarmGlow position={[0, -0.05, 0]} r={0.3} intensity={1.4} distance={10} />
-        {cfg.len >= 4 && <WarmGlow position={[ cfg.len * 0.35, -0.05, 0]} r={0.22} intensity={0.8} distance={7} />}
-        {cfg.len >= 4 && <WarmGlow position={[-cfg.len * 0.35, -0.05, 0]} r={0.22} intensity={0.8} distance={7} />}
-      </>}
-    </group>
-  );
 
   // ── Pendant light (globe on wire) ─────────────────────────────────────────
   if (shape === "pendant") return (
@@ -1430,6 +1436,83 @@ function DimLine3D({ dim, cx, cz, pxPerFoot }) {
 }
 
 // ─── Zone floor ───────────────────────────────────────────────────────────────
+// ─── Furniture footprints on the floor ───────────────────────────────────────
+// The Furnish stage is 2D-only, so in 3D/isometric we lay each piece's parametric plan
+// symbol flat on the floor as a decal. The exact 2D primitives (catalog draw(W,D)) are
+// rendered to a canvas texture — reusing them verbatim (incl. arcs/curves via Path2D) so
+// the floor footprint matches the plan — then mapped onto a floor-level plane sized W×D ft.
+const FOOTPRINT_TEX_SCALE = 48; // px per foot in the texture (crisp without being huge)
+
+function roundRectPath(ctx, x, y, w, h, r) {
+  r = Math.max(0, Math.min(r, Math.min(Math.abs(w), Math.abs(h)) / 2));
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+const FOOTPRINT_STROKE_MARGIN_FT = 0.12; // room for the stroke so it isn't clipped at the edge
+
+// Returns { tex, planeW, planeH } (plane sizes in FEET). The canvas carries a margin =
+// spec.padFt (chair overflow) + stroke margin on every side, and the plane matches it, so
+// the drawing lands at true feet and nothing is clipped.
+function buildFootprintTexture(type, wFt, dFt, color) {
+  const spec = FURNITURE_CATALOG[type];
+  if (!spec || typeof document === "undefined") return null;
+  const marginFt = (spec.padFt || 0) + FOOTPRINT_STROKE_MARGIN_FT;
+  const planeW = wFt + 2 * marginFt, planeH = dFt + 2 * marginFt;
+  const W = Math.max(8, wFt * FOOTPRINT_TEX_SCALE), D = Math.max(8, dFt * FOOTPRINT_TEX_SCALE);
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.ceil(planeW * FOOTPRINT_TEX_SCALE);
+  canvas.height = Math.ceil(planeH * FOOTPRINT_TEX_SCALE);
+  const ctx = canvas.getContext("2d");
+  ctx.translate(canvas.width / 2, canvas.height / 2); // local origin at footprint centre
+  ctx.strokeStyle = color;
+  ctx.lineJoin = "round";
+  ctx.lineCap = "round";
+  ctx.lineWidth = Math.max(2, FOOTPRINT_TEX_SCALE * 0.07);
+
+  // base footprint outline (matches Furniture2D's rect/ellipse)
+  ctx.fillStyle = color + "1F";
+  if (spec.round) { ctx.beginPath(); ctx.ellipse(0, 0, W / 2, D / 2, 0, 0, Math.PI * 2); ctx.fill(); ctx.stroke(); }
+  else { roundRectPath(ctx, -W / 2, -D / 2, W, D, 3); ctx.fill(); ctx.stroke(); }
+
+  ctx.fillStyle = color + "26";
+  for (const p of spec.draw(W, D, wFt, dFt) || []) {
+    switch (p.t) {
+      case "rect": roundRectPath(ctx, p.x, p.y, p.w, p.h, p.r || 0); if (p.fill !== false) ctx.fill(); ctx.stroke(); break;
+      case "circle": ctx.beginPath(); ctx.arc(p.cx, p.cy, p.r, 0, Math.PI * 2); if (p.fill !== false) ctx.fill(); ctx.stroke(); break;
+      case "ellipse": ctx.beginPath(); ctx.ellipse(p.cx, p.cy, p.rx, p.ry, 0, 0, Math.PI * 2); if (p.fill !== false) ctx.fill(); ctx.stroke(); break;
+      case "line": ctx.beginPath(); ctx.moveTo(p.x1, p.y1); ctx.lineTo(p.x2, p.y2); ctx.stroke(); break;
+      case "path": { const pth = new Path2D(p.d); if (p.fill !== false) ctx.fill(pth); ctx.stroke(pth); break; }
+      default: break;
+    }
+  }
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 4;
+  return { tex, planeW, planeH };
+}
+
+// One piece's footprint decal, laid flat on the floor at the piece's plan position/rotation.
+function FurnitureFootprint3D({ f, cx, cz, pxPerFoot, color }) {
+  const worldX = (f.x - cx) / pxPerFoot, worldZ = (f.y - cz) / pxPerFoot;
+  const built = useMemo(() => buildFootprintTexture(f.type, f.w, f.d, color), [f.type, f.w, f.d, color]);
+  useEffect(() => () => built?.tex.dispose(), [built]);
+  if (!built) return null;
+  return (
+    <group position={[worldX, 0.08, worldZ]} rotation={[0, -(f.angle || 0), 0]}>
+      <mesh rotation={[-Math.PI / 2, 0, 0]}>
+        <planeGeometry args={[built.planeW, built.planeH]} />
+        <meshBasicMaterial map={built.tex} transparent depthWrite={false} polygonOffset polygonOffsetFactor={-2} side={THREE.DoubleSide} />
+      </mesh>
+    </group>
+  );
+}
+
 function ZoneFloor({ zone, cx, cz, pxPerFoot, zoneLibrary, style3d = "clay" }) {
   const geo = useMemo(() => {
     const toSX = sx =>  (sx - cx) / pxPerFoot;
@@ -1790,7 +1873,8 @@ function CaptureBridge({ captureRef }) {
 
 // ─── Main 3D component ─────────────────────────────────────────────────────────
 export default function TestFit3D({
-  walls, nodes, doors, windows, columns, zones, markers = [], dims = [],
+  walls, nodes, doors, windows, columns, zones, furniture = [], markers = [], dims = [],
+  visibleFurniture = true,
   pxPerFoot, ceilingHeight, T, themeMode = "dark", onSelect, controlsRef,
   selectedId, selType, mode = "build",
   show3dLabels, setShow3dLabels,
@@ -1855,26 +1939,15 @@ export default function TestFit3D({
     return new Set(walls.filter(w => onLoop.has(w.n1 + "|" + w.n2)).map(w => w.id));
   }, [walls, nodes]);
 
+  // Cutaway hidden set: walls whose outward face points at the camera, PLUS any boundary
+  // wall orphaned by that (both loop-neighbours hidden) — the lone doorframe/window sliver
+  // left at a concave corner. Outward normals come from the loop winding, so this is
+  // correct on L-shaped / notched plans. See geometry.cutawayHiddenWalls.
   const hiddenWallIds = useMemo(() => {
     if (!hideNearWalls || !isoCorner) return new Set();
     const v = (ISO_CORNERS[isoCorner] || ISO_CORNERS.se).v; // camera direction (x, _, z)
-    const nodeMap = new Map(nodes.map(n => [n.id, n]));
-    const out = new Set();
-    for (const w of walls) {
-      if (!exteriorWallIds.has(w.id)) continue;
-      const A = nodeMap.get(w.n1), B = nodeMap.get(w.n2); if (!A || !B) continue;
-      const ax = (A.x - cx) / pxPerFoot, az = (A.y - cz) / pxPerFoot;
-      const bx = (B.x - cx) / pxPerFoot, bz = (B.y - cz) / pxPerFoot;
-      const dx = bx - ax, dz = bz - az, L = Math.hypot(dx, dz) || 1;
-      let nx = -dz / L, nz = dx / L;
-      const mx = (ax + bx) / 2, mz = (az + bz) / 2;
-      if (nx * mx + nz * mz < 0) { nx = -nx; nz = -nz; }   // flip to face outward
-      // Epsilon keeps walls that are edge-on to this corner (they read as thin slivers,
-      // and dropping them would open the box on a side you're not looking through).
-      if (nx * v[0] + nz * v[2] > 0.15) out.add(w.id);
-    }
-    return out;
-  }, [hideNearWalls, isoCorner, walls, nodes, exteriorWallIds, cx, cz, pxPerFoot]);
+    return cutawayHiddenWalls(nodes, walls, v);
+  }, [hideNearWalls, isoCorner, nodes, walls]);
 
   // Mitered wall footprints (plan px), shared with the 2D renderer — computed once at
   // scene level because each wall's miters depend on ALL its neighbours.
@@ -2017,7 +2090,7 @@ export default function TestFit3D({
             monoTier={T.mono ? T.tiers[exteriorWallIds.has(w.id) ? 0 : 1] : null} monoT={T.mono ? T : null}
             onSelect={safeSelect} selectedId={effSelectedId} selType={effSelType} showDims={show3dDims} style3d={style3d} interactive={interactive} />
         ))}
-        <CapSolids fps={wallFps} walls={walls} hiddenWallIds={hiddenWallIds} cx={cx} cz={cz} pxPerFoot={pxPerFoot} ceilingHeight={ceilingHeight} style3d={style3d} />
+        <CapSolids fps={wallFps} walls={walls} hiddenWallIds={hiddenWallIds} monoT={T.mono ? T : null} exteriorWallIds={exteriorWallIds} cx={cx} cz={cz} pxPerFoot={pxPerFoot} ceilingHeight={ceilingHeight} style3d={style3d} />
         <JunctionTrim walls={walls} nodes={nodes} hiddenWallIds={hiddenWallIds} cx={cx} cz={cz} pxPerFoot={pxPerFoot} style3d={style3d} />
         {show3dCeiling && <CeilingPlane walls={walls} nodes={nodes} cx={cx} cz={cz} pxPerFoot={pxPerFoot} ceilingHeight={ceilingHeight} style3d={style3d} />}
         {columns.map(col => (
@@ -2027,6 +2100,10 @@ export default function TestFit3D({
         {visibleMarkers.map(m => (
           <Marker3D key={m.id} marker={m} cx={cx} cz={cz} pxPerFoot={pxPerFoot} ceilingHeight={ceilingHeight}
             onSelect={safeSelect} isSelected={effSelectedId === m.id && effSelType === "marker"} style3d={style3d} interactive={interactive} />
+        ))}
+        {visibleFurniture && furniture.map(f => (
+          <FurnitureFootprint3D key={f.id} f={f} cx={cx} cz={cz} pxPerFoot={pxPerFoot}
+            color={effSelectedId === f.id && effSelType === "furniture" ? T.selBorder : (T.furniture || "#8a6a52")} />
         ))}
         {show3dLabels && zones.map(z => <ZoneLabel3D key={z.id} zone={z} cx={cx} cz={cz} pxPerFoot={pxPerFoot} zoneLibrary={zoneLibrary} />)}
         {show3dDims   && dims.map(d =>  <DimLine3D  key={d.id} dim={d}  cx={cx} cz={cz} pxPerFoot={pxPerFoot} />)}

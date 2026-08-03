@@ -3,21 +3,22 @@
 // verbatim. Geometry / interaction / selection state come from their stores; everything
 // else (helper callbacks, UI scalars, refs, tool config) arrives via `ctx`.
 import { useCallback, useMemo } from "react";
-import { uid, sn, dst, ptSeg, orthoSnap, pointInPoly, polyCentroid, splitWallAtNode, mergeNode, dedupeWalls, splitWallThroughNodes } from "./model";
-import { applySmartGuides, wallResizeCursor } from "./geometry";
+import { uid, sn, dst, ptSeg, orthoSnap, pointInPoly, polyCentroid, furnitureInZone, splitWallAtNode, mergeNode, dedupeWalls, splitWallThroughNodes } from "./model";
+import { applySmartGuides, wallResizeCursor, wallSideSign, markerDrawPos, polyCarryStart, applyPolyCarry } from "./geometry";
 import { labelBounds } from "../utils/labels";
-import { SPEC_COMPONENTS, SNAP_R, PROX_DRAG_TYPES } from "../constants/specs";
+import { SPEC_COMPONENTS, SNAP_R, PROX_DRAG_TYPES, isWallOffsetComponent } from "../constants/specs";
+import { newFurniture, pointInFurniture } from "../constants/furniture";
 import { useGeometryStore } from "../store/geometryStore";
 import { useInteractionStore } from "../store/interactionStore";
 import { useSelectionStore } from "../store/selectionStore";
 import { useLayersStore } from "../store/layersStore";
 
 export function useCanvasEvents(ctx) {
-  const { nodes, setNodes, walls, setWalls, zones, setZones, markers, setMarkers, doors, setDoors, windows, setWindows, columns, setColumns, dims, setDims, labels, setLabels, revClouds, setRevClouds, flowPaths, setFlowPaths, floorRegions, setFloorRegions, guides, setGuides } = useGeometryStore();
-  const { drawChain, setDrawChain, drawRect, setDrawRect, drawDim, setDrawDim, drawPolyZone, setDrawPolyZone, drawRevCloud, setDrawRevCloud, drawFlowPath, setDrawFlowPath, drawFloorRegion, setDrawFloorRegion, drag, setDrag, resize, setResize, marquee, setMarquee, ghostPos, setGhostPos, rotatingMarker, setRotatingMarker, calibrationLine, setCalibrationLine, hoverNid, setHoverNid, guideDraft, setGuideDraft, addingLeaderToId, setAddingLeaderToId, panning, setPanning, panSt, setPanSt, spaceHeld, setSpaceHeld } = useInteractionStore();
+  const { nodes, setNodes, walls, setWalls, zones, setZones, furniture, setFurniture, markers, setMarkers, doors, setDoors, windows, setWindows, columns, setColumns, dims, setDims, labels, setLabels, revClouds, setRevClouds, flowPaths, setFlowPaths, floorRegions, setFloorRegions, guides, setGuides } = useGeometryStore();
+  const { drawChain, setDrawChain, drawRect, setDrawRect, drawDim, setDrawDim, drawPolyZone, setDrawPolyZone, drawRevCloud, setDrawRevCloud, drawFlowPath, setDrawFlowPath, drawFloorRegion, setDrawFloorRegion, drag, setDrag, resize, setResize, marquee, setMarquee, ghostPos, setGhostPos, rotatingMarker, setRotatingMarker, rotatingFurniture, setRotatingFurniture, furnitureResize, setFurnitureResize, calibrationLine, setCalibrationLine, hoverNid, setHoverNid, guideDraft, setGuideDraft, addingLeaderToId, setAddingLeaderToId, panning, setPanning, panSt, setPanSt, spaceHeld, setSpaceHeld } = useInteractionStore();
   const { selectedId, setSelectedId, selType, setSelType, selectedIds, setSelectedIds } = useSelectionStore();
   const {
-    activeComponentType, activePhase, activeSpecLayer, activeZoneType, bgImage, bgOffset, canvasRotation, columnLabel, columnNotes, columnShape, columnSize, commitWallSegment, cvs, cvsContainer, doorFlipped, doorHingeRight, doorType, doorWidth, findDimSnap, findNear, findProxHover, floorMaterial, gn, htrackAngle, inToPx, isWallTool, lastCopyInfo, layerLocked, lightingIsNew, lightingType, markerFinish, markerLocked, markerNotes, markerVisible, mode, outletIsNew, outletType, phaseVisible, proxHover, pxPerFoot, resolveDimEndpoints, resolveLeaderTip, resolvePoints, resolvePos, s2c, setBgOffset, setCursorPos, setDimInput, setEditingLabelId, setEditingLabelText, setGuideScrub, setHoverGuideId, setLastCopyInfo, setProxHover, setSmartGuides, setT, setTool, setViewOff, setZoneEdge, snapGrid, snapGuide, snapLabelAnchor, snapToWall, themeMode, tool, viewOff, wallKind, wc, windowHeight, windowSill, windowType, windowWidth, zoneEdge, zoneLibrary, zoneNotes, zonePaintColor, zonePaintFinish, zoom,
+    activeComponentType, activeFurnitureType, activePhase, activeSpecLayer, activeZoneType, bgImage, bgOffset, canvasRotation, columnLabel, columnNotes, columnShape, columnSize, commitWallSegment, commitRectRoom, cvs, cvsContainer, doorFlipped, doorHingeRight, doorType, doorWidth, findDimSnap, findNear, findProxHover, floorMaterial, gn, htrackAngle, inToPx, isWallTool, lastCopyInfo, layerLocked, lightingIsNew, lightingType, markerFinish, markerLocked, markerNotes, markerVisible, mode, outletIsNew, outletType, phaseVisible, proxHover, pxPerFoot, resolveDimEndpoints, resolveLeaderTip, resolvePoints, resolvePos, s2c, setBgOffset, setCursorPos, setDimInput, setEditingLabelId, setEditingLabelText, setGuideScrub, setHoverGuideId, setLastCopyInfo, setProxHover, setSmartGuides, setT, setTool, setViewOff, setZoneEdge, snapGrid, snapGuide, snapLabelAnchor, snapToWall, themeMode, tool, viewOff, visibleFurniture, wallKind, wc, windowHeight, windowSill, windowType, windowWidth, zoneEdge, zoneLibrary, zoneNotes, zonePaintColor, zonePaintFinish, zoom,
   } = ctx;
 
   const hitTest = useCallback((pos) => {
@@ -92,17 +93,12 @@ export function useCanvasEvents(ctx) {
           const lx = ddx * Math.cos(-angle) - ddy * Math.sin(-angle);
           const ly = ddx * Math.sin(-angle) + ddy * Math.cos(-angle);
           if (Math.abs(lx) <= lenPx / 2 + 8 && Math.abs(ly) <= widPx / 2 + 8) return { type: "marker", id: p.id };
-        } else if (ct?.startsWith("light_linear")) {
-          const ftLen = ct === "light_linear_4" ? 4 : 2;
-          const lenPx = ftLen * pxPerFoot, widPx = 8;
-          const angle = p.angle || 0;
-          const ddx = pos.x - rp.x, ddy = pos.y - rp.y;
-          const lx = ddx * Math.cos(-angle) - ddy * Math.sin(-angle);
-          const ly = ddx * Math.sin(-angle) + ddy * Math.cos(-angle);
-          if (Math.abs(lx) <= lenPx / 2 + 8 && Math.abs(ly) <= widPx / 2 + 8) return { type: "marker", id: p.id };
         } else {
-          // All other power-layer marker types (outlets, switches, lights, etc.)
-          if (dst(pos.x, pos.y, rp.x, rp.y) < 16) return { type: "marker", id: p.id };
+          // All other power-layer marker types (outlets, switches, lights, etc.). Pick at
+          // the DRAWN point — wall devices stand off the wall — so the symbol you click is
+          // the symbol you see, and clicking the wall itself doesn't grab the outlet.
+          const dp = markerDrawPos(p, rp.x, rp.y, pxPerFoot);
+          if (dst(pos.x, pos.y, dp.x, dp.y) < 16) return { type: "marker", id: p.id };
         }
       }
       for (let i = doors.length - 1; i >= 0; i--) { const d = doors[i]; if (!phaseVisible(d.phase)) continue; const rp = resolvePos(d); if (dst(pos.x, pos.y, rp.x, rp.y) < inToPx(d.width) / 2 + 4) return { type: "door", id: d.id }; }
@@ -135,7 +131,15 @@ export function useCanvasEvents(ctx) {
         else { if (pos.x >= z.x && pos.x <= z.x + z.w && pos.y >= z.y && pos.y <= z.y + z.h) return { type: "zone", id: z.id }; }
       }
     } else if (mode === "itmep") {
-      for (let i = markers.length - 1; i >= 0; i--) { const p = markers[i]; if (!markerVisible(p) || markerLocked(p)) continue; const rp = resolvePos(p); if (dst(pos.x, pos.y, rp.x, rp.y) < 14) return { type: "marker", id: p.id }; }
+      for (let i = markers.length - 1; i >= 0; i--) { const p = markers[i]; if (!markerVisible(p) || markerLocked(p)) continue; const rp = resolvePos(p); const dp = markerDrawPos(p, rp.x, rp.y, pxPerFoot); if (dst(pos.x, pos.y, dp.x, dp.y) < 14) return { type: "marker", id: p.id }; }
+    } else if (mode === "furnish") {
+      if (visibleFurniture && !layerLocked("furniture")) {
+        for (let i = furniture.length - 1; i >= 0; i--) {
+          const f = furniture[i];
+          if (!phaseVisible(f.phase)) continue;
+          if (pointInFurniture(f, pos.x, pos.y, pxPerFoot, 4)) return { type: "furniture", id: f.id };
+        }
+      }
     }
     // RevCloud hit testing
     for (let i = revClouds.length - 1; i >= 0 && !layerLocked("revClouds"); i--) {
@@ -155,8 +159,10 @@ export function useCanvasEvents(ctx) {
       if (rc.points.length >= 3 && pointInPoly(pos.x, pos.y, rc.points))
         return { type: "revcloud", id: rc.id };
     }
-    // Flow path hit testing — open polyline, band half-width as the hit margin.
-    for (let i = flowPaths.length - 1; i >= 0 && !layerLocked("flowPaths"); i--) {
+    // Flow path hit testing — open polyline, band half-width as the hit margin. Flow Path is
+    // a BUILD-only tool (see the tool rail), so its items are only selectable while building —
+    // you can't select what the current mode can't create.
+    for (let i = flowPaths.length - 1; i >= 0 && mode === "build" && !layerLocked("flowPaths"); i--) {
       const fp = flowPaths[i];
       if (!phaseVisible(fp.phase)) continue;
       const isSel = selectedId === fp.id && selType === "flowPath";
@@ -171,8 +177,9 @@ export function useCanvasEvents(ctx) {
           return { type: "flowPath", id: fp.id, edgeIndex: ei };
       }
     }
-    // Floor region hit testing — checked last so everything above wins.
-    for (let i = floorRegions.length - 1; i >= 0 && !layerLocked("floorRegions"); i--) {
+    // Floor region hit testing — checked last so everything above wins. Also a BUILD-only
+    // tool, so only selectable while building.
+    for (let i = floorRegions.length - 1; i >= 0 && mode === "build" && !layerLocked("floorRegions"); i--) {
       const fr = floorRegions[i];
       if (!phaseVisible(fr.phase)) continue;
       const isSel = selectedId === fr.id && selType === "floorRegion";
@@ -190,7 +197,7 @@ export function useCanvasEvents(ctx) {
         return { type: "floorRegion", id: fr.id };
     }
     return null;
-  }, [mode, nodes, walls, zones, markers, doors, windows, columns, dims, labels, revClouds, flowPaths, floorRegions, guides, zoom, pxPerFoot, wc, inToPx, resolvePos, resolvePoints, phaseVisible, resolveLeaderTip, resolveDimEndpoints, layerLocked, markerLocked]);
+  }, [mode, nodes, walls, zones, furniture, visibleFurniture, markers, doors, windows, columns, dims, labels, revClouds, flowPaths, floorRegions, guides, zoom, pxPerFoot, wc, inToPx, resolvePos, resolvePoints, phaseVisible, resolveLeaderTip, resolveDimEndpoints, layerLocked, markerLocked, markerVisible]);
 
   // Centroid of all nodes — used to aim wall-mounted directional markers into the room.
   const nodeCentroid = useMemo(() => {
@@ -198,6 +205,42 @@ export function useCanvasEvents(ctx) {
     let sx = 0, sy = 0; for (const n of nodes) { sx += n.x; sy += n.y; }
     return { x: sx / nodes.length, y: sy / nodes.length };
   }, [nodes]);
+
+  // Furniture a zone-move should carry, snapshotted at drag start with each piece's
+  // starting point — recomputing containment mid-drag would drop pieces the moment the zone
+  // slid off them. A LOCKED furniture layer opts out (lock means "don't edit these"), and
+  // pieces from a hidden phase stay put rather than being moved sight-unseen.
+  const zoneFurnStart = useCallback((zone, pts) => {
+    if (layerLocked("furniture")) return [];
+    return furnitureInZone(furniture.filter(f => phaseVisible(f.phase)), zone, pts)
+      .map(f => ({ id: f.id, x: f.x, y: f.y }));
+  }, [furniture, layerLocked, phaseVisible]);
+
+  // Floor regions and zones a room-resize should carry. Their vertices hold no reference to
+  // the walls they were drawn against — the rect-room tool writes a floor from the very same
+  // scalars as the wall corners and the two then drift apart — so the binding is positional,
+  // snapshotted here and re-derived. Locked layers opt out; a hidden phase stays put.
+  // `exclude` skips polygons already being dragged wholesale, so they never move twice.
+  const polyCarry = useCallback((movingNodes, exclude) => {
+    if (!movingNodes?.length) return [];
+    const tol = Math.max(1e-6, pxPerFoot / 48); // ¼" — well under the 1" finest snap step
+    const skip = new Set(exclude || []);
+    const src = [];
+    if (!layerLocked("floorRegions")) for (const fr of floorRegions) if (phaseVisible(fr.phase)) src.push(fr);
+    if (!layerLocked("zones")) for (const z of zones) if (z.points && phaseVisible(z.phase)) src.push(z);
+    return polyCarryStart(src, movingNodes, tol, skip);
+  }, [floorRegions, zones, layerLocked, phaseVisible, pxPerFoot]);
+
+  // Apply a carry list to both collections. Split by id so each store write only touches its
+  // own array, and skipped entirely when nothing moved (zustand notifies on every set).
+  const applyCarry = useCallback((carry, deltaOf) => {
+    if (!carry?.length) return;
+    const frIds = new Set(floorRegions.map(f => f.id));
+    const frCarry = carry.filter(c => frIds.has(c.polyId));
+    const zCarry = carry.filter(c => !frIds.has(c.polyId));
+    if (frCarry.length) setFloorRegions(p => applyPolyCarry(p, frCarry, deltaOf));
+    if (zCarry.length) setZones(p => applyPolyCarry(p, zCarry, deltaOf));
+  }, [floorRegions, setFloorRegions, setZones]);
 
   const onDown = useCallback((e) => {
     // Selection is read fresh at event time (never during render) so it stays out of the
@@ -260,21 +303,7 @@ export function useCanvasEvents(ctx) {
       const py = near ? near.y : ws ? ws.y : sy;
       if (!drawRect) { setDrawRect({ x1: px, y1: py }); return; }
       const { x1, y1 } = drawRect;
-      if (Math.abs(px - x1) > 8 && Math.abs(py - y1) > 8) {
-        // Trace the loop corner-by-corner; commitWallSegment handles node reuse and
-        // wall-body welds per side. The closing side targets the first corner's node
-        // id directly — nodes created this tick aren't visible to findNear yet.
-        const r1 = commitWallSegment(null, x1, y1, px, y1, wallKind);
-        const r2 = r1 && commitWallSegment(r1.nodeId, px, y1, px, py, wallKind);
-        const r3 = r2 && commitWallSegment(r2.nodeId, px, py, x1, py, wallKind);
-        if (r3) {
-          commitWallSegment(r3.nodeId, x1, py, x1, y1, wallKind, r1.startNodeId);
-          // A room gets a floor: same shape the floorRegion tool makes, using the
-          // project's default floor material. Renders in Detailed 3D + plan hatch.
-          setFloorRegions(p => [...p, { id: uid(), points: [{ x: x1, y: y1 }, { x: px, y: y1 }, { x: px, y: py }, { x: x1, y: py }], material: floorMaterial || "Wood", label: "", phase: activePhase }]);
-        }
-        setDrawRect(null); setCursorPos(null);
-      }
+      if (commitRectRoom(x1, y1, px, py, wallKind)) { setDrawRect(null); setCursorPos(null); }
       return;
     }
     if (tool === "zone") {
@@ -282,6 +311,15 @@ export function useCanvasEvents(ctx) {
       const pts = [{ x: sx, y: sy }, { x: sx + zt.defaultW * pxPerFoot, y: sy }, { x: sx + zt.defaultW * pxPerFoot, y: sy + zt.defaultH * pxPerFoot }, { x: sx, y: sy + zt.defaultH * pxPerFoot }];
       setZones(p => [...p, { id: nid, type: activeZoneType, points: pts, label: zt.name, notes: zoneNotes, paintColor: zonePaintColor, paintFinish: zonePaintFinish, phase: activePhase }]);
       if (e.shiftKey) { setSelectedId(null); setSelType(null); } else { setSelectedId(nid); setSelType("zone"); setTool("select"); setGhostPos(null); }
+      return;
+    }
+    if (tool === "furniture") {
+      const nid = uid();
+      const f = newFurniture(activeFurnitureType, sx, sy, nid);
+      if (!f) return;
+      setFurniture(p => [...p, { ...f, phase: activePhase }]);
+      // Shift keeps the tool armed to drop more of the same piece; otherwise select it.
+      if (e.shiftKey) { setSelectedId(null); setSelType(null); } else { setSelectedId(nid); setSelType("furniture"); setTool("select"); setGhostPos(null); }
       return;
     }
     if (tool === "marker") {
@@ -337,7 +375,10 @@ export function useCanvasEvents(ctx) {
       const snap = wallSnap ? snapToWall(pos.x, pos.y, Infinity) : null;
       const ox = snap ? snap.x : sx, oy = snap ? snap.y : sy;
       const angleRad = outletType.startsWith("htrack_") ? (htrackAngle * Math.PI / 180) : (snap ? (snap.angle * Math.PI / 180) : 0);
-      setMarkers(p => [...p, { id: nid, layer: "power", componentType: outletType, x: ox, y: oy, angle: angleRad, isNew: outletIsNew, label: SPEC_COMPONENTS.power[outletType].name, notes: "", phase: activePhase }]);
+      // Which room the device faces: the side of the wall the click landed on. The symbol
+      // is drawn offset that way (markerDisplayPos) while x/y stay on the centerline.
+      const side = snap && isWallOffsetComponent(outletType) ? wallSideSign(pos.x, pos.y, ox, oy, angleRad) : undefined;
+      setMarkers(p => [...p, { id: nid, layer: "power", componentType: outletType, x: ox, y: oy, angle: angleRad, side, isNew: outletIsNew, label: SPEC_COMPONENTS.power[outletType].name, notes: "", phase: activePhase }]);
       if (e.shiftKey) { setSelectedId(null); setSelType(null); } else { setSelectedId(nid); setSelType("marker"); setTool("select"); setGhostPos(null); }
       return;
     }
@@ -347,7 +388,10 @@ export function useCanvasEvents(ctx) {
       const snap = isCeiling ? null : snapToWall(pos.x, pos.y, Infinity);
       const ox = snap ? snap.x : sx, oy = snap ? snap.y : sy;
       const angleRad = lightingType.startsWith("htrack_") ? (htrackAngle * Math.PI / 180) : (snap ? (snap.angle * Math.PI / 180) : 0);
-      setMarkers(p => [...p, { id: nid, layer: "power", componentType: lightingType, x: ox, y: oy, angle: angleRad, isNew: lightingIsNew, label: SPEC_COMPONENTS.power[lightingType].name, notes: "", phase: activePhase }]);
+      // Sconces: the clicked side is the room they light — drives both the plan offset and
+      // which way the throw fans (same convention as outlets/switches).
+      const side = snap && isWallOffsetComponent(lightingType) ? wallSideSign(pos.x, pos.y, ox, oy, angleRad) : undefined;
+      setMarkers(p => [...p, { id: nid, layer: "power", componentType: lightingType, x: ox, y: oy, angle: angleRad, side, isNew: lightingIsNew, label: SPEC_COMPONENTS.power[lightingType].name, notes: "", phase: activePhase }]);
       if (e.shiftKey) { setSelectedId(null); setSelType(null); } else { setSelectedId(nid); setSelType("marker"); setTool("select"); setGhostPos(null); }
       return;
     }
@@ -501,7 +545,7 @@ export function useCanvasEvents(ctx) {
             setSelectedId(remaining[0] || null);
             if (remaining.length > 0) {
               const rid = remaining[0];
-              const rType = nodes.find(n => n.id === rid) ? "node" : walls.find(w => w.id === rid) ? "wall" : zones.find(z => z.id === rid) ? "zone" : markers.find(m => m.id === rid) ? "marker" : doors.find(d => d.id === rid) ? "door" : windows.find(w => w.id === rid) ? "window" : columns.find(c => c.id === rid) ? "column" : null;
+              const rType = nodes.find(n => n.id === rid) ? "node" : walls.find(w => w.id === rid) ? "wall" : zones.find(z => z.id === rid) ? "zone" : markers.find(m => m.id === rid) ? "marker" : doors.find(d => d.id === rid) ? "door" : windows.find(w => w.id === rid) ? "window" : columns.find(c => c.id === rid) ? "column" : furniture.find(f => f.id === rid) ? "furniture" : null;
               setSelType(rType);
             } else { setSelType(null); }
           }
@@ -520,7 +564,7 @@ export function useCanvasEvents(ctx) {
         if (isMultiCopy) {
           // Duplicate ALL selected items and start a multi-drag with the copies
           const srcItems = [];
-          const newColumns = [], newMarkers = [], newDoors = [], newWindows = [], newZones = [], newLabels = [], newNodes = [], newWalls = [];
+          const newColumns = [], newMarkers = [], newDoors = [], newWindows = [], newZones = [], newLabels = [], newNodes = [], newWalls = [], newFurns = [];
           const copyIds = [];
 
           // Pre-pass: build node ID remap so wall copies can reference new node IDs
@@ -538,6 +582,8 @@ export function useCanvasEvents(ctx) {
             if (col) { const rp = resolvePos(col); const nid = uid(); newColumns.push({ ...col, id: nid, px: undefined, x: rp.x, y: rp.y }); srcItems.push({ id: nid, type: "column", x: rp.x, y: rp.y }); copyIds.push(nid); return; }
             const mk = markers.find(m => m.id === id);
             if (mk) { const rp = resolvePos(mk); const nid = uid(); newMarkers.push({ ...mk, id: nid, px: undefined, x: rp.x, y: rp.y, deletedAtPhase: undefined }); srcItems.push({ id: nid, type: "marker", x: rp.x, y: rp.y }); copyIds.push(nid); return; }
+            const fn = furniture.find(f => f.id === id);
+            if (fn) { const nid = uid(); newFurns.push({ ...fn, id: nid, fromZone: undefined }); srcItems.push({ id: nid, type: "furniture", x: fn.x, y: fn.y }); copyIds.push(nid); return; }
             const dr = doors.find(d => d.id === id);
             if (dr) { const rp = resolvePos(dr); const nid = uid(); newDoors.push({ ...dr, id: nid, px: undefined, x: rp.x, y: rp.y }); srcItems.push({ id: nid, type: "door", x: rp.x, y: rp.y }); copyIds.push(nid); return; }
             const win = windows.find(w => w.id === id);
@@ -552,6 +598,7 @@ export function useCanvasEvents(ctx) {
           if (newWalls.length)   setWalls(p => [...p, ...newWalls]);
           if (newColumns.length) setColumns(p => [...p, ...newColumns]);
           if (newMarkers.length) setMarkers(p => [...p, ...newMarkers]);
+          if (newFurns.length)   setFurniture(p => [...p, ...newFurns]);
           if (newDoors.length)   setDoors(p => [...p, ...newDoors]);
           if (newWindows.length) setWindows(p => [...p, ...newWindows]);
           if (newZones.length)   setZones(p => [...p, ...newZones]);
@@ -589,12 +636,14 @@ export function useCanvasEvents(ctx) {
           } else if (hit.type === "marker") {
             const src = markers.find(m => m.id === hit.id);
             if (src) { const rp = resolvePos(src); setMarkers(p => [...p, { ...src, id: nid, px: undefined, x: rp.x, y: rp.y, deletedAtPhase: undefined }]); setSelectedId(nid); setSelType("marker"); setLastCopyInfo({ srcItems: [{ id: nid, type: "marker", x: rp.x, y: rp.y }], dx: 0, dy: 0 }); setDrag({ type: "marker", id: nid, ox: pos.x - rp.x, oy: pos.y - rp.y, isCopy: true }); }
+          } else if (hit.type === "furniture") {
+            const src = furniture.find(f => f.id === hit.id);
+            if (src) { setFurniture(p => [...p, { ...src, id: nid, fromZone: undefined }]); setSelectedId(nid); setSelType("furniture"); setLastCopyInfo({ srcItems: [{ id: nid, type: "furniture", x: src.x, y: src.y }], dx: 0, dy: 0 }); setDrag({ type: "furniture", id: nid, ox: pos.x - src.x, oy: pos.y - src.y, isCopy: true }); }
           } else if (hit.type === "label") {
             const src = labels.find(l => l.id === hit.id);
             if (src) { setLabels(p => [...p, { ...src, id: nid }]); setSelectedId(nid); setSelType("label"); setLastCopyInfo({ srcItems: [{ id: nid, type: "label", x: src.x, y: src.y }], dx: 0, dy: 0 }); setDrag({ type: "label", id: nid, ox: pos.x - src.x, oy: pos.y - src.y, isCopy: true }); }
           }
         }
-        setSelectedIds([]);
         return;
       }
       if (hit) {
@@ -663,7 +712,10 @@ export function useCanvasEvents(ctx) {
             }
           });
 
-          setDrag({ type: "multi", objects: initialPositions, startX: pos.x, startY: pos.y, lastX: pos.x, lastY: pos.y });
+          setDrag({ type: "multi", objects: initialPositions, startX: pos.x, startY: pos.y, lastX: pos.x, lastY: pos.y,
+                    polyCarry: polyCarry(
+                      initialPositions.filter(o => o.type === "node").map(o => ({ id: o.id, x: o.x, y: o.y })),
+                      initialPositions.map(o => o.id)) });
           setSelectedId(hit.id); setSelType(hit.type === "label-tip" ? "label" : hit.type);
         } else {
           // Clear multi-selection when clicking on a single object (unless shift is held)
@@ -709,7 +761,9 @@ export function useCanvasEvents(ctx) {
                   }
                 });
               });
-              setDrag({ type: "node", id: hit.id, nodeAttached });
+              const nStart = gn(hit.id);
+              setDrag({ type: "node", id: hit.id, nodeAttached, startNode: nStart,
+                        polyCarry: polyCarry([{ id: hit.id, x: nStart.x, y: nStart.y }]) });
             }
           }
           else if (hit.type === "wall") {
@@ -770,7 +824,8 @@ export function useCanvasEvents(ctx) {
                     });
                   });
                 });
-                setDrag({ type: "wall", id: hit.id, ox: pos.x, oy: pos.y, n1x: n1.x, n1y: n1.y, n2x: n2.x, n2y: n2.y, attached: attachedItems, adjacentAttached });
+                setDrag({ type: "wall", id: hit.id, ox: pos.x, oy: pos.y, n1x: n1.x, n1y: n1.y, n2x: n2.x, n2y: n2.y, attached: attachedItems, adjacentAttached,
+                          polyCarry: polyCarry([{ id: w.n1, x: n1.x, y: n1.y }, { id: w.n2, x: n2.x, y: n2.y }]) });
               }
             }
           }
@@ -840,13 +895,16 @@ export function useCanvasEvents(ctx) {
           else if (z.points) {
             const rpts = resolvePoints(z);
             const c = polyCentroid(rpts);
-            setDrag({ type: "zone", id: hit.id, ox: pos.x - c.x, oy: pos.y - c.y, startX: sn(c.x, snapGrid), startY: sn(c.y, snapGrid), startPts: rpts, lastX: sn(c.x, snapGrid), lastY: sn(c.y, snapGrid) });
+            setDrag({ type: "zone", id: hit.id, ox: pos.x - c.x, oy: pos.y - c.y, startX: sn(c.x, snapGrid), startY: sn(c.y, snapGrid), startPts: rpts, lastX: sn(c.x, snapGrid), lastY: sn(c.y, snapGrid), startFurn: zoneFurnStart(z, rpts) });
           } else if (zoneEdge && zoneEdge.id === hit.id) {
             setResize({ id: hit.id, edge: zoneEdge.edge });
           } else {
-            setDrag({ type: "zone", id: hit.id, ox: pos.x - z.x, oy: pos.y - z.y });
+            // startX/Y let the move handler derive a total delta to apply to the furniture,
+            // the same way the polygon branch already does.
+            setDrag({ type: "zone", id: hit.id, ox: pos.x - z.x, oy: pos.y - z.y, startX: z.x, startY: z.y, startFurn: zoneFurnStart(z, null) });
           }
         }
+          else if (hit.type === "furniture") { const f = furniture.find(ff => ff.id === hit.id); if (f) { setDrag({ type: "furniture", id: hit.id, ox: pos.x - f.x, oy: pos.y - f.y }); } }
           else if (hit.type === "marker") { const p = markers.find(pp => pp.id === hit.id); if (p) { const rp = resolvePos(p); setDrag({ type: "marker", id: hit.id, ox: pos.x - rp.x, oy: pos.y - rp.y }); } }
           else if (hit.type === "door") { const d = doors.find(dd => dd.id === hit.id); if (d) { const rp = resolvePos(d); setDrag({ type: "door", id: hit.id, ox: pos.x - rp.x, oy: pos.y - rp.y }); } }
           else if (hit.type === "window") { const w = windows.find(ww => ww.id === hit.id); if (w) { const rp = resolvePos(w); setDrag({ type: "window", id: hit.id, ox: pos.x - rp.x, oy: pos.y - rp.y }); } }
@@ -979,7 +1037,8 @@ export function useCanvasEvents(ctx) {
         }
       }
     }
-  }, [tool, activeZoneType, activeSpecLayer, s2c, findNear, findDimSnap, hitTest, walls, wc, zones, markers, doors, windows, columns, labels, revClouds, flowPaths, viewOff, drawChain, drawRect, commitWallSegment, floorMaterial, spaceHeld, doorWidth, windowWidth, columnSize, columnShape, snapToWall, snapGrid, activeComponentType, markerFinish, nodeCentroid, bgImage, bgOffset, gn, calibrationLine, drawDim, dims, nodes, pxPerFoot, zoneEdge, resolvePos, resolvePoints, activePhase, addingLeaderToId, snapLabelAnchor, drawRevCloud, drawFlowPath, floorRegions, drawFloorRegion, polyCentroid, resolveDimEndpoints]);
+  }, [tool, activeZoneType, activeSpecLayer, activeFurnitureType, s2c, findNear, findDimSnap, hitTest, walls, wc, zones, markers, furniture, doors, windows, columns, labels, revClouds, flowPaths, viewOff, drawChain, drawRect, commitWallSegment, floorMaterial, spaceHeld, doorWidth, windowWidth, columnSize, columnShape, snapToWall, snapGrid, activeComponentType, markerFinish, nodeCentroid, bgImage, bgOffset, gn, calibrationLine, drawDim, dims, nodes, pxPerFoot, zoneEdge, resolvePos, resolvePoints, activePhase, addingLeaderToId, snapLabelAnchor, drawRevCloud, drawFlowPath, floorRegions, drawFloorRegion, polyCentroid, resolveDimEndpoints,
+    columnLabel, columnNotes, doorFlipped, doorHingeRight, doorType, htrackAngle, isWallTool, lightingIsNew, lightingType, markerNotes, mode, outletIsNew, outletType, setCursorPos, setDimInput, setLastCopyInfo, setT, setTool, wallKind, windowHeight, windowSill, windowType, zoneLibrary, zoneNotes, zonePaintColor, zonePaintFinish, zoneFurnStart, polyCarry, commitRectRoom,]);
 
   const onMove = useCallback((e) => {
     if (panning && panSt) {
@@ -1072,7 +1131,7 @@ export function useCanvasEvents(ctx) {
       if (e.shiftKey && drawDim && !("x2" in drawDim)) { const o = orthoSnap(drawDim.x1, drawDim.y1, sx, sy); setGhostPos({ x: o.x, y: o.y, snapped: false }); }
       else { const dsnap = findDimSnap(pos.x, pos.y); setGhostPos(dsnap ? { x: dsnap.x, y: dsnap.y, snapped: true } : { x: pos.x, y: pos.y, snapped: false }); }
     }
-    if (tool === "zone" || tool === "marker" || tool === "column") { setGhostPos({ x: sx, y: sy }); }
+    if (tool === "zone" || tool === "marker" || tool === "column" || tool === "furniture") { setGhostPos({ x: sx, y: sy }); }
     if (tool === "revcloud") {
       const lp = drawRevCloud?.points?.[drawRevCloud.points.length - 1];
       if (e.shiftKey && lp) { const o = orthoSnap(lp.x, lp.y, sx, sy); setGhostPos({ x: o.x, y: o.y, snapped: false }); }
@@ -1125,8 +1184,11 @@ export function useCanvasEvents(ctx) {
         setGhostPos({ x: sx, y: sy, angle, snapped: false });
       } else {
         const snap = snapToWall(pos.x, pos.y, Infinity);
-        if (snap) setGhostPos({ x: snap.x, y: snap.y, angle: snap.angle * Math.PI / 180, snapped: true });
-        else setGhostPos({ x: sx, y: sy, angle: 0, snapped: false });
+        if (snap) {
+          const ang = snap.angle * Math.PI / 180;
+          const side = isWallOffsetComponent(outletType) ? wallSideSign(pos.x, pos.y, snap.x, snap.y, ang) : undefined;
+          setGhostPos({ x: snap.x, y: snap.y, angle: ang, side, snapped: true });
+        } else setGhostPos({ x: sx, y: sy, angle: 0, snapped: false });
       }
     }
     if (tool === "lighting") {
@@ -1135,8 +1197,11 @@ export function useCanvasEvents(ctx) {
         setGhostPos({ x: sx, y: sy, angle, snapped: false });
       } else {
         const snap = snapToWall(pos.x, pos.y, Infinity);
-        if (snap) setGhostPos({ x: snap.x, y: snap.y, angle: snap.angle * Math.PI / 180, snapped: true });
-        else setGhostPos({ x: sx, y: sy, angle: 0, snapped: false });
+        if (snap) {
+          const ang = snap.angle * Math.PI / 180;
+          const side = isWallOffsetComponent(lightingType) ? wallSideSign(pos.x, pos.y, snap.x, snap.y, ang) : undefined;
+          setGhostPos({ x: snap.x, y: snap.y, angle: ang, side, snapped: true });
+        } else setGhostPos({ x: sx, y: sy, angle: 0, snapped: false });
       }
     }
 
@@ -1173,6 +1238,37 @@ export function useCanvasEvents(ctx) {
       return;
     }
 
+    if (rotatingFurniture) {
+      const dx = pos.x - rotatingFurniture.cx, dy = pos.y - rotatingFurniture.cy;
+      let angle = Math.atan2(dy, dx) + Math.PI / 2;
+      // Snap to 15° by default; hold Shift for free rotation (inverse of the marker rule,
+      // matching furniture's usual grid-aligned placement).
+      if (!e.shiftKey) angle = Math.round(angle / (Math.PI / 12)) * (Math.PI / 12);
+      setFurniture(prev => prev.map(f => f.id === rotatingFurniture.id ? { ...f, angle } : f));
+      return;
+    }
+
+    if (furnitureResize) {
+      // Opposite-edge-anchored resize in the piece's ROTATED frame (ux = width axis,
+      // uy = depth axis, both unit). `sx`/`sy` are the dragged handle's local sign (−1/0/1);
+      // the opposite edge/corner (the anchor) stays fixed. Work in projections onto (ux,uy):
+      // the new extent along an axis is the cursor's distance from the anchor on that axis,
+      // snapped to the inch (≥6"); the axis the handle doesn't touch keeps the centre.
+      const { id, sx, sy, ax, ay, ux, uy } = furnitureResize;
+      const inchPx = pxPerFoot / 12, snap = (px) => Math.max(inchPx * 6, Math.round(px / inchPx) * inchPx);
+      const au = ax * ux[0] + ay * ux[1], av = ax * uy[0] + ay * uy[1];        // anchor proj
+      const pu = pos.x * ux[0] + pos.y * ux[1], pv = pos.x * uy[0] + pos.y * uy[1]; // cursor proj
+      setFurniture(prev => prev.map(f => {
+        if (f.id !== id) return f;
+        let w = f.w, d = f.d;
+        let cu = f.x * ux[0] + f.y * ux[1], cv = f.x * uy[0] + f.y * uy[1];     // centre proj
+        if (sx) { const wpx = snap((pu - au) * sx); w = wpx / pxPerFoot; cu = au + sx * wpx / 2; }
+        if (sy) { const dpx = snap((pv - av) * sy); d = dpx / pxPerFoot; cv = av + sy * dpx / 2; }
+        return { ...f, w: +w.toFixed(4), d: +d.toFixed(4), x: cu * ux[0] + cv * uy[0], y: cu * ux[1] + cv * uy[1] };
+      }));
+      return;
+    }
+
     if (drag) {
       // Wall/node topology welds operate on the base ("existing") geometry only — phase
       // overrides move px positions, not the shared node graph.
@@ -1197,6 +1293,14 @@ export function useCanvasEvents(ctx) {
         const dy = sn(pos.y, snapGrid) - sn(drag.lastY, snapGrid);
         
         if (dx || dy) {
+          // Polygons NOT in the selection but whose corners sit on a selected node still
+          // follow. Total delta from the snapped start — telescopes to the same sum the
+          // per-frame node math applies, so floor and nodes stay in lockstep.
+          if (drag.polyCarry?.length) {
+            const tdx = sn(pos.x, snapGrid) - sn(drag.startX, snapGrid);
+            const tdy = sn(pos.y, snapGrid) - sn(drag.startY, snapGrid);
+            if (tdx || tdy) applyCarry(drag.polyCarry, () => ({ dx: tdx, dy: tdy }));
+          }
           drag.objects.forEach(obj => {
             if (obj.type === "node") {
               setNodes(prev => prev.map(n => {
@@ -1259,7 +1363,7 @@ export function useCanvasEvents(ctx) {
               setRevClouds(p => p.map(r => r.id !== obj.id ? r
                 : { ...r, points: obj.points.map(pt => ({ x: pt.x + rdx, y: pt.y + rdy })) }));
               // move labels anchored to this cloud that aren't themselves in the multi-selection
-              const selSet = new Set(selectedIds);
+              const selSet = new Set(useSelectionStore.getState().selectedIds);
               setLabels(p => p.map(l => {
                 if (l.anchorType !== "revcloud" || l.anchorId !== obj.id || selSet.has(l.id)) return l;
                 const lp = obj.startLabelPositions?.find(lsp => lsp.id === l.id);
@@ -1302,6 +1406,13 @@ export function useCanvasEvents(ctx) {
             return { ...n, px: { ...n.px, [activePhase]: { x: newNodeX, y: newNodeY } } };
           return { ...n, x: newNodeX, y: newNodeY };
         }));
+        // Floor/zone corners sitting on this node come along — resize the room, resize its
+        // floor. TOTAL delta from the drag-start position, so the vertex stays exactly on
+        // the node however far the drag wanders.
+        if (drag.startNode) {
+          const cdx = newNodeX - drag.startNode.x, cdy = newNodeY - drag.startNode.y;
+          if (cdx || cdy) applyCarry(drag.polyCarry, () => ({ dx: cdx, dy: cdy }));
+        }
         setHoverNid(near ? near.id : null);
         // Reposition attached doors/windows along their walls
         if (drag.nodeAttached?.length) {
@@ -1334,6 +1445,14 @@ export function useCanvasEvents(ctx) {
             return n;
           }));
           // Items on the dragged wall — parametric reposition keeps them on the centerline.
+          // Floor/zone corners on either endpoint follow that endpoint's own total delta,
+          // so dragging a wall resizes the room's floor with it (and a corner drag yields a
+          // matching trapezoid). Same snapshot-plus-total-delta shape as the openings below.
+          if (drag.polyCarry?.length) {
+            const d1 = { dx: n1NewX - drag.n1x, dy: n1NewY - drag.n1y };
+            const d2 = { dx: n2NewX - drag.n2x, dy: n2NewY - drag.n2y };
+            if (d1.dx || d1.dy || d2.dx || d2.dy) applyCarry(drag.polyCarry, id => id === w.n1 ? d1 : d2);
+          }
           if (drag.attached?.length) {
             const newAngle = Math.atan2(n2NewY - n1NewY, n2NewX - n1NewX) * 180 / Math.PI;
             drag.attached.forEach(item => {
@@ -1408,6 +1527,16 @@ export function useCanvasEvents(ctx) {
         setZones(p => p.map(zz => zz.id === drag.id ? { ...zz, points: zz.points.map((pt, i) => i === drag.vertexIndex ? { x: newX, y: newY } : pt) } : zz));
       } else if (drag.type === "zone") {
         const z = zones.find(zz => zz.id === drag.id);
+        // Moving a zone carries its contents: the pieces captured at drag start shift by the
+        // zone's own total delta, so the room arrives furnished exactly as it was laid out.
+        const carryFurniture = (dx, dy) => {
+          if (!drag.startFurn?.length) return;
+          const by = new Map(drag.startFurn.map(f => [f.id, f]));
+          setFurniture(p => p.map(f => {
+            const s0 = by.get(f.id);
+            return s0 ? { ...f, x: s0.x + dx, y: s0.y + dy } : f;
+          }));
+        };
         if (z?.points && drag.startPts) {
           const curX = sn(pos.x - drag.ox, snapGrid);
           const curY = sn(pos.y - drag.oy, snapGrid);
@@ -1419,8 +1548,11 @@ export function useCanvasEvents(ctx) {
             if (activePhase && activePhase !== "existing") return { ...zz, px: { ...zz.px, [activePhase]: newPts } };
             return { ...zz, points: newPts };
           }));
+          carryFurniture(totalDx, totalDy);
         } else if (z && !z.points) {
-          setZones(p => p.map(zz => zz.id === drag.id ? { ...zz, x: sn(pos.x - drag.ox, snapGrid), y: sn(pos.y - drag.oy, snapGrid) } : zz));
+          const nx = sn(pos.x - drag.ox, snapGrid), ny = sn(pos.y - drag.oy, snapGrid);
+          setZones(p => p.map(zz => zz.id === drag.id ? { ...zz, x: nx, y: ny } : zz));
+          carryFurniture(nx - drag.startX, ny - drag.startY);
         }
       }
       else if (drag.type === "marker") {
@@ -1432,7 +1564,10 @@ export function useCanvasEvents(ctx) {
         if (isWallOutlet) {
           const snap = snapToWall(pos.x, pos.y, Infinity);
           if (snap) {
-            const np = { x: snap.x, y: snap.y, angle: snap.angle * Math.PI / 180 };
+            const ang = snap.angle * Math.PI / 180;
+            const np = { x: snap.x, y: snap.y, angle: ang };
+            // Dragging across the wall flips which room the symbol stands in.
+            if (isWallOffsetComponent(ct)) np.side = wallSideSign(pos.x, pos.y, snap.x, snap.y, ang);
             setMarkers(p => p.map(x => {
               if (x.id !== drag.id) return x;
               if (activePhase && activePhase !== "existing") return { ...x, px: { ...x.px, [activePhase]: np } };
@@ -1487,6 +1622,12 @@ export function useCanvasEvents(ctx) {
           if (activePhase && activePhase !== "existing") return { ...c, px: { ...c.px, [activePhase]: { x: g.x, y: g.y } } };
           return { ...c, x: g.x, y: g.y };
         }));
+      }
+      else if (drag.type === "furniture") {
+        const rawX = sn(pos.x - drag.ox, snapGrid), rawY = sn(pos.y - drag.oy, snapGrid);
+        const g = applySmartGuides(rawX, rawY, _guideTargets);
+        setSmartGuides(g.guides);
+        setFurniture(p => p.map(f => f.id === drag.id ? { ...f, x: g.x, y: g.y } : f));
       }
       else if (drag.type === "dim") {
         const dim = dims.find(x => x.id === drag.id);
@@ -1597,7 +1738,8 @@ export function useCanvasEvents(ctx) {
         return { ...z, x, y, w, h };
       }));
     }
-  }, [panning, panSt, canvasRotation, drawChain, drag, resize, s2c, findNear, findDimSnap, walls, wc, tool, snapToWall, snapGrid, marquee, calibrationLine, dims, drawDim, zones, zoom, rotatingMarker, outletType, lightingType, htrackAngle, nodes, doors, windows, columns, markers, activePhase, snapLabelAnchor, revClouds, drawRevCloud, flowPaths, drawFlowPath, floorRegions, drawFloorRegion, resolveDimEndpoints, snapGuide, guides, findProxHover, proxHover]);
+  }, [panning, panSt, canvasRotation, drawChain, drag, resize, s2c, findNear, findDimSnap, walls, wc, tool, snapToWall, snapGrid, marquee, calibrationLine, dims, drawDim, zones, zoom, rotatingMarker, rotatingFurniture, furnitureResize, outletType, lightingType, htrackAngle, nodes, doors, windows, columns, markers, furniture, activePhase, snapLabelAnchor, revClouds, drawRevCloud, flowPaths, drawFlowPath, floorRegions, drawFloorRegion, resolveDimEndpoints, snapGuide, guides, findProxHover, proxHover,
+    gn, isWallTool, pxPerFoot, setBgOffset, setCursorPos, setGuideScrub, setHoverGuideId, setProxHover, setSmartGuides, setViewOff, setZoneEdge, applyCarry,]);
 
   const onUp = useCallback((e) => {
     // Selection read fresh at event time → kept out of the dep array (event-only handler).
@@ -1707,6 +1849,10 @@ export function useCanvasEvents(ctx) {
           }
         });
         markers.forEach(m => {
+          // Build owns only the power layer (electrical + lighting) — IT/MEP components
+          // belong to their own stage. Matches the mode's hit test, which skips them too;
+          // without this the marquee was a back door to selecting and dragging them here.
+          if (m.layer !== "power") return;
           if (!markerVisible(m) || markerLocked(m)) return;
           const rp = resolvePos(m);
           if (rp.x >= minX && rp.x <= maxX && rp.y >= minY && rp.y <= maxY) {
@@ -1752,6 +1898,15 @@ export function useCanvasEvents(ctx) {
           const rp = resolvePos(m);
           if (rp.x >= minX && rp.x <= maxX && rp.y >= minY && rp.y <= maxY) {
             selected.push({ id: m.id, type: "marker" });
+          }
+        });
+      } else if (mode === "furnish") {
+        // Furnish owns furniture, which hitTest, copy/paste, alt-drag and "/" all support —
+        // the marquee was the one selection path that skipped it.
+        if (visibleFurniture && !layerLocked("furniture")) furniture.forEach(f => {
+          if (!phaseVisible(f.phase)) return;
+          if (f.x >= minX && f.x <= maxX && f.y >= minY && f.y <= maxY) {
+            selected.push({ id: f.id, type: "furniture" });
           }
         });
       }
@@ -1872,6 +2027,7 @@ export function useCanvasEvents(ctx) {
         else if (item.type === "marker") el = markers.find(m => m.id === item.id);
         else if (item.type === "door") el = doors.find(d => d.id === item.id);
         else if (item.type === "window") el = windows.find(w => w.id === item.id);
+        else if (item.type === "furniture") { const f = furniture.find(f => f.id === item.id); if (f) return { ...prev, dx: f.x - item.x, dy: f.y - item.y }; }
         else if (item.type === "zone") { const z = zones.find(z => z.id === item.id); if (z) { const c = polyCentroid(resolvePoints(z)); return { ...prev, dx: c.x - item.x, dy: c.y - item.y }; } }
         if (!el) return prev;
         const rp = resolvePos(el);
@@ -1879,8 +2035,9 @@ export function useCanvasEvents(ctx) {
       });
     }
     // No re-clipping on zone drag/vertex drag end — user controls shape manually
-    setDrag(null); setResize(null); setPanning(false); setPanSt(null); setHoverNid(null); setProxHover(null); setRotatingMarker(null); setSmartGuides([]);
-  }, [drag, resize, hoverNid, marquee, mode, nodes, walls, doors, windows, zones, markers, columns, labels, revClouds, flowPaths, floorRegions, guides, phaseVisible, resolvePos, resolvePoints, wc, lastCopyInfo, s2c, themeMode, activePhase, snapLabelAnchor, layerLocked, markerLocked, findNear, snapToWall]);
+    setDrag(null); setResize(null); setPanning(false); setPanSt(null); setHoverNid(null); setProxHover(null); setRotatingMarker(null); setRotatingFurniture(null); setFurnitureResize(null); setSmartGuides([]);
+  }, [drag, resize, hoverNid, marquee, mode, nodes, walls, doors, windows, zones, markers, columns, furniture, labels, revClouds, flowPaths, floorRegions, guides, phaseVisible, resolvePos, resolvePoints, wc, lastCopyInfo, s2c, themeMode, activePhase, snapLabelAnchor, layerLocked, markerLocked, findNear, snapToWall,
+    cvs, cvsContainer, markerVisible, setEditingLabelId, setEditingLabelText, setGuideScrub, setLastCopyInfo, setProxHover, setSmartGuides,]);
 
   return { hitTest, onDown, onMove, onUp };
 }

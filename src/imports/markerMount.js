@@ -30,9 +30,6 @@ export const M3D = {
   light_can_6:           { y: "ceil",   shape: "can",      color: "#FFFACD", r: 6 / 24            },
   // Pendant (1.3 ft below ceiling)
   light_pendant:         { y: "hang1.3",shape: "pendant",  color: "#FFFACD"                       },
-  // Linear fixtures (ceiling)
-  light_linear_2:        { y: "ceil",   shape: "linear",   color: "#FFFACD", len: 2               },
-  light_linear_4:        { y: "ceil",   shape: "linear",   color: "#FFFACD", len: 4               },
   // Wall sconce (66" AFF)
   light_sconce:          { y: 5.5,      shape: "sconce",   color: "#FFFACD"                       },
   // ── AV (modeled to product spec) ──────────────────────────
@@ -54,9 +51,23 @@ export const M3D = {
 // Mounting height (center, AFF in feet) for a marker component, resolving the M3D table's
 // "ceil" (flush ceiling) and "hangN" (N ft below ceiling) forms. Single source of truth so
 // the 2D elevation view places IT/MEP markers at the same height the 3D scene uses.
-export function markerMountYFt(componentType, ceilingHeightFt) {
+// `overrideIn` is a per-marker height in INCHES (marker.mountY) — set by the inspector's
+// height slider — and wins over the catalog default when present.
+export function markerMountYFt(componentType, ceilingHeightFt, overrideIn) {
+  // Clamped to the room: the slider caps at the ceiling, but LOWERING the ceiling afterwards
+  // would otherwise leave a device floating above it in elevation while 3D clamped it.
+  if (typeof overrideIn === "number" && isFinite(overrideIn)) {
+    return Math.max(0, Math.min(overrideIn / 12, ceilingHeightFt));
+  }
   const y = M3D[componentType]?.y ?? 4.0; // unknown component → mid-wall fallback
   if (y === "ceil") return ceilingHeightFt;
   if (typeof y === "string" && y.startsWith("hang")) return Math.max(0, ceilingHeightFt - (parseFloat(y.slice(4)) || 0));
   return y;
+}
+
+// The industry-standard mount height (INCHES AFF) a wall device defaults to — what the
+// slider starts at and reverts to. Ceiling-relative specs have no fixed inch value.
+export function defaultMountHeightIn(componentType) {
+  const y = M3D[componentType]?.y;
+  return typeof y === "number" ? Math.round(y * 12) : null;
 }

@@ -19,7 +19,7 @@ export const THEMES = {
     panelBg: "#0E1828F4", panelShadow: "0 10px 30px rgba(0,0,0,0.5)",
     toolbarBg: "#0E1828EE", toolbarShadow: "0 10px 30px rgba(0,0,0,0.5)",
     delBg: "#5A1D24", delText: "#FFB6BE",
-    dimText: "#EAF3FC55", wallNode: "#EAF3FC",
+    dimText: "#EAF3FC55", wallNode: "#EAF3FC", furniture: "#8FB0C8",
     crosshairColor: "%233FC8E8",
     // UI accent colors (sidebar/panel text — distinct from canvas marker colors)
     uiLighting: "#E8D070", uiElec: "#50C878", uiDoor: "#C8A060",
@@ -37,7 +37,7 @@ export const THEMES = {
     panelBg: "#EFE8DAF6", panelShadow: "0 10px 28px rgba(60,42,20,0.14)",
     toolbarBg: "#EFE8DAF2", toolbarShadow: "0 10px 28px rgba(60,42,20,0.14)",
     delBg: "#DCB3AD", delText: "#7A1A12",
-    dimText: "#15110A55", wallNode: "#15110A",
+    dimText: "#15110A55", wallNode: "#15110A", furniture: "#7A6A52",
     crosshairColor: "%2315110A",
     // UI accent colors — darkened for legibility on warm light background
     uiLighting: "#7A6010", uiElec: "#1A6E3A", uiDoor: "#7A5518",
@@ -59,7 +59,7 @@ export const THEMES = {
     panelBg: "#FFFFFFF6", panelShadow: "0 10px 28px rgba(0,0,0,0.12)",
     toolbarBg: "#FFFFFFF2", toolbarShadow: "0 10px 28px rgba(0,0,0,0.12)",
     delBg: "#F0D4D4", delText: "#9A1F1F",
-    dimText: "#00000099", wallNode: "#000000",
+    dimText: "#00000099", wallNode: "#000000", furniture: "#333333",
     crosshairColor: "%23000000",
     // UI accent colors — dark grayscale, so schematic layers stay legible without ink-heavy hues
     uiLighting: "#4A4A4A", uiElec: "#2A2A2A", uiDoor: "#4A4A4A",
@@ -198,7 +198,7 @@ export function buildMonoTheme(skin = MONO_DEFAULT_SKIN) {
     panelBg: surf(0) + "F4", panelShadow: dark ? "0 10px 30px rgba(0,0,0,0.5)" : "0 10px 28px rgba(0,0,0,0.14)",
     toolbarBg: surf(0) + "F0", toolbarShadow: dark ? "0 10px 30px rgba(0,0,0,0.5)" : "0 10px 28px rgba(0,0,0,0.14)",
     delBg: mhsl(2, 45, dark ? 30 : 84), delText: mhsl(2, 60, dark ? 82 : 32),
-    dimText: T3, wallNode: T1,
+    dimText: T3, wallNode: T1, furniture: T3,
     crosshairColor: hslHex(h, s, ramp[0]),
     // Schematic layers collapse into the ramp too — a mono drawing has no stray hues.
     uiLighting: T2, uiElec: T2, uiDoor: T3, uiSwitch: T3, uiBudget: T2, uiPanel: T2,

@@ -140,7 +140,7 @@ export default function ElevationView({ dir, nodes, walls, doors, windows, colum
     for (const m of markers) {
       const p = proj(m.x, m.y);
       if (beyondCut(p.d)) continue; // in front of the section cut — cropped away
-      const v = vAt(markerMountYFt(m.componentType, ceilFt) * 12); // center height (elevation up)
+      const v = vAt(markerMountYFt(m.componentType, ceilFt, m.mountY) * 12); // center height (elevation up)
       // Hidden only if a wall is nearer by more than the tolerance (so a marker mounted on
       // the near face isn't culled by its own wall, but far-wall items stay hidden).
       if (occluded(p.u - mHalf, p.u + mHalf, v, p.d + mDepthTol)) continue;
@@ -675,7 +675,7 @@ export default function ElevationView({ dir, nodes, walls, doors, windows, colum
           const lineC = on ? T.accent : (fin ? fin.line : baseColor);
           const sw = on ? 2 : 1.2;
           // Recognizable silhouettes by symbol family.
-          const rectSyms = new Set(["speaker", "sub", "rack", "panel", "switch", "outlet", "surf", "tstat", "water", "linear_lt", "rect", "speaker_drop", "plate"]);
+          const rectSyms = new Set(["speaker", "sub", "rack", "panel", "switch", "outlet", "surf", "tstat", "water", "rect", "speaker_drop", "plate"]);
           const domeSyms = new Set(["camera", "floodlight"]);
           let glyph;
           if (sym === "router") {
