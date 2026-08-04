@@ -4,8 +4,8 @@ import ZONE_LIBRARY_DEFAULTS from "../data/zone-library.json";
 import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "../app/components/ui/tooltip";
 // Lazy-loaded so three.js / r3f / drei (a large bundle) only download when a 3D pane is shown.
 const TestFit3D = lazy(() => import("./testfit3d"));
-import { uid, sn, dst, ptSeg, polyArea, polyCentroid, pointInPoly, orthoSnap, isLightComponent, parseDimInput, migrateProjectData, PROJECT_VERSION, AUTOSAVE_KEY, dedupeWalls, splitWallThroughNodes, splitWallAtNode, weldWallCrossings } from "./model";
-import { wallResizeCursor, applySmartGuides, lineInt, revCloudPath, insetFloorPolygon, computeWallFootprints, junctionCapPolys, traceOuterBoundary, markerDrawPos, wallSideSign, polyCarryStart, applyPolyCarry, contentBounds, centerViewOn, gridStepFeet } from "./geometry";
+import { uid, sn, dst, ptSeg, polyArea, polyCentroid, pointInPoly, polyInteriorPoint, orthoSnap, isLightComponent, parseDimInput, migrateProjectData, PROJECT_VERSION, AUTOSAVE_KEY, dedupeWalls, splitWallThroughNodes, splitWallAtNode, weldWallCrossings } from "./model";
+import { wallResizeCursor, applySmartGuides, lineInt, revCloudPath, insetFloorPolygon, computeWallFootprints, junctionCapPolys, traceOuterBoundary, markerDrawPos, wallSideSign, polyCarryStart, applyPolyCarry, contentBounds, centerViewOn, gridStepFeet, traceRoomLoops } from "./geometry";
 import { defaultMountHeightIn } from "./markerMount";
 import { Toaster, toast } from "sonner";
 import ShortcutSheet from "../components/ShortcutSheet";
@@ -180,6 +180,14 @@ export default function TestfitTool() {
   const historyRef = useRef([]);
   const historyIdxRef = useRef(-1);
   const skipSnapshotRef = useRef(false);
+  // Rooms the auto-floor effect has already seen (see "Enclosing a room gives it a floor").
+  // null means "the next run is a seed": record what's there, create nothing. Every path that
+  // swaps the model wholesale — restore, load, undo, redo, New — resets it, because after one
+  // of those EVERY room looks newly-closed and would otherwise sprout a floor.
+  const knownRoomsRef = useRef(null);
+  // Declared up here, above those call sites, rather than beside the effect that owns it:
+  // this file's `const`s are read by callbacks defined earlier in the body, and one declared
+  // after its readers is the TDZ crash this codebase keeps re-learning.
   const MAX_HISTORY = 50;
   const [canUndo, setCanUndo] = useState(false);
   const [canRedo, setCanRedo] = useState(false);
@@ -214,6 +222,7 @@ export default function TestfitTool() {
     historyIdxRef.current = newIdx;
     const state = JSON.parse(historyRef.current[newIdx]);
     skipSnapshotRef.current = true;
+    knownRoomsRef.current = null;   // reseed: every restored room would read as newly-closed
     setNodes(state.nodes); setWalls(state.walls); setZones(state.zones); setFurniture(state.furniture || []);
     setMarkers(state.markers); setDoors(state.doors); setWindows(state.windows);
     setColumns(state.columns || []); setDims(state.dims || []); setLabels(state.labels || []); setRevClouds(state.revClouds || []); setFlowPaths(state.flowPaths || []); setFloorRegions(state.floorRegions || []); if (state.floorMaterial) setFloorMaterial(state.floorMaterial);
@@ -230,6 +239,7 @@ export default function TestfitTool() {
     historyIdxRef.current = newIdx;
     const state = JSON.parse(historyRef.current[newIdx]);
     skipSnapshotRef.current = true;
+    knownRoomsRef.current = null;   // reseed: every restored room would read as newly-closed
     setNodes(state.nodes); setWalls(state.walls); setZones(state.zones); setFurniture(state.furniture || []);
     setMarkers(state.markers); setDoors(state.doors); setWindows(state.windows);
     setColumns(state.columns || []); setDims(state.dims || []); setLabels(state.labels || []); setRevClouds(state.revClouds || []); setFlowPaths(state.flowPaths || []); setFloorRegions(state.floorRegions || []); if (state.floorMaterial) setFloorMaterial(state.floorMaterial);
@@ -462,6 +472,7 @@ export default function TestfitTool() {
   // (file import / autosave restore); full=false is model-only (snapshot switching).
   const applyProjectData = useCallback((m, full) => {
     setProjectName(m.projectName);
+    knownRoomsRef.current = null;   // reseed: a loaded plan keeps exactly the floors it shipped with
     setNodes(m.nodes); setWalls(m.walls); setZones(m.zones); setFurniture(m.furniture || []); setMarkers(m.markers);
     setDoors(m.doors); setWindows(m.windows); setColumns(m.columns); setDims(m.dims);
     setLabels(m.labels); setRevClouds(m.revClouds); setFlowPaths(m.flowPaths); setFloorRegions(m.floorRegions);
@@ -632,6 +643,7 @@ export default function TestfitTool() {
   }, [applyProjectData]);
 
   const newProject = useCallback(() => {
+    knownRoomsRef.current = null;
     setProjectName("New Club"); setNodes([]); setWalls([]); setZones([]);
     setMarkers([]); setDoors([]); setWindows([]); setDims([]); setLabels([]); setRevClouds([]); setFlowPaths([]); setFloorRegions([]); setFloorMaterial("Wood");
     setElevAnnotations({}); setPanes([{ view: "plan" }]); setLockedLayers({});
@@ -989,6 +1001,37 @@ export default function TestfitTool() {
     return true;
   }, [commitWallSegment, setFloorRegions, floorMaterial, activePhase]);
 
+  // ─── Enclosing a room gives it a floor ───────────────────────────────────────
+  // Fires on the TRANSITION to enclosed, not on "is currently enclosed". That distinction is
+  // the whole design: a floor the user deletes (Room card → Floor: None) must stay deleted,
+  // and it does, because the room isn't newly-closed on any later render. A standing "every
+  // room has a floor" rule would resurrect it on the next keystroke.
+  useEffect(() => {
+    const rooms = traceRoomLoops(nodes, walls, (pxPerFoot * pxPerFoot) / 4);   // ignore ≤¼ sf slivers
+    const keyOf = (r) => r.nodeIds.slice().sort().join("|");
+    const prev = knownRoomsRef.current;
+    knownRoomsRef.current = { keys: new Set(rooms.map(keyOf)), wallCount: walls.length };
+    // Seed (record, create nothing) rather than diff when there's no meaningful "before":
+    // the very first run, or any run whose predecessor had no walls at all. That second case
+    // is what catches a plan ARRIVING — the app mounts empty and the autosave restore lands a
+    // render later, so a whole restored building would otherwise read as just-enclosed. It
+    // also covers file loads and undo-back-to-empty without those paths having to know about
+    // this effect. Nothing is lost for a user drawing from scratch: you can't close a room in
+    // the same tick you place your first wall, and the rect tool brings its own floor.
+    if (prev === null || prev.wallCount === 0 || layerLocked("floorRegions")) return;
+    const fresh = rooms.filter(r => !prev.keys.has(keyOf(r)));
+    if (!fresh.length) return;
+    setFloorRegions(p => {
+      // Skip any room that some floor already covers — the rect tool lays its own floor down,
+      // and undo/redo restores floors alongside the walls that re-close their rooms.
+      const add = fresh.filter(r => {
+        const c = polyInteriorPoint(r.points);
+        return c && !p.some(fr => fr.points?.length >= 3 && pointInPoly(c.x, c.y, fr.points));
+      }).map(r => ({ id: uid(), points: r.points, material: floorMaterial || "Wood", label: "", phase: activePhase }));
+      return add.length ? [...p, ...add] : p;   // same ref when nothing's added — no wasted render
+    });
+  }, [nodes, walls, pxPerFoot, floorMaterial, activePhase, layerLocked, setFloorRegions]);
+
   // Hit test
   // Resolve a label's leader tip to its live canvas position (follows anchor object when set)
   // Resolves the live x1/y1/x2/y2 of a dim from its stored anchors.
@@ -1129,6 +1172,27 @@ export default function TestfitTool() {
   const selFloorRegion = useMemo(() => selType === "floorRegion" ? floorRegions.find(r => r.id === selectedId) : null, [selType, selectedId, floorRegions]);
   const updFloorRegion = (u) => setFloorRegions(p => p.map(r => r.id === selectedId ? { ...r, ...u } : r));
   const updFlowPath = (u) => setFlowPaths(p => p.map(r => r.id === selectedId ? { ...r, ...u } : r));
+
+  // A room's floor and its zone are linked POSITIONALLY — same outline, no stored id —
+  // exactly like doors following walls and floors following a resize. Both are carried by
+  // the same polyCarry on a room resize, so identical outlines stay identical.
+  const samePoly = (a, b) => a?.length === b?.length
+    && a.every((p, i) => Math.abs(p.x - b[i].x) < 0.5 && Math.abs(p.y - b[i].y) < 0.5);
+  const zoneForFloor = useMemo(() => selFloorRegion
+    ? zones.find(z => z.points && samePoly(z.points, selFloorRegion.points)) ?? null
+    : null, [selFloorRegion, zones]);
+  // Retype the room's zone, or drop it entirely (type === ""). Creating one clones the
+  // floor's outline rather than referencing it, so editing either later can't surprise you.
+  const setRoomZone = useCallback((type) => {
+    if (!selFloorRegion) return;
+    setZones(p => {
+      const rest = zoneForFloor ? p.filter(z => z.id !== zoneForFloor.id) : p;
+      if (!type) return rest;
+      const zt = zoneLibrary[type];
+      return [...rest, { id: uid(), type, points: selFloorRegion.points.map(pt => ({ ...pt })),
+        label: zt?.name || type, notes: "", phase: selFloorRegion.phase }];
+    });
+  }, [selFloorRegion, zoneForFloor, setZones, zoneLibrary]);
 
   // Multi-select support
   const multiSelType = useMemo(() => {
@@ -1793,10 +1857,20 @@ export default function TestfitTool() {
     };
   }, [show3d, walls, nodes, doors, windows, columns, zones, furniture, visibleFurniture, markers, floorRegions, visibleFloorRegions, phaseVisible, markerVisible, gn, resolvePos, resolvePoints]);
 
+  // Plan annotation text holds a readable on-screen size as you zoom OUT: the whole canvas
+  // draws inside one scale(zoom) group, so at 40% a 10px dimension renders 4px tall and is
+  // simply unreadable. Scaling by 1/zoom below 100% cancels that exactly. Deliberately NOT
+  // applied at or above 100% — text is already comfortable there, and growing it in model
+  // units would crowd the drawing it's annotating. This is the font-size counterpart to
+  // vector-effect: non-scaling-stroke, which pins stroke width but does nothing for type.
+  const textZoom = zoom < 1 ? 1 / zoom : 1;
+
   const DimLbl = ({ cx, cy, text, angle, off = -14, color = T.dimText }) => {
     let a = angle; if (a > 90) a -= 180; if (a < -90) a += 180;
-    const r = (angle * Math.PI) / 180, ox = -Math.sin(r) * off, oy = Math.cos(r) * off;
-    return <text x={cx + ox} y={cy + oy} textAnchor="middle" dominantBaseline="middle" fill={color} fontSize={10}
+    // The standoff scales with the type, or an enlarged label would sit on top of its wall.
+    const offZ = off * textZoom;
+    const r = (angle * Math.PI) / 180, ox = -Math.sin(r) * offZ, oy = Math.cos(r) * offZ;
+    return <text x={cx + ox} y={cy + oy} textAnchor="middle" dominantBaseline="middle" fill={color} fontSize={10 * textZoom}
       fontFamily={font} fontWeight={500} transform={`rotate(${a},${cx + ox},${cy + oy})`} style={{ pointerEvents: "none" }}>{text}</text>;
   };
   const WallDim = ({ w, hi }) => {
@@ -3339,8 +3413,8 @@ export default function TestfitTool() {
                 return <g key={z.id} filter={glowEffect ? "url(#glow-budget)" : undefined}><rect x={z.x} y={z.y} width={z.w} height={z.h} fill={lib.color + "25"} stroke={sel ? T.nodeFill : lib.color + "88"} strokeWidth={sel ? 2 : 1} strokeDasharray={sel ? "none" : "4 2"} rx={3} />
                   <text x={z.x + 8} y={z.y + 16} fill={lib.color + "CC"} fontSize={10} fontFamily="inherit" fontWeight={500} style={{ pointerEvents: "none" }}>{z.label}</text>
                   <text x={z.x + z.w / 2} y={z.y + z.h / 2 + 7} textAnchor="middle" fill={lib.color + "BB"} fontSize={13} fontFamily="inherit" fontWeight={700} style={{ pointerEvents: "none" }}>{Math.round(ftN(z.w) * ftN(z.h))} sf</text>
-                  {showDims && visibleDims && <><text x={z.x + z.w / 2} y={z.y + z.h + 14} textAnchor="middle" fill={T.dimText} fontSize={9} fontFamily="inherit" style={{ pointerEvents: "none" }}>{ft(z.w)}</text>
-                    <text x={z.x + z.w + 14} y={z.y + z.h / 2} textAnchor="middle" dominantBaseline="middle" fill={T.dimText} fontSize={9} fontFamily="inherit" transform={`rotate(90,${z.x + z.w + 14},${z.y + z.h / 2})`} style={{ pointerEvents: "none" }}>{ft(z.h)}</text></>}
+                  {showDims && visibleDims && <><text x={z.x + z.w / 2} y={z.y + z.h + 14 * textZoom} textAnchor="middle" fill={T.dimText} fontSize={9 * textZoom} fontFamily="inherit" style={{ pointerEvents: "none" }}>{ft(z.w)}</text>
+                    <text x={z.x + z.w + 14 * textZoom} y={z.y + z.h / 2} textAnchor="middle" dominantBaseline="middle" fill={T.dimText} fontSize={9 * textZoom} fontFamily="inherit" transform={`rotate(90,${z.x + z.w + 14 * textZoom},${z.y + z.h / 2})`} style={{ pointerEvents: "none" }}>{ft(z.h)}</text></>}
                   {sel && clearInsideOverlay([{ x: z.x, y: z.y }, { x: z.x + z.w, y: z.y }, { x: z.x + z.w, y: z.y + z.h }, { x: z.x, y: z.y + z.h }], lib.color)}
                 </g>;
               })}
@@ -3425,7 +3499,7 @@ export default function TestfitTool() {
                       fill={T.nodeFill} fontSize={14} fontWeight={700} fontFamily="inherit">{sf} sf</text>
                     {clearSf > 0 &&
                       <text x={(x0 + x1r) / 2} y={(y0 + y1r) / 2 + 16} textAnchor="middle" dominantBaseline="middle"
-                        fill={T.dimText} fontSize={10} fontWeight={600} fontFamily="inherit">{ft(cw)} × {ft(ch)} · {clearSf} sf clear</text>}
+                        fill={T.dimText} fontSize={10 * textZoom} fontWeight={600} fontFamily="inherit">{ft(cw)} × {ft(ch)} · {clearSf} sf clear</text>}
                   </>}
                   <circle cx={drawRect.x1} cy={drawRect.y1} r={4} fill={col} />
                   <circle cx={cursorPos.x} cy={cursorPos.y} r={4} fill={cursorPos.snap ? "#50C878" : T.nodeFill} />
@@ -5292,8 +5366,11 @@ export default function TestfitTool() {
               const FR_COLORS = { "Wood": "#C8A878", "Concrete": "#AEABA4", "Vinyl": "#BFA889", "Carpet": "#786758" };
               const frSf = selFloorRegion.points?.length >= 3 ? Math.round(polyArea(selFloorRegion.points) / (pxPerFoot * pxPerFoot)) : 0;
               const frClearSf = clearInsideSf(selFloorRegion.points);
+              const zHex = zoneForFloor ? zoneLibrary[zoneForFloor.type]?.color : null;
               return <>
-                <div style={{ fontSize: 12, color: T.textBright, marginBottom: 10, fontWeight: 600 }}>Floor Region · {selFloorRegion.material}</div>
+                <div data-testid="room-title" style={{ fontSize: 12, color: T.textBright, marginBottom: 10, fontWeight: 600 }}>
+                  Room · {frSf.toLocaleString()} sf
+                </div>
                 <div style={{ marginBottom: 10, padding: "6px 9px", background: T.bg2, borderRadius: 5 }}>
                   <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between" }}>
                     <span style={{ fontSize: 10, color: T.textMuted }}>Area (to wall centerline)</span>
@@ -5307,16 +5384,37 @@ export default function TestfitTool() {
                   )}
                 </div>
                 <div style={{ marginBottom: 10 }}>
-                  <div style={S.lbl}>Material</div>
+                  <div style={S.lbl}>Floor</div>
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
                     {FLOOR_MATERIALS.map(m => { const isSel = selFloorRegion.material === m; const hex = FR_COLORS[m];
-                      return <button key={m} onClick={() => updFloorRegion({ material: m })}
+                      return <button key={m} data-testid={"room-floor-" + m} onClick={() => updFloorRegion({ material: m })}
                         style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 9px", background: isSel ? hex + "30" : "transparent",
                           border: "1.5px solid " + (isSel ? hex : T.border), borderRadius: 5, cursor: "pointer", fontFamily: "inherit",
                           color: isSel ? T.textBright : T.textMuted, fontSize: 10, fontWeight: isSel ? 600 : 400 }}>
                         <span style={{ width: 12, height: 12, borderRadius: 3, background: hex, flexShrink: 0 }} />{m}
                       </button>; })}
                   </div>
+                  {/* "No floor" is deleting the region itself — the room keeps its walls and
+                      stays a room, it just draws bare. Auto-floor only fires on the
+                      transition to enclosed, so this sticks instead of coming straight back. */}
+                  <button data-testid="room-floor-none" onClick={delSel}
+                    style={{ width: "100%", marginTop: 6, padding: "7px 9px", background: "transparent",
+                      border: "1.5px dashed " + T.border, borderRadius: 5, cursor: "pointer", fontFamily: "inherit",
+                      color: T.textMuted, fontSize: 10 }}>None — no floor</button>
+                </div>
+                <div style={{ marginBottom: 10 }}>
+                  <div style={S.lbl}>Zone</div>
+                  <select data-testid="room-zone" style={S.inp} value={zoneForFloor?.type || ""}
+                    onChange={e => setRoomZone(e.target.value)}>
+                    <option value="">None — no zone</option>
+                    {Object.entries(zoneLibrary).map(([k, z]) => <option key={k} value={k}>{z.name}</option>)}
+                  </select>
+                  {zoneForFloor && (
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 6, fontSize: 10, color: T.textMuted }}>
+                      <span style={{ width: 10, height: 10, borderRadius: 2, background: zHex, flexShrink: 0 }} />
+                      {zoneForFloor.label}
+                    </div>
+                  )}
                 </div>
                 <div style={{ marginBottom: 8 }}>
                   <div style={S.lbl}>Label (optional)</div>

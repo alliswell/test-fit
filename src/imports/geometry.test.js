@@ -4,7 +4,7 @@ import {
   insetFloorPolygon, computeWallFootprints, junctionCapPolys, boundaryOutwardNormals,
   cutawayHiddenWalls, wallSideSign, markerDrawPos,
   polyCarryStart, applyPolyCarry, carryPolyWithNodes,
-  contentBounds, fitTransform, viewportRect, centerViewOn, gridStepFeet,
+  contentBounds, fitTransform, viewportRect, centerViewOn, gridStepFeet, traceRoomLoops,
 } from "./geometry";
 import { polyArea } from "./model";
 
@@ -589,6 +589,96 @@ describe("minimap — fitting the model into a box and locating the viewport", (
     const r = viewportRect(vo, zoom, W, H);
     expect(r.x + r.w / 2).toBeCloseTo(cx, 6);
     expect(r.y + r.h / 2).toBeCloseTo(cy, 6);
+  });
+});
+
+describe("traceRoomLoops — every enclosed room, not just the outline", () => {
+  // Helper: nodes from {id: [x,y]}, walls from ["a-b", …].
+  const build = (npos, edges) => ({
+    nodes: Object.entries(npos).map(([id, [x, y]]) => ({ id, x, y })),
+    walls: edges.map((e, i) => ({ id: "w" + i, n1: e.split("-")[0], n2: e.split("-")[1] })),
+  });
+  const signed = (pts) => {
+    let a = 0;
+    for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) a += (pts[j].x * pts[i].y) - (pts[i].x * pts[j].y);
+    return a / 2;
+  };
+  const areaOf = (pts) => Math.abs(signed(pts));
+
+  it("a closed square is exactly one room — the outer face is dropped", () => {
+    const { nodes, walls } = build(
+      { a: [0, 0], b: [200, 0], c: [200, 200], d: [0, 200] },
+      ["a-b", "b-c", "c-d", "d-a"],
+    );
+    const rooms = traceRoomLoops(nodes, walls);
+    expect(rooms).toHaveLength(1);
+    expect(rooms[0].nodeIds.slice().sort()).toEqual(["a", "b", "c", "d"]);
+    expect(areaOf(rooms[0].points)).toBeCloseTo(40000, 6);
+    // A square's interior and exterior faces share a node set AND an absolute area, so the
+    // winding is the only thing that distinguishes them — assert it, or this test passes
+    // just as happily when the traversal hands back the outdoors.
+    expect(signed(rooms[0].points)).toBeGreaterThan(0);
+  });
+
+  it("an open run of walls encloses nothing", () => {
+    const { nodes, walls } = build(
+      { a: [0, 0], b: [200, 0], c: [200, 200], d: [0, 200] },
+      ["a-b", "b-c", "c-d"],            // missing d-a
+    );
+    expect(traceRoomLoops(nodes, walls)).toEqual([]);
+  });
+
+  it("a partition wall splits one outline into two rooms", () => {
+    // Two 200x200 bays sharing the vertical m-n wall.
+    const { nodes, walls } = build(
+      { a: [0, 0], m: [200, 0], b: [400, 0], c: [400, 200], n: [200, 200], d: [0, 200] },
+      ["a-m", "m-b", "b-c", "c-n", "n-d", "d-a", "m-n"],
+    );
+    const rooms = traceRoomLoops(nodes, walls);
+    expect(rooms).toHaveLength(2);
+    expect(rooms.map(r => areaOf(r.points)).sort((x, y) => x - y)).toEqual([40000, 40000]);
+  });
+
+  it("two separate wall groups each keep their own room, and neither outer face survives", () => {
+    const { nodes, walls } = build(
+      { a: [0, 0], b: [100, 0], c: [100, 100], d: [0, 100],
+        e: [500, 500], f: [700, 500], g: [700, 700], h: [500, 700] },
+      ["a-b", "b-c", "c-d", "d-a", "e-f", "f-g", "g-h", "h-e"],
+    );
+    const rooms = traceRoomLoops(nodes, walls);
+    expect(rooms).toHaveLength(2);
+    expect(rooms.map(r => areaOf(r.points)).sort((x, y) => x - y)).toEqual([10000, 40000]);
+  });
+
+  it("an L-shaped room traces as one face with all six corners", () => {
+    const { nodes, walls } = build(
+      { a: [0, 0], b: [200, 0], c: [200, 100], d: [100, 100], e: [100, 200], f: [0, 200] },
+      ["a-b", "b-c", "c-d", "d-e", "e-f", "f-a"],
+    );
+    const rooms = traceRoomLoops(nodes, walls);
+    expect(rooms).toHaveLength(1);
+    expect(rooms[0].points).toHaveLength(6);
+    expect(areaOf(rooms[0].points)).toBeCloseTo(30000, 6);   // 200x100 + 100x100
+  });
+
+  it("a spur wall hanging off a room doesn't add or distort a room", () => {
+    const { nodes, walls } = build(
+      { a: [0, 0], b: [200, 0], c: [200, 200], d: [0, 200], s: [300, 0] },
+      ["a-b", "b-c", "c-d", "d-a", "b-s"],   // b-s dangles outside
+    );
+    const rooms = traceRoomLoops(nodes, walls);
+    expect(rooms).toHaveLength(1);
+    expect(areaOf(rooms[0].points)).toBeCloseTo(40000, 6);
+  });
+
+  it("slivers below the area floor are ignored, and empty input is safe", () => {
+    const { nodes, walls } = build(
+      { a: [0, 0], b: [2, 0], c: [2, 1], d: [0, 1] },
+      ["a-b", "b-c", "c-d", "d-a"],
+    );
+    expect(traceRoomLoops(nodes, walls, 100)).toEqual([]);   // 2sq px < 100
+    expect(traceRoomLoops([], [])).toEqual([]);
+    expect(traceRoomLoops(null, null)).toEqual([]);
   });
 });
 

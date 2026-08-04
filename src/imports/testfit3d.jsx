@@ -1584,11 +1584,22 @@ function FloorPlane({ walls = [], nodes = [], zones, cx, cz, pxPerFoot, T, zoneL
 
   return (
     <group>
-      {style3d !== "xray" && (
-        roomGeo
-          ? <mesh geometry={roomGeo} rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.001, 0]} receiveShadow={isDetailed} onClick={clickHandler}>{baseMat}</mesh>
-          : <mesh rotation={[-Math.PI / 2, 0, 0]} receiveShadow={isDetailed} onClick={clickHandler}><planeGeometry args={[500, 500]} />{baseMat}</mesh>
-      )}
+      {style3d !== "xray" && <>
+        {/* Ground: everything OUTSIDE the building, always flat theme paper and never
+            textured. It used to carry the floor material as a fallback whenever
+            traceOuterBoundary found no closed loop — which is the common case while a plan
+            is still being drawn — and a plain planeGeometry's UVs span 0..1 over the whole
+            500ft quad, so one plank got smeared across the entire world. The floor material
+            belongs to the floor; the ground is just the sheet the building sits on. */}
+        <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.002, 0]}
+          receiveShadow={isDetailed} onClick={roomGeo ? undefined : clickHandler}>
+          <planeGeometry args={[500, 500]} />
+          <meshLambertMaterial color={style3d === "print" ? "#FCFCFC" : T.canvas} side={THREE.DoubleSide} />
+        </mesh>
+        {roomGeo && (
+          <mesh geometry={roomGeo} rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.001, 0]} receiveShadow={isDetailed} onClick={clickHandler}>{baseMat}</mesh>
+        )}
+      </>}
       {isSelected && roomGeo && (
         <mesh geometry={roomGeo} rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.012, 0]}>
           <meshBasicMaterial color={GLOW_COLOR} transparent opacity={0.25} side={THREE.DoubleSide} depthWrite={false} />

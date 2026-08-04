@@ -2,7 +2,8 @@ import { describe, it, expect } from "vitest";
 import {
   sn, dst, ptSeg, polyArea, polyCentroid, pointInPoly, orthoSnap,
   isLightComponent, parseDimInput, migrateProjectData, PROJECT_VERSION, dedupeWalls,
-  splitWallAtNode, mergeNode, splitWallThroughNodes, weldWallCrossings, furnitureInZone} from "./model";
+  splitWallAtNode, mergeNode, splitWallThroughNodes, weldWallCrossings, furnitureInZone,
+  polyInteriorPoint} from "./model";
 
 describe("geometry", () => {
   it("dst — euclidean distance", () => {
@@ -352,6 +353,28 @@ describe("migrateProjectData — the persistence seam", () => {
     expect(typeof m.slides[1].ts).toBe("number");
     // invalid enums normalized
     expect(m.docSettings).toEqual({ size: "letter", orientation: "landscape" });
+  });
+});
+
+describe("polyInteriorPoint — a point that's actually inside the room", () => {
+  it("uses the centroid when the shape is convex", () => {
+    const sq = [{ x: 0, y: 0 }, { x: 100, y: 0 }, { x: 100, y: 100 }, { x: 0, y: 100 }];
+    expect(polyInteriorPoint(sq)).toEqual({ x: 50, y: 50 });
+  });
+
+  it("an L-shaped room's vertex average lands in the notch — the result must not", () => {
+    // Classic L: the missing quadrant is the bottom-right (100..200 x 100..200).
+    const L = [{ x: 0, y: 0 }, { x: 200, y: 0 }, { x: 200, y: 100 },
+               { x: 100, y: 100 }, { x: 100, y: 200 }, { x: 0, y: 200 }];
+    const c = polyCentroid(L);
+    expect(pointInPoly(c.x, c.y, L)).toBe(false);      // the trap this helper exists for
+    const p = polyInteriorPoint(L);
+    expect(pointInPoly(p.x, p.y, L)).toBe(true);
+  });
+
+  it("degenerate input is safe", () => {
+    expect(polyInteriorPoint(null)).toBeNull();
+    expect(polyInteriorPoint([{ x: 0, y: 0 }, { x: 1, y: 1 }])).toBeNull();
   });
 });
 

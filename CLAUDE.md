@@ -489,6 +489,49 @@ e2e/docs.spec.js       Playwright Docs-stage tests (save view → slide, live re
   those same elements (`r={5 / zoom}`, drag-handle size) were left untouched — vector-effect
   only pins stroke width, not element geometry, so anything that also needs to stay a
   constant SCREEN SIZE (not just a constant stroke) still needs its own `/ zoom` math.
+- **Enclosing a room gives it a floor** (`traceRoomLoops` in geometry.js + the auto-floor
+  effect in testfit.jsx). `traceOuterBoundary` answers "what is the building's outline";
+  `traceRoomLoops` answers "what rooms are there", which needs a full planar FACE traversal —
+  an inner partition makes two rooms inside one unchanged outline. Rule: from each unused
+  half-edge u→v, the face's next edge leaves v along the neighbour immediately CLOCKWISE from
+  u. Interior faces come out positively wound (screen coords, +y down) and each connected
+  component's outer face negatively, so **the winding sign drops the outdoors — not "the
+  biggest face"**. Area-based rules fail two real cases: several disjoint wall groups have
+  several outer faces, and a plan whose only room IS its outline has an outer face of
+  identical area. The partition-wall unit test is what pins the sign down; the square test
+  can't, since both its faces share a node set and an absolute area.
+  **The effect fires on the TRANSITION to enclosed, never on "is currently enclosed"** — that
+  is what makes Room → Floor: None stick instead of being undone on the next render. It
+  seeds (records, creates nothing) when there's no meaningful before: first run, or any run
+  whose predecessor had **zero walls**. That second condition is load-path-agnostic and is
+  the one that matters: the app mounts empty and the autosave restore lands a render later,
+  so without it every room in a restored building reads as just-enclosed and sprouts a floor.
+  `knownRoomsRef` is also reset explicitly by undo/redo/load/New. Rooms are keyed by sorted
+  node ids, which churn under welds — the "is this room already covered by a floor?" test
+  (via `polyInteriorPoint`, NOT the centroid, which lands outside an L-shaped room) is what
+  absorbs that.
+- **A room's floor and its zone are linked positionally, by identical outline** — no stored
+  id, matching how doors follow walls and floors follow a resize. Both are carried by the
+  same `polyCarry` on a room resize, so identical outlines stay identical. The floorRegion
+  inspector is the **Room card**: area, floor material (+ None, which deletes the region),
+  zone (+ None), label. There is deliberately no Room section on the wall inspector — a
+  shared wall borders two rooms and would have to disambiguate.
+- **Plan annotation text holds a constant on-screen size as you zoom OUT** (`textZoom` in
+  testfit.jsx, `= zoom < 1 ? 1/zoom : 1`, applied to `DimLbl` plus the zone and rect-ghost
+  dimension labels). At 40% a 10px dimension renders 4px and is unreadable. Deliberately NOT
+  applied at or above 100%: text is already comfortable and growing it in model units would
+  crowd the drawing. Standoffs scale with the type or an enlarged label sits on its own wall.
+  This is the font-size counterpart to `vector-effect: non-scaling-stroke` — that pins stroke
+  width and does nothing for type, and there is no CSS equivalent for font size.
+- **The 3D ground is always flat theme paper; the floor material belongs to the floor**
+  (`FloorPlane`, testfit3d.jsx). The ground used to be an either/or fallback: when
+  `traceOuterBoundary` found no closed loop — the common case while a plan is still being
+  drawn — a 500ft quad was rendered wearing the floor material, and a plain planeGeometry's
+  UVs span 0..1 over the whole quad, so one wood plank was smeared across the entire world.
+  Now the ground plane always renders untextured underneath, and the building footprint draws
+  on top of it. Regression-tested by screenshotting the WebGL canvas and decoding it back
+  inside the page to sample a corner pixel (saved slides store `image: null` and re-render
+  live, so there is no bitmap in localStorage to sample).
 - **Docs slide crop editing must never jump the camera on Edit/Save with no changes.**
   The locked (persisted/printed) render snaps to a true architectural scale
   (`slideStdScale`/`fitStandardScale` in utils/docs.js) so the sheet's scale label is honest.

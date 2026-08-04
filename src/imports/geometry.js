@@ -124,6 +124,89 @@ export function traceOuterBoundary(nodes, walls) {
   return null;
 }
 
+// Shoelace signed area. Sign encodes winding, so it's what separates a planar graph's
+// interior faces from its outer face — see traceRoomLoops.
+function signedArea(pts) {
+  let a = 0;
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) a += (pts[j].x * pts[i].y) - (pts[i].x * pts[j].y);
+  return a / 2;
+}
+
+// Every ENCLOSED room in the wall graph → [{ nodeIds:[…], points:[{x,y}] }].
+//
+// traceOuterBoundary answers "what's the building's outline"; this answers "what rooms are
+// there", which is a different question — an inner partition wall creates two rooms inside
+// one unchanged outline, and a plan can hold several separate wall groups, each with rooms
+// of its own. So this is a full planar face traversal rather than a single walk:
+//
+//   for each directed half-edge u→v, the next half-edge of the same face leaves v along
+//   the neighbour immediately CLOCKWISE from u in v's angular order.
+//
+// Following that rule from every unused half-edge partitions the graph into faces exactly
+// once. Every face comes out wound one way and each connected component's OUTER face comes
+// out wound the other, so the winding sign — not "the biggest one" — is what drops the
+// outdoors. That distinction matters: with several disjoint wall groups there are several
+// outer faces, and a plan whose only room IS its outline has an outer face of identical
+// area, so any area-based rule gets both cases wrong.
+//
+// Dangling walls (a spur off a room) are traversed out and back; the two passes cancel in
+// the shoelace sum, so they cost area nothing, and the repeated node is dropped below.
+export function traceRoomLoops(nodes, walls, minAreaSqPx = 4) {
+  if (!walls?.length || !nodes?.length) return [];
+  const nodeMap = new Map(nodes.map(n => [n.id, n]));
+  // Deduped adjacency: two walls drawn between the same pair of nodes are one graph edge.
+  const adj = new Map();
+  for (const w of walls) {
+    if (!nodeMap.has(w.n1) || !nodeMap.has(w.n2) || w.n1 === w.n2) continue;
+    if (!adj.has(w.n1)) adj.set(w.n1, new Set());
+    if (!adj.has(w.n2)) adj.set(w.n2, new Set());
+    adj.get(w.n1).add(w.n2); adj.get(w.n2).add(w.n1);
+  }
+  if (!adj.size) return [];
+
+  // Neighbours around each node in angular order — the "clockwise from" lookup above.
+  const ring = new Map();
+  for (const [id, nbrs] of adj) {
+    const n = nodeMap.get(id);
+    ring.set(id, [...nbrs]
+      .map(b => ({ id: b, a: Math.atan2(nodeMap.get(b).y - n.y, nodeMap.get(b).x - n.x) }))
+      .sort((p, q) => p.a - q.a)
+      .map(e => e.id));
+  }
+
+  const used = new Set();          // "u|v" half-edges already consumed
+  const faces = [];
+  const maxSteps = walls.length * 2 + 8;
+  for (const [u0, nbrs] of adj) {
+    for (const v0 of nbrs) {
+      if (used.has(u0 + "|" + v0)) continue;
+      const loop = [];
+      let a = u0, b = v0;
+      for (let step = 0; step < maxSteps && !used.has(a + "|" + b); step++) {
+        used.add(a + "|" + b);
+        loop.push(a);
+        const r = ring.get(b);
+        const next = r[(r.indexOf(a) - 1 + r.length) % r.length]; // one step clockwise from where we came in
+        a = b; b = next;
+      }
+      if (loop.length >= 3) faces.push(loop);
+    }
+  }
+
+  // Interior faces all share one winding; every component's outer face has the other.
+  const built = faces.map(ids => {
+    const pts = ids.map(id => ({ x: nodeMap.get(id).x, y: nodeMap.get(id).y }));
+    return { nodeIds: ids, points: pts, area: signedArea(pts) };
+  });
+  // Positive is the interior winding here (screen coords, +y down). A lone square's two
+  // faces have identical |area| and identical node sets, so only the sign tells them apart —
+  // which is why the partition-wall case (two 40000 rooms vs one 80000 outdoors) is the test
+  // that actually pins this down.
+  return built
+    .filter(f => f.area >= minAreaSqPx)
+    .map(f => ({ nodeIds: f.nodeIds, points: f.points }));
+}
+
 // Outward unit normals for the boundary (exterior) walls, taken from the traced outer
 // LOOP rather than the node centroid. A centroid test ("normal points away from the mean
 // of the nodes") only holds for convex footprints: on an L-shaped / notched plan a

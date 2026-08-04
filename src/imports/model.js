@@ -56,6 +56,25 @@ export const pointInPoly = (px, py, pts) => {
   return inside;
 };
 
+// A point guaranteed to be INSIDE a simple polygon. polyCentroid is the obvious pick and is
+// correct for convex shapes, but on an L-shaped room (or any concave plan) the vertex
+// average can land in the notch — outside the room altogether — which silently breaks any
+// "is this room already covered?" test built on it. Diagonal midpoints are the fallback: a
+// simple polygon always has at least one interior diagonal.
+export const polyInteriorPoint = (pts) => {
+  if (!pts || pts.length < 3) return null;
+  const c = polyCentroid(pts);
+  if (pointInPoly(c.x, c.y, pts)) return c;
+  for (let i = 0; i < pts.length; i++) {
+    for (let j = i + 2; j < pts.length; j++) {
+      if (i === 0 && j === pts.length - 1) continue;   // adjacent, not a diagonal
+      const m = { x: (pts[i].x + pts[j].x) / 2, y: (pts[i].y + pts[j].y) / 2 };
+      if (pointInPoly(m.x, m.y, pts)) return m;
+    }
+  }
+  return c;
+};
+
 // Does a zone cover this point? Polygon zones carry `points` (pass the phase-RESOLVED
 // ones); rect zones use x/y/w/h. Same rule the zone hit test uses.
 export const zoneCoversPoint = (zone, pts, px, py) => pts

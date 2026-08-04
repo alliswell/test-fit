@@ -972,6 +972,33 @@ test("plan strokes keep a constant on-screen weight at any zoom, matching how th
   await expect(page.locator('[data-testid="docs-slide-canvas"] g.tf-const-stroke')).toHaveCount(0);
 });
 
+test("dimension text grows as you zoom out, so it stays readable on screen", async ({ page }) => {
+  await page.addInitScript((s) => localStorage.setItem("testfit-autosave", JSON.stringify({ ...s, projectName: "DimText" })), CARRY_ROOM);
+  await page.goto("/");
+
+  // A wall dimension's on-screen height = its font-size attribute x the canvas zoom. Read the
+  // attribute and multiply, rather than trusting a bounding box for rotated SVG text.
+  const onScreenPx = async () => page.evaluate(() => {
+    const g = document.querySelector('[data-testid="plan-canvas"] g[transform*="scale"]');
+    const z = parseFloat(g.getAttribute("transform").match(/scale\(([\d.]+)\)/)[1]);
+    const t = [...document.querySelectorAll('[data-testid="plan-canvas"] text')]
+      .find(el => /^\d+'-\d+"$/.test(el.textContent.trim()));
+    return t ? parseFloat(t.getAttribute("font-size")) * z : null;
+  });
+
+  const at100 = await onScreenPx();
+  expect(at100).toBeGreaterThan(0);
+
+  for (let i = 0; i < 5; i++) await page.keyboard.press("Control+-");   // ~40%
+  const zoomedOut = await onScreenPx();
+  expect(zoomedOut).toBeCloseTo(at100, 1);   // same on-screen size, not 40% of it
+
+  // Zooming IN is deliberately left alone — text is already comfortable there.
+  for (let i = 0; i < 10; i++) await page.keyboard.press("Control+=");
+  const zoomedIn = await onScreenPx();
+  expect(zoomedIn).toBeGreaterThan(at100);
+});
+
 test("rect room shows clear-inside dims: draw ghost + floor-region inspector", async ({ page }) => {
   await page.goto("/");
   await newProject(page);
@@ -1142,13 +1169,13 @@ test("selection respects the mode: a Build-only floor region isn't selectable in
   await page.keyboard.press("2");
   await expect(stage).toContainText("IT/MEP");
   await page.mouse.click(cx, cy);
-  await expect(page.getByText(/Floor Region ·/)).toHaveCount(0);
+  await expect(page.getByTestId("room-title")).toHaveCount(0);
 
-  // Build mode: the same click selects it (its "Floor Region · <material>" inspector appears).
+  // Build mode: the same click selects it (its "Room · <n> sf" inspector appears).
   await page.keyboard.press("1");
   await expect(stage).toContainText("Build");
   await page.mouse.click(cx, cy);
-  await expect(page.getByText(/Floor Region ·/)).toBeVisible();
+  await expect(page.getByTestId("room-title")).toBeVisible();
 });
 
 test("outlets are stored on the wall centerline but drawn standing off it, into the room", async ({ page }) => {
@@ -1534,6 +1561,106 @@ const CARRY_ROOM = {
 const sortPts = (pts) => [...pts].map(p => [Math.round(p.x), Math.round(p.y)]).sort((a, b) => a[0] - b[0] || a[1] - b[1]);
 // The invariant that matters: the floor's corners still sit on the room's nodes.
 const floorMatchesRoom = (m) => expect(sortPts(m.floorRegions[0].points)).toEqual(sortPts(m.nodes));
+
+test("closing the last wall of a room gives it a floor automatically", async ({ page }) => {
+  // Three walls of a square, pre-seeded — the room is still open, so no floor yet.
+  await page.addInitScript(() => localStorage.setItem("testfit-autosave", JSON.stringify({
+    version: "testfit-v17", pxPerFoot: 20, projectName: "AutoFloor",
+    nodes: [{ id: "a", x: 200, y: 200 }, { id: "b", x: 400, y: 200 },
+            { id: "c", x: 400, y: 400 }, { id: "d", x: 200, y: 400 }],
+    walls: [{ id: "w1", n1: "a", n2: "b", kind: "existing" },
+            { id: "w2", n1: "b", n2: "c", kind: "existing" },
+            { id: "w3", n1: "c", n2: "d", kind: "existing" }],
+    floorRegions: [],
+  })));
+  await page.goto("/");
+  const box = await page.getByTestId("plan-canvas").boundingBox();
+  // Opening a plan must never rewrite it: an unclosed room stays floorless.
+  await expect.poll(async () => (await readModel(page)).floorRegions.length).toBe(0);
+
+  // Draw the closing wall d→a.
+  await page.keyboard.press("w");
+  await page.mouse.click(box.x + 200, box.y + 400);
+  await page.mouse.click(box.x + 200, box.y + 200);
+  await page.mouse.dblclick(box.x + 200, box.y + 200);
+  await page.keyboard.press("Escape");
+
+  await expect.poll(async () => (await readModel(page)).floorRegions.length).toBe(1);
+  const m = await readModel(page);
+  expect(sortPts(m.floorRegions[0].points)).toEqual(sortPts(m.nodes));
+  expect(m.floorRegions[0].material).toBe("Wood");
+});
+
+test("a partition wall splits one room into two, and the new room gets its own floor", async ({ page }) => {
+  // One 400x200 room with a floor already. Dropping a wall down the middle creates a second
+  // room; only the uncovered one should gain a floor.
+  await page.addInitScript(() => localStorage.setItem("testfit-autosave", JSON.stringify({
+    version: "testfit-v17", pxPerFoot: 20, projectName: "Partition",
+    nodes: [{ id: "a", x: 200, y: 200 }, { id: "m", x: 400, y: 200 }, { id: "b", x: 600, y: 200 },
+            { id: "c", x: 600, y: 400 }, { id: "n", x: 400, y: 400 }, { id: "d", x: 200, y: 400 }],
+    walls: [{ id: "w1", n1: "a", n2: "m", kind: "existing" }, { id: "w2", n1: "m", n2: "b", kind: "existing" },
+            { id: "w3", n1: "b", n2: "c", kind: "existing" }, { id: "w4", n1: "c", n2: "n", kind: "existing" },
+            { id: "w5", n1: "n", n2: "d", kind: "existing" }, { id: "w6", n1: "d", n2: "a", kind: "existing" }],
+    // Existing floor covers the LEFT half only.
+    floorRegions: [{ id: "f1", material: "Wood", label: "", phase: "existing",
+      points: [{ x: 200, y: 200 }, { x: 400, y: 200 }, { x: 400, y: 400 }, { x: 200, y: 400 }] }],
+  })));
+  await page.goto("/");
+  const box = await page.getByTestId("plan-canvas").boundingBox();
+
+  await page.keyboard.press("w");
+  await page.mouse.click(box.x + 400, box.y + 200);   // m
+  await page.mouse.click(box.x + 400, box.y + 400);   // n
+  await page.mouse.dblclick(box.x + 400, box.y + 400);
+  await page.keyboard.press("Escape");
+
+  // The left room already had a floor and must not get a duplicate; the right one is new.
+  await expect.poll(async () => (await readModel(page)).floorRegions.length).toBe(2);
+  const m = await readModel(page);
+  const xs = m.floorRegions.map(f => Math.min(...f.points.map(p => p.x))).sort((a, b) => a - b);
+  expect(xs).toEqual([200, 400]);
+});
+
+test("the Room card assigns a zone and can take the floor away — and it stays away", async ({ page }) => {
+  await page.addInitScript((s) => localStorage.setItem("testfit-autosave", JSON.stringify({ ...s, projectName: "RoomCard" })), CARRY_ROOM);
+  await page.goto("/");
+  const box = await page.getByTestId("plan-canvas").boundingBox();
+  await page.mouse.click(box.x + 300, box.y + 300);          // inside the room → its floor
+  await expect(page.getByTestId("room-title")).toContainText("Room · 100 sf");
+
+  // Zone starts as None; picking one gives the room a zone on the floor's own outline.
+  await expect(page.getByTestId("room-zone")).toHaveValue("");
+  await page.getByTestId("room-zone").selectOption("kitchen");
+  await expect.poll(async () => (await readModel(page)).zones?.length ?? 0).toBe(1);
+  let m = await readModel(page);
+  expect(m.zones[0].type).toBe("kitchen");
+  expect(sortPts(m.zones[0].points)).toEqual(sortPts(m.floorRegions[0].points));
+
+  // Material swap.
+  await page.getByTestId("room-floor-Concrete").click();
+  await expect.poll(async () => (await readModel(page)).floorRegions[0].material).toBe("Concrete");
+
+  // Floor: None removes it. The room is still enclosed, so this is the case that would
+  // regress if auto-floor re-ran on "is enclosed" instead of "just became enclosed".
+  await page.getByTestId("room-floor-none").click();
+  await expect.poll(async () => (await readModel(page)).floorRegions.length).toBe(0);
+  await page.waitForTimeout(600);
+  expect((await readModel(page)).floorRegions).toHaveLength(0);
+  expect((await readModel(page)).zones ?? []).toHaveLength(1);  // the zone outlives the floor
+});
+
+test("opening a closed-room plan that has no floor doesn't add one", async ({ page }) => {
+  // The persistence half of "None means none": on restore, every room in the file reads as
+  // freshly enclosed unless the effect seeds instead of diffing. Can't be checked with
+  // page.reload() in a seeded test — addInitScript re-runs and overwrites what the app saved.
+  await page.addInitScript((s) => localStorage.setItem("testfit-autosave",
+    JSON.stringify({ ...s, projectName: "NoFloorOnPurpose", floorRegions: [] })), CARRY_ROOM);
+  await page.goto("/");
+  await page.waitForTimeout(900);
+  expect((await readModel(page)).floorRegions).toHaveLength(0);
+  // …and the room is genuinely closed, so this isn't passing for the wrong reason.
+  expect((await readModel(page)).walls).toHaveLength(4);
+});
 
 test("dragging a wall resizes the floor with the room", async ({ page }) => {
   await page.addInitScript((s) => localStorage.setItem("testfit-autosave", JSON.stringify({ ...s, projectName: "CarryWall" })), CARRY_ROOM);
@@ -2162,6 +2289,47 @@ test("plan and 3D pane chrome share one baseline along the bottom edge", async (
   for (const other of [ceiling, style]) {
     expect(Math.abs((rot.y + rot.height) - (other.y + other.height))).toBeLessThan(10);
   }
+});
+
+test("in Detailed 3D the floor texture stays on the building — the ground is theme paper", async ({ page }) => {
+  // An OPEN outer run is the case that broke: traceOuterBoundary returns null, and the
+  // fallback used to be a 500ft quad wearing the floor material, so a single wood plank was
+  // stretched over the whole world. Sampled from the Docs capture of the real WebGL frame.
+  await page.addInitScript(() => localStorage.setItem("testfit-autosave", JSON.stringify({
+    version: "testfit-v17", pxPerFoot: 20, projectName: "GroundPaper",
+    nodes: [{ id: "a", x: 200, y: 200 }, { id: "b", x: 700, y: 200 },
+            { id: "c", x: 700, y: 600 }, { id: "d", x: 200, y: 600 }],
+    walls: [{ id: "w1", n1: "a", n2: "b", kind: "existing" },
+            { id: "w2", n1: "b", n2: "c", kind: "existing" },
+            { id: "w3", n1: "c", n2: "d", kind: "existing" }],   // no d-a: never closes
+    floorRegions: [],
+  })));
+  await page.goto("/");
+  await page.locator("select").first().selectOption("iso");
+  await page.waitForTimeout(2500);
+  await page.getByRole("button", { name: "Detailed", exact: true }).click();
+  await page.waitForTimeout(2500);
+
+  // Screenshot the live WebGL canvas, then decode it back inside the page to read a pixel —
+  // saved slides re-render live rather than storing a bitmap, so there's nothing to sample
+  // from localStorage.
+  const shot = (await page.locator("canvas").first().screenshot()).toString("base64");
+  const px = await page.evaluate(async (b64) => {
+    const img = new Image();
+    await new Promise(r => { img.onload = r; img.src = "data:image/png;base64," + b64; });
+    const c = document.createElement("canvas");
+    c.width = img.width; c.height = img.height;
+    const ctx = c.getContext("2d");
+    ctx.drawImage(img, 0, 0);
+    // Top-left corner — comfortably off the building in the locked iso framing.
+    const d = ctx.getImageData(Math.round(img.width * 0.06), Math.round(img.height * 0.10), 1, 1).data;
+    return { r: d[0], g: d[1], b: d[2] };
+  }, shot);
+
+  // Paper is a near-neutral warm off-white; the wood texture is heavily red-over-blue.
+  // #C8A878 wood → r-b ≈ 80. Light paper → r-b ≈ 15.
+  expect(px.r - px.b).toBeLessThan(40);
+  expect(px.r).toBeGreaterThan(200);
 });
 
 test("the 3D ceiling toggle disables itself — with a reason — when it can't draw anything", async ({ page }) => {
