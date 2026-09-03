@@ -16,6 +16,7 @@ export const useGeometryStore = create((set) => ({
   nodes: [],
   walls: [],        // {id, n1, n2, kind:"existing"|"demo"|"new"|"pony"}
   zones: [],
+  furniture: [],    // {id, type, x, y, angle, w, d, label} — Furnish stage (2D parametric)
   markers: [],
   doors: [],        // {id, x, y, angle, width, flipped, hingeRight, doorType, accessControl?, accessSide?}
   windows: [],      // {id, x, y, angle, width, height, sill, type}
@@ -30,6 +31,7 @@ export const useGeometryStore = create((set) => ({
   setNodes: vou(set, "nodes"),
   setWalls: vou(set, "walls"),
   setZones: vou(set, "zones"),
+  setFurniture: vou(set, "furniture"),
   setMarkers: vou(set, "markers"),
   setDoors: vou(set, "doors"),
   setWindows: vou(set, "windows"),

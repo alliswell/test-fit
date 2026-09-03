@@ -21,6 +21,7 @@ export const useLayersStore = create((set) => ({
   visibleRevClouds: true,
   visibleFlowPaths: true,
   visibleFloorRegions: true,
+  visibleFurniture: true,
   visibleITMEP: true, // master IT/MEP marker visibility (all modes)
   visibleGuides: true, // elevation cut guides + their on-ruler camera markers
   lockedLayers: {},
@@ -34,6 +35,7 @@ export const useLayersStore = create((set) => ({
   setVisibleRevClouds: vou(set, "visibleRevClouds"),
   setVisibleFlowPaths: vou(set, "visibleFlowPaths"),
   setVisibleFloorRegions: vou(set, "visibleFloorRegions"),
+  setVisibleFurniture: vou(set, "visibleFurniture"),
   setVisibleITMEP: vou(set, "visibleITMEP"),
   setVisibleGuides: vou(set, "visibleGuides"),
   setLockedLayers: vou(set, "lockedLayers"),

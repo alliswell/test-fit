@@ -1,12 +1,17 @@
 // ─── Top bar (chrome) ────────────────────────────────────────────────────────
 // Props-only component extracted from testfit.jsx: wordmark, snapshot switcher,
 // stage dropdown, undo/redo, save/load/new, layout switcher, theme + settings.
+import { useState } from "react";
 import { Tooltip, TooltipTrigger, TooltipContent } from "../app/components/ui/tooltip";
 import { ChevronDown, PanelLeft, PanelLeftClose, Plus, Redo2, RotateCcw, Settings, Undo2, X } from "lucide-react";
+import MonoSkinPanel from "./MonoSkinPanel";
 
 export default function TopBar({
-  $, MODES, S, T, activeSnapshotId, canRedo, canUndo, cost, deleteSnapshot, display, exportPdf, exportPng, exportProject, font, importProject, liveDirty, loadRef, markers, mode, modeMenuRect, newProject, newSnapMode, redo, renameSnapshot, renamingSnapId, saveMenuRect, setMode, setModeMenuRect, setNewSnapMode, setRenamingSnapId, setSaveMenuRect, setShowModeMenu, setShowSaveMenu, setShowSettings, setShowSnapMenu, setSidebarOpen, setSnapDraftName, setSnapMenuRect, setT, setThemeMode, showModeMenu, showSaveMenu, showSnapMenu, sidebarOpen, slidesCount = 0, snapDraftName, snapMenuRect, snapshot, snapshots, switchSnapshot, takeSnapshot, themeMode, undo, updateSnapshot, walls, zones, panes, setLayout, setSelType, setSelectedId, setSelectedIds,
+  $, MODES, S, T, activeSnapshotId, canRedo, canUndo, cost, deleteSnapshot, display, exportPdf, exportPng, exportProject, font, importProject, liveDirty, loadRef, markers, mode, modeMenuRect, newProject, newSnapMode, redo, renameSnapshot, renamingSnapId, saveMenuRect, setMode, setModeMenuRect, setNewSnapMode, setRenamingSnapId, setSaveMenuRect, setShowModeMenu, setShowSaveMenu, setShowSettings, setShowSnapMenu, setSidebarOpen, setSnapDraftName, setSnapMenuRect, setT, setMonoDraw, monoDraw, monoSkin, setMonoSkin, monoTiers = [], setThemeMode, showModeMenu, showSaveMenu, showSnapMenu, sidebarOpen, slidesCount = 0, snapDraftName, snapMenuRect, snapshot, snapshots, switchSnapshot, takeSnapshot, themeMode, undo, updateSnapshot, walls, zones, furnitureCount = 0, panes, setLayout, setSelType, setSelectedId, setSelectedIds,
 }) {
+  // Mono style options live in a split-button dropdown (main = toggle, chevron = skin panel).
+  const [showMono, setShowMono] = useState(false);
+  const [monoRect, setMonoRect] = useState(null);
   return (
       <div style={S.bar}>
         {/* Wordmark — simple monospace logotype */}
@@ -108,7 +113,7 @@ export default function TopBar({
           const cur = MODES[mode];
           // Live per-stage content counts so the menu shows which stages have work in them
           const n = (c, w) => `${c} ${w}${c === 1 ? "" : "s"}`;
-          const HINTS = { build: n(walls.length, "wall"), itmep: n(markers.length, "marker"), zone: n(zones.length, "zone"), budget: $(cost.total), docs: n(slidesCount, "slide") };
+          const HINTS = { build: n(walls.length, "wall"), itmep: n(markers.length, "marker"), zone: n(zones.length, "zone"), furnish: n(furnitureCount, "piece"), budget: $(cost.total), docs: n(slidesCount, "slide") };
           const badge = (m, active) => (
             <span style={{ width: 16, height: 16, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, fontSize: 9, fontWeight: 700, fontFamily: "inherit",
               background: active ? m.color : "transparent", color: active ? T.bg1 : T.textMuted, border: active ? "none" : "1.5px solid " + T.textFaint }}>{m.num}</span>
@@ -116,7 +121,7 @@ export default function TopBar({
           return <div style={{ position: "relative" }}>
             <button
               onClick={e => { setModeMenuRect(e.currentTarget.getBoundingClientRect()); setShowModeMenu(v => !v); }}
-              title="Workflow stage (1–5)"
+              title="Workflow stage (1–6)"
               style={{ display: "flex", alignItems: "center", gap: 7, padding: "4px 10px", background: cur.color + (showModeMenu ? "30" : "1C"), border: "1px solid " + cur.color + (showModeMenu ? "88" : "55"), borderRadius: 6, cursor: "pointer", color: T.textBright, fontWeight: 600, fontSize: 11, fontFamily: "inherit", transition: "all 0.12s ease", height: 28 }}
             >
               {badge(cur, true)}
@@ -173,6 +178,35 @@ export default function TopBar({
                 color: themeMode === m ? T.textBright : T.textMuted,
                 outline: themeMode === m ? "1px solid " + T.brand : "none" }}>{label}</button>
           ))}
+        </div>
+        {/* Mono is a DRAWING style, not a UI theme — it restyles the canvas (plan,
+            elevation, isometric, 3D, sheets) and leaves the chrome on Light/Dark/Print.
+            Split button: left toggles it, the chevron opens the skin options popover. */}
+        <div style={{ display: "flex", marginLeft: 4, position: "relative" }}>
+          <Tooltip><TooltipTrigger asChild>
+            <button data-testid="mono-toggle" data-mono={monoDraw ? "on" : "off"} onClick={() => setMonoDraw(v => !v)}
+              style={{ ...S.smBtn, border: undefined, borderStyle: "solid",
+                borderWidth: "1.5px 0 1.5px 1.5px", borderColor: monoDraw ? T.brand : T.bg3,
+                borderRadius: "5px 0 0 5px",
+                background: monoDraw ? T.brand + "22" : undefined, color: monoDraw ? T.textBright : undefined,
+                fontWeight: monoDraw ? 600 : undefined }}>Mono</button>
+          </TooltipTrigger><TooltipContent>Monochrome drawing style (canvas only)</TooltipContent></Tooltip>
+          <button data-testid="mono-menu" aria-label="Mono skin options"
+            onClick={e => { setMonoRect(e.currentTarget.getBoundingClientRect()); setShowMono(v => !v); }}
+            style={{ ...S.smBtn, border: undefined, borderStyle: "solid", borderWidth: "1.5px",
+              borderColor: monoDraw ? T.brand : T.bg3,
+              borderRadius: "0 5px 5px 0", padding: "5px 5px", display: "flex", alignItems: "center",
+              background: monoDraw ? T.brand + "22" : (showMono ? T.bg3 + "80" : undefined),
+              color: monoDraw ? T.textBright : undefined }}>
+            <ChevronDown size={11} style={{ opacity: 0.7, transition: "transform 0.15s", transform: showMono ? "rotate(180deg)" : "none" }} />
+          </button>
+          {showMono && <>
+            <div style={{ position: "fixed", inset: 0, zIndex: 999 }} onClick={() => setShowMono(false)} />
+            <div style={{ position: "fixed", top: (monoRect?.bottom ?? 44) + 6, left: monoRect?.left ?? 12, width: 236, background: T.panelBg, border: "1px solid " + T.border, borderRadius: 8, padding: "10px 12px 4px", zIndex: 1000, boxShadow: T.panelShadow, backdropFilter: "blur(16px)", maxHeight: "calc(100vh - 90px)", overflowY: "auto" }}>
+              {/* Tweaking a skin option turns Mono on so the effect is visible immediately. */}
+              <MonoSkinPanel skin={monoSkin} onChange={(sk) => { setMonoSkin(sk); if (!monoDraw) setMonoDraw(true); }} T={T} tiers={monoTiers} S={S} />
+            </div>
+          </>}
         </div>
         <div style={{ width: 1, height: 20, background: T.border, margin: "0 3px" }} />
         <div style={{ position: "relative" }}>

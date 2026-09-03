@@ -25,8 +25,6 @@ export const SPEC_COMPONENTS = {
     light_can_4:    { name: "4\" Recessed Can",    symbol: "recessed",   color: "#E8D070", letter: null, unitCost: 280, size: 4,  mount: "ceiling" },
     light_can_6:    { name: "6\" Recessed Can",    symbol: "recessed",   color: "#E8D070", letter: null, unitCost: 340, size: 6,  mount: "ceiling" },
     light_pendant:  { name: "Pendant Light",        symbol: "pendant",    color: "#E8D070", letter: "P",  unitCost: 450,           mount: "ceiling" },
-    light_linear_2: { name: "Linear Fixture 2'",    symbol: "linear_lt",  color: "#E8D070", letter: null, unitCost: 320, ftLen: 2, mount: "ceiling" },
-    light_linear_4: { name: "Linear Fixture 4'",    symbol: "linear_lt",  color: "#E8D070", letter: null, unitCost: 480, ftLen: 4, mount: "ceiling" },
     light_sconce:   { name: "Wall Sconce",          symbol: "sconce",     color: "#E8D070", letter: "W",  unitCost: 380,           mount: "inwall"  },
     htrack_4:       { name: "H-Track 4'",           symbol: "rect",       color: "#E0A84A", letter: "H",  unitCost: 520, mount: "ceiling", directional: true },
     htrack_8:       { name: "H-Track 8'",           symbol: "rect",       color: "#E0A84A", letter: "H",  unitCost: 840, mount: "ceiling", directional: true },
@@ -58,6 +56,25 @@ export const SPEC_LAYERS = {
   mep: { name: "MEP / Plumbing", color: "#50A070" },
   security: { name: "Security", color: "#9A4A9A" }
 };
+
+// Wall-mounted devices drawn standing off the wall into the room rather than centered on
+// the wall centerline they're stored at (see markerDrawPos in geometry.js). These are the
+// small symbols convention floats in the room — outlets, switches, and sconces (whose light
+// throw also fans toward that room, so the plan shows both wall and direction). Bigger wall
+// equipment (panel, t-stat, rack) stays drawn on the wall face, and ceiling outlets have no
+// wall to stand off of.
+export const isWallOffsetComponent = (ct) =>
+  !!ct && ((ct.startsWith("outlet_") && ct !== "outlet_ceiling") ||
+           ct.startsWith("switch_") || ct === "light_sconce" || ct === "sconce_prewire");
+
+// Devices fixed to a wall — these get a mount-height (AFF) control, defaulting to the
+// industry standard in M3D. Ceiling- and floor-mounted components are excluded.
+export const isWallMounted = (spec) => spec?.mount === "inwall" || spec?.mount === "surface";
+// Centerline → symbol-center clearance: half a standard 7" wall (scales with the plan) plus
+// the glyph's own radius (fixed plan px), so the body sits just clear of the wall face. Sized
+// off the SELECTED radius (11) with a hair of air, so a device doesn't dip into the wall when
+// its symbol grows on selection — and doesn't hop, since the offset itself never changes.
+export const wallDeviceOffsetPx = (pxPerFoot) => (3.5 / 12) * pxPerFoot + 12;
 
 // White/black device finish. Components whose spec has `finish` support the toggle.
 export const COMPONENT_FINISHES = ["white", "black"];

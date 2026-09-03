@@ -140,14 +140,17 @@ export function solidEdgesGeometry(geo, thresholdDeg = 20) {
 // height, minus rectangular cuts), so draw its edges directly — bottom/top loops,
 // corner verticals, and an opening rectangle on each long face. Immune to CSG
 // triangulation artifacts by construction.
+// Returns { shell, openings } as SEPARATE geometries: the mono drawing system puts the
+// wall silhouette and its joinery on different tiers, so they have to be colourable
+// independently. `openings` is null when the wall has no cuts.
 export function buildWallEdgeSegments(quad, heightFt, cuts = []) {
-  const segs = [];
-  const push = (ax, ay, az, bx, by, bz) => segs.push(ax, ay, az, bx, by, bz);
+  const shellSegs = [], openSegs = [];
+  const push = (arr, ax, ay, az, bx, by, bz) => arr.push(ax, ay, az, bx, by, bz);
   for (let i = 0; i < 4; i++) {
     const a = quad[i], b = quad[(i + 1) % 4];
-    push(a.x, 0, a.z, b.x, 0, b.z);
-    push(a.x, heightFt, a.z, b.x, heightFt, b.z);
-    push(a.x, 0, a.z, a.x, heightFt, a.z);
+    push(shellSegs, a.x, 0, a.z, b.x, 0, b.z);
+    push(shellSegs, a.x, heightFt, a.z, b.x, heightFt, b.z);
+    push(shellSegs, a.x, 0, a.z, a.x, heightFt, a.z);
   }
   // quad order is [mN1.L, mN2.L, mN2.R, mN1.R] → long faces are 0→1 and 3→2;
   // z varies linearly along a mitered face, so interpolate it at the cut's x extents.
@@ -155,12 +158,16 @@ export function buildWallEdgeSegments(quad, heightFt, cuts = []) {
   for (const cut of cuts) for (const [a, b] of sides) {
     const zAt = x => a.z + (b.z - a.z) * ((x - a.x) / ((b.x - a.x) || 1));
     const z0 = zAt(cut.x0), z1 = zAt(cut.x1);
-    push(cut.x0, cut.y0, z0, cut.x1, cut.y0, z1);
-    push(cut.x1, cut.y0, z1, cut.x1, cut.y1, z1);
-    push(cut.x1, cut.y1, z1, cut.x0, cut.y1, z0);
-    push(cut.x0, cut.y1, z0, cut.x0, cut.y0, z0);
+    push(openSegs, cut.x0, cut.y0, z0, cut.x1, cut.y0, z1);
+    push(openSegs, cut.x1, cut.y0, z1, cut.x1, cut.y1, z1);
+    push(openSegs, cut.x1, cut.y1, z1, cut.x0, cut.y1, z0);
+    push(openSegs, cut.x0, cut.y1, z0, cut.x0, cut.y0, z0);
   }
-  const g = new THREE.BufferGeometry();
-  g.setAttribute("position", new THREE.BufferAttribute(new Float32Array(segs), 3));
-  return g;
+  const geo = (arr) => {
+    if (!arr.length) return null;
+    const g = new THREE.BufferGeometry();
+    g.setAttribute("position", new THREE.BufferAttribute(new Float32Array(arr), 3));
+    return g;
+  };
+  return { shell: geo(shellSegs), openings: geo(openSegs) };
 }

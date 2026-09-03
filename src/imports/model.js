@@ -2,9 +2,19 @@
 // Extracted from the main component so they can be unit-tested in isolation and
 // reused by a future backend. Everything here is PURE (no React/three/DOM deps).
 import { sanitizeSlideTree } from "../utils/docs";
+import { SPEC_COMPONENTS } from "../constants/specs";
+
+// Every component type the catalog still offers. A marker whose type has been retired
+// (e.g. the 2'/4' linear fixtures) would otherwise linger invisibly — no symbol to draw,
+// no mount height, but still counted in layer tallies — so loading drops it.
+const _LIVE_COMPONENT_TYPES = new Set(Object.values(SPEC_COMPONENTS).flatMap(l => Object.keys(l)));
+const _liveMarkers = (arr) => arr.filter(m => !m?.componentType || _LIVE_COMPONENT_TYPES.has(m.componentType));
 
 export const uid = () => Math.random().toString(36).slice(2, 10);
-export const sn = (v, g) => Math.round(v / g) * g;
+// Snap v to a grid of g. A non-positive/absent g means SNAPPING OFF — that's what the
+// hold-to-bypass modifier sets, so every call site opts out at once rather than each
+// needing its own flag.
+export const sn = (v, g) => (g > 0 ? Math.round(v / g) * g : v);
 
 // Power-layer markers split into Lighting vs Electrical by component type.
 export const isLightComponent = (ct) => ct?.startsWith("light_") || ct?.startsWith("htrack_");
@@ -46,6 +56,38 @@ export const pointInPoly = (px, py, pts) => {
   return inside;
 };
 
+// A point guaranteed to be INSIDE a simple polygon. polyCentroid is the obvious pick and is
+// correct for convex shapes, but on an L-shaped room (or any concave plan) the vertex
+// average can land in the notch — outside the room altogether — which silently breaks any
+// "is this room already covered?" test built on it. Diagonal midpoints are the fallback: a
+// simple polygon always has at least one interior diagonal.
+export const polyInteriorPoint = (pts) => {
+  if (!pts || pts.length < 3) return null;
+  const c = polyCentroid(pts);
+  if (pointInPoly(c.x, c.y, pts)) return c;
+  for (let i = 0; i < pts.length; i++) {
+    for (let j = i + 2; j < pts.length; j++) {
+      if (i === 0 && j === pts.length - 1) continue;   // adjacent, not a diagonal
+      const m = { x: (pts[i].x + pts[j].x) / 2, y: (pts[i].y + pts[j].y) / 2 };
+      if (pointInPoly(m.x, m.y, pts)) return m;
+    }
+  }
+  return c;
+};
+
+// Does a zone cover this point? Polygon zones carry `points` (pass the phase-RESOLVED
+// ones); rect zones use x/y/w/h. Same rule the zone hit test uses.
+export const zoneCoversPoint = (zone, pts, px, py) => pts
+  ? pointInPoly(px, py, pts)
+  : px >= zone.x && px <= zone.x + zone.w && py >= zone.y && py <= zone.y + zone.h;
+
+// The furniture that belongs to a zone — the association the plan makes visually: a piece
+// is "in" the zone its CENTER sits in. Deliberately positional rather than `fromZone`
+// provenance, so a piece dragged out of a zone stops following it and one dragged in
+// starts, matching what the drawing shows.
+export const furnitureInZone = (furniture, zone, pts) =>
+  furniture.filter(f => zoneCoversPoint(zone, pts, f.x, f.y));
+
 // Parse a feet/inches dim input ("3'6"", "18"", "12") to pixels at ppf px/ft.
 export const parseDimInput = (str, ppf) => {
   if (!str) return null;
@@ -64,7 +106,7 @@ export const parseDimInput = (str, ppf) => {
 // shape; migrateProjectData() normalizes any older/partial blob (file import,
 // localStorage autosave, snapshot data) up to the current version. The seam that file
 // import, autosave, and a future database all flow through.
-export const PROJECT_VERSION = "testfit-v16";
+export const PROJECT_VERSION = "testfit-v17";
 export const AUTOSAVE_KEY = "testfit-autosave"; // localStorage key for crash-safe session restore
 const _arr = (v) => Array.isArray(v) ? v : [];
 const _obj = (v) => (v && typeof v === "object") ? v : {};
@@ -227,7 +269,8 @@ export function migrateProjectData(d) {
   }
   return {
     projectName: typeof d.projectName === "string" ? d.projectName : "Untitled",
-    nodes: _arr(d.nodes), walls: dedupeWalls(d.walls), zones: _arr(d.zones), markers: _arr(d.markers),
+    nodes: _arr(d.nodes), walls: dedupeWalls(d.walls), zones: _arr(d.zones), markers: _liveMarkers(_arr(d.markers)),
+    furniture: _arr(d.furniture), // Furnish stage (v17): placed 2D parametric furniture
     doors: _arr(d.doors), windows, columns: _arr(d.columns), dims: _arr(d.dims), labels: _arr(d.labels),
     revClouds: _arr(d.revClouds), flowPaths: _arr(d.flowPaths), floorRegions: _arr(d.floorRegions),
     guides: _arr(d.guides), // elevation cut-line guides { id, dir, pos }

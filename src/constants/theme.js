@@ -19,7 +19,7 @@ export const THEMES = {
     panelBg: "#0E1828F4", panelShadow: "0 10px 30px rgba(0,0,0,0.5)",
     toolbarBg: "#0E1828EE", toolbarShadow: "0 10px 30px rgba(0,0,0,0.5)",
     delBg: "#5A1D24", delText: "#FFB6BE",
-    dimText: "#EAF3FC55", wallNode: "#EAF3FC",
+    dimText: "#EAF3FC55", wallNode: "#EAF3FC", furniture: "#8FB0C8",
     crosshairColor: "%233FC8E8",
     // UI accent colors (sidebar/panel text — distinct from canvas marker colors)
     uiLighting: "#E8D070", uiElec: "#50C878", uiDoor: "#C8A060",
@@ -37,7 +37,7 @@ export const THEMES = {
     panelBg: "#EFE8DAF6", panelShadow: "0 10px 28px rgba(60,42,20,0.14)",
     toolbarBg: "#EFE8DAF2", toolbarShadow: "0 10px 28px rgba(60,42,20,0.14)",
     delBg: "#DCB3AD", delText: "#7A1A12",
-    dimText: "#15110A55", wallNode: "#15110A",
+    dimText: "#15110A55", wallNode: "#15110A", furniture: "#7A6A52",
     crosshairColor: "%2315110A",
     // UI accent colors — darkened for legibility on warm light background
     uiLighting: "#7A6010", uiElec: "#1A6E3A", uiDoor: "#7A5518",
@@ -59,7 +59,7 @@ export const THEMES = {
     panelBg: "#FFFFFFF6", panelShadow: "0 10px 28px rgba(0,0,0,0.12)",
     toolbarBg: "#FFFFFFF2", toolbarShadow: "0 10px 28px rgba(0,0,0,0.12)",
     delBg: "#F0D4D4", delText: "#9A1F1F",
-    dimText: "#00000099", wallNode: "#000000",
+    dimText: "#00000099", wallNode: "#000000", furniture: "#333333",
     crosshairColor: "%23000000",
     // UI accent colors — dark grayscale, so schematic layers stay legible without ink-heavy hues
     uiLighting: "#4A4A4A", uiElec: "#2A2A2A", uiDoor: "#4A4A4A",
@@ -125,4 +125,93 @@ export const DOOR_TYPE_STYLES = {
 export const WINDOW_TYPE_STYLES = {
   "Window":      { stroke: "#60A0C8", fill: "#7FB4D633", glassTick: true },
   "Cut Opening": { stroke: "#A09068", fill: null, dash: "5 4" }, // matches its plan-symbol tan
+};
+
+// ─── Mono drawing system ─────────────────────────────────────────────────────
+// A monochrome DRAWING style rather than a UI palette. One hue for everything;
+// hierarchy is carried by line WEIGHT + lightness, never by hue. Because the token
+// scale is fixed, the same four tiers read identically in plan, elevation and
+// isometric — only the MAPPING changes (MONO_PROFILES): what reads as primary in a
+// plan (the cut envelope) is not what reads as primary in an elevation (the ground
+// line + silhouette). The hue/background is a swappable "skin".
+export const MONO_TIER_WEIGHT = [2.6, 1.7, 1.05, 0.62];
+export const MONO_RAMP = {
+  "dark-on-light": [22, 34, 48, 63], // HSL lightness per tier, T1..T4
+  "light-on-dark": [93, 81, 67, 53],
+};
+// T1 must separate from the background or the whole hierarchy stops reading.
+export const MONO_MIN_CONTRAST = 26;
+
+export const MONO_PRESETS = [
+  { id: "blue-cream", name: "Blue / cream", baseHue: 226, lineSat: 68, bg: { h: 52, s: 66, l: 92 }, pol: "dark-on-light" },
+  { id: "blueprint",  name: "Blueprint",    baseHue: 212, lineSat: 42, bg: { h: 218, s: 52, l: 21 }, pol: "light-on-dark" },
+  { id: "sepia",      name: "Sepia",        baseHue: 28,  lineSat: 46, bg: { h: 38, s: 44, l: 90 },  pol: "dark-on-light" },
+  { id: "charcoal",   name: "Charcoal",     baseHue: 220, lineSat: 7,  bg: { h: 40, s: 16, l: 93 },  pol: "dark-on-light" },
+  { id: "oxblood",    name: "Oxblood / bone", baseHue: 356, lineSat: 40, bg: { h: 40, s: 30, l: 91 }, pol: "dark-on-light" },
+];
+export const MONO_DEFAULT_SKIN = MONO_PRESETS[0];
+
+// Which geometry lands on which tier, per view type. Documentation for the mapping
+// implemented in the renderers — and the legend text shown in the UI.
+export const MONO_PROFILES = {
+  plan:      ["External wall / structure", "Internal wall", "Doors / windows / joinery", "Furniture / zones / swing"],
+  elevation: ["Ground line / silhouette", "Primary facade & roof", "Openings / reveals", "Texture / entourage"],
+  iso:       ["Outer silhouette edge", "Volume-meeting edge", "Surface / detail edge", "Hidden line"],
+};
+
+const clampL = (l) => Math.max(0, Math.min(100, l));
+// Mono colours are emitted as HEX, not `hsl(...)`, on purpose: the renderers lean on the
+// `color + "25"` 8-digit-alpha idiom all over the place, and appending alpha to an
+// `hsl(… … …)` string yields invalid CSS (which browsers silently render as black).
+const mhsl = (h, s, l) => {
+  const S = s / 100, L = clampL(l) / 100;
+  const k = (n) => (n + h / 30) % 12;
+  const a = S * Math.min(L, 1 - L);
+  const f = (n) => Math.round(255 * (L - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1)))));
+  return "#" + [f(0), f(8), f(4)].map(v => v.toString(16).padStart(2, "0")).join("");
+};
+// The crosshair cursor embeds its colour in an SVG data URI → needs "%23" for "#".
+const hslHex = (h, s, l) => "%23" + mhsl(h, s, l).slice(1);
+
+// Build a full THEMES-shaped object from a skin, plus `tiers` (the drawing tokens)
+// and `mono: true` so renderers can branch. UI chrome is derived from the same hue
+// so the app reads as one material — no second accent color enters the system.
+export function buildMonoTheme(skin = MONO_DEFAULT_SKIN) {
+  const { baseHue: h, lineSat: s, bg, pol } = skin;
+  const ramp = MONO_RAMP[pol] || MONO_RAMP["dark-on-light"];
+  const tiers = ramp.map((l, i) => ({ color: mhsl(h, s, l), w: MONO_TIER_WEIGHT[i], l }));
+  const dark = pol === "light-on-dark";
+  const T1 = tiers[0].color, T2 = tiers[1].color, T3 = tiers[2].color, T4 = tiers[3].color;
+  const canvas = mhsl(bg.h, bg.s, bg.l);
+  // Panels step away from the canvas so the sidebar/inspector read as chrome, not paper.
+  const step = dark ? 4 : -4;
+  const surf = (n) => mhsl(bg.h, bg.s, clampL(bg.l + step * n));
+  return {
+    mono: true, tiers, skin,
+    bg0: surf(1), bg1: surf(0), bg2: surf(1.6), bg3: surf(2.6), border: mhsl(h, Math.min(s, 30), dark ? 38 : 72),
+    text: T2, textBright: T1, textMuted: T3, textDim: T4, textFaint: mhsl(h, Math.max(s - 20, 0), clampL(ramp[3] + (dark ? -14 : 14))),
+    accent: T2, accentDim: T3,
+    brand: T1, brandDim: T2, brandSoft: mhsl(h, s, ramp[0]) + "1E",
+    canvas, gridMajor: mhsl(h, s, ramp[3]) + "1E", gridMinor: mhsl(h, s, ramp[3]) + "10", gridSub: T4,
+    nodeStroke: canvas, nodeFill: T1,
+    selBg: mhsl(h, s, ramp[0]) + "16", selBorder: T1,
+    panelBg: surf(0) + "F4", panelShadow: dark ? "0 10px 30px rgba(0,0,0,0.5)" : "0 10px 28px rgba(0,0,0,0.14)",
+    toolbarBg: surf(0) + "F0", toolbarShadow: dark ? "0 10px 30px rgba(0,0,0,0.5)" : "0 10px 28px rgba(0,0,0,0.14)",
+    delBg: mhsl(2, 45, dark ? 30 : 84), delText: mhsl(2, 60, dark ? 82 : 32),
+    dimText: T3, wallNode: T1, furniture: T3,
+    crosshairColor: hslHex(h, s, ramp[0]),
+    // Schematic layers collapse into the ramp too — a mono drawing has no stray hues.
+    uiLighting: T2, uiElec: T2, uiDoor: T3, uiSwitch: T3, uiBudget: T2, uiPanel: T2,
+    uiConduit: T3, uiPrewire: T3,
+  };
+}
+
+// Wall kinds under mono: thickness + dash still encode the PHASE (demo stays dashed),
+// but colour comes from the tier the wall earns (exterior vs interior), applied at the
+// render site — so hierarchy, not category, drives the ink.
+export const WALL_KINDS_MONO = {
+  existing: { label: "Existing", color: "#000000", dash: null,  thickness: 7 },
+  demo:     { label: "Demo",     color: "#000000", dash: "8 4", thickness: 7 },
+  new:      { label: "New",      color: "#000000", dash: null,  thickness: 7 },
+  pony:     { label: "Pony",     color: "#000000", dash: null,  thickness: 4, thin: true },
 };
