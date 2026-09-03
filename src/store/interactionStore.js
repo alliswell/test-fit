@@ -28,6 +28,7 @@ export const useInteractionStore = create((set) => ({
   rotatingFurniture: null, // { id, cx, cy } — furniture rotate-handle drag
   furnitureResize: null,   // { id, sx, sy, ax, ay, ux:[x,y], uy:[x,y] } — furniture scale-handle drag
   calibrationLine: null,  // { p1:{x,y}, p2:{x,y} }
+  floorEditId: null,      // floor region unlocked for move/vertex editing (double-click)
   hoverNid: null,         // hovered node id
   guideDraft: null,       // { dir, pos } while pulling a new elevation guide
   addingLeaderToId: null, // label id awaiting a leader-tip click
@@ -50,6 +51,7 @@ export const useInteractionStore = create((set) => ({
   setRotatingFurniture: vou(set, "rotatingFurniture"),
   setFurnitureResize: vou(set, "furnitureResize"),
   setCalibrationLine: vou(set, "calibrationLine"),
+  setFloorEditId: vou(set, "floorEditId"),
   setHoverNid: vou(set, "hoverNid"),
   setGuideDraft: vou(set, "guideDraft"),
   setAddingLeaderToId: vou(set, "addingLeaderToId"),

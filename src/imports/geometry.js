@@ -2,6 +2,7 @@
 // Pure (no React/three/DOM). Extracted from the main components so the subtle bits —
 // wall mitering, alignment guides, the room-boundary face trace — can be unit-tested.
 import { isWallOffsetComponent, wallDeviceOffsetPx } from "../constants/specs";
+import { pointInPoly, polyInteriorPoint } from "./model";
 
 // Pick a bidirectional resize cursor based on a segment's angle.
 export const wallResizeCursor = (x1, y1, x2, y2) => {
@@ -438,6 +439,43 @@ export function junctionCapPolys(entries, { prox = 6 } = {}) {
   return out;
 }
 
+// ─── Nested floors ───────────────────────────────────────────────────────────
+// A room drawn inside another room yields a floor lying wholly within a bigger one, and
+// painting both leaves two hatches stacked — the inner room reads as sitting ON the outer
+// one rather than being carved out of it. Its true extent is its ring MINUS the floors
+// nested in it, and that is DERIVED here from the current floor set rather than stored:
+// a hole then appears, moves and closes on its own as the inner room is added, resized or
+// deleted, with nothing to keep in sync and no schema change.
+//
+// Returns Map<parentId, holeRings[]> holding each floor's IMMEDIATE children only.
+// Immediate matters at three levels of nesting: with every descendant listed, the innermost
+// region would be knocked out of the grandparent AND the parent — subtracted twice from the
+// area, and flipped back to filled by the even-odd rule that draws these. With immediate
+// children, each ring is subtracted exactly once, by the one floor that directly contains it.
+export function nestedFloorHoles(polys) {
+  const items = [];
+  for (const p of polys || []) {
+    if (!(p?.points?.length >= 3)) continue;
+    const inner = polyInteriorPoint(p.points);
+    if (inner) items.push({ id: p.id, points: p.points, area: Math.abs(signedArea(p.points)), inner });
+  }
+  const holes = new Map();
+  for (const child of items) {
+    // Strictly larger, so two floors with identical outlines never hole each other — one
+    // sits on top of the other, which is a duplicate, not a nesting.
+    let parent = null;
+    for (const cand of items) {
+      if (cand === child || cand.area <= child.area) continue;
+      if (!pointInPoly(child.inner.x, child.inner.y, cand.points)) continue;
+      if (!parent || cand.area < parent.area) parent = cand;   // smallest container = immediate
+    }
+    if (!parent) continue;
+    const list = holes.get(parent.id);
+    if (list) list.push(child.points); else holes.set(parent.id, [child.points]);
+  }
+  return holes;
+}
+
 // ─── Clear-inside floor outline ──────────────────────────────────────────────
 // Inset a floor polygon (points on wall CENTERLINES, e.g. the rect-room auto floor)
 // to the clear inside-face outline: each edge that has a wall running along it moves
@@ -446,7 +484,11 @@ export function junctionCapPolys(entries, { prox = 6 } = {}) {
 // tape measure would find between finished wall faces.
 // halfTOf(wall) → half-thickness in px (kind/pony-aware; supplied by the caller so
 // this stays free of theme/scale constants). Returns a NEW points array.
-export function insetFloorPolygon(points, walls, nodes, halfTOf, tol = 1.5) {
+// `outward` offsets the other way instead — used for a HOLE ring (a room nested inside
+// this one): its walls eat into the surrounding room, so the carve-out a tape measure
+// finds is the nested room's centerline grown by those walls, not shrunk by them. The
+// winding normalization above is exactly why passing a reversed ring can't do this.
+export function insetFloorPolygon(points, walls, nodes, halfTOf, tol = 1.5, outward = false) {
   const n = points?.length || 0;
   if (n < 3) return points || [];
   const nodeMap = new Map((nodes || []).map(nd => [nd.id, nd]));
@@ -454,7 +496,7 @@ export function insetFloorPolygon(points, walls, nodes, halfTOf, tol = 1.5) {
   // left normal (-dy,dx) faces inward (screen coords, y down); for a<0 it's flipped.
   let a = 0;
   for (let i = 0; i < n; i++) { const j = (i + 1) % n; a += points[i].x * points[j].y - points[j].x * points[i].y; }
-  const inSign = a > 0 ? 1 : -1;
+  const inSign = (a > 0 ? 1 : -1) * (outward ? -1 : 1);
 
   const edges = points.map((p, i) => {
     const q = points[(i + 1) % n];

@@ -3,7 +3,7 @@
 // verbatim. Geometry / interaction / selection state come from their stores; everything
 // else (helper callbacks, UI scalars, refs, tool config) arrives via `ctx`.
 import { useCallback, useMemo } from "react";
-import { uid, sn, dst, ptSeg, orthoSnap, pointInPoly, polyCentroid, furnitureInZone, splitWallAtNode, mergeNode, dedupeWalls, splitWallThroughNodes } from "./model";
+import { uid, sn, dst, ptSeg, orthoSnap, pointInPoly, polyArea, polyCentroid, furnitureInZone, splitWallAtNode, mergeNode, dedupeWalls, splitWallThroughNodes } from "./model";
 import { applySmartGuides, wallResizeCursor, wallSideSign, markerDrawPos, polyCarryStart, applyPolyCarry } from "./geometry";
 import { labelBounds } from "../utils/labels";
 import { SPEC_COMPONENTS, SNAP_R, PROX_DRAG_TYPES, isWallOffsetComponent } from "../constants/specs";
@@ -15,7 +15,7 @@ import { useLayersStore } from "../store/layersStore";
 
 export function useCanvasEvents(ctx) {
   const { nodes, setNodes, walls, setWalls, zones, setZones, furniture, setFurniture, markers, setMarkers, doors, setDoors, windows, setWindows, columns, setColumns, dims, setDims, labels, setLabels, revClouds, setRevClouds, flowPaths, setFlowPaths, floorRegions, setFloorRegions, guides, setGuides } = useGeometryStore();
-  const { drawChain, setDrawChain, drawRect, setDrawRect, drawDim, setDrawDim, drawPolyZone, setDrawPolyZone, drawRevCloud, setDrawRevCloud, drawFlowPath, setDrawFlowPath, drawFloorRegion, setDrawFloorRegion, drag, setDrag, resize, setResize, marquee, setMarquee, ghostPos, setGhostPos, rotatingMarker, setRotatingMarker, rotatingFurniture, setRotatingFurniture, furnitureResize, setFurnitureResize, calibrationLine, setCalibrationLine, hoverNid, setHoverNid, guideDraft, setGuideDraft, addingLeaderToId, setAddingLeaderToId, panning, setPanning, panSt, setPanSt, spaceHeld, setSpaceHeld } = useInteractionStore();
+  const { drawChain, setDrawChain, drawRect, setDrawRect, drawDim, setDrawDim, drawPolyZone, setDrawPolyZone, drawRevCloud, setDrawRevCloud, drawFlowPath, setDrawFlowPath, drawFloorRegion, setDrawFloorRegion, drag, setDrag, resize, setResize, marquee, setMarquee, ghostPos, setGhostPos, rotatingMarker, setRotatingMarker, rotatingFurniture, setRotatingFurniture, furnitureResize, setFurnitureResize, calibrationLine, setCalibrationLine, floorEditId, setFloorEditId, hoverNid, setHoverNid, guideDraft, setGuideDraft, addingLeaderToId, setAddingLeaderToId, panning, setPanning, panSt, setPanSt, spaceHeld, setSpaceHeld } = useInteractionStore();
   const { selectedId, setSelectedId, selType, setSelType, selectedIds, setSelectedIds } = useSelectionStore();
   const {
     activeComponentType, activeFurnitureType, activePhase, activeSpecLayer, activeZoneType, bgImage, bgOffset, canvasRotation, columnLabel, columnNotes, columnShape, columnSize, commitWallSegment, commitRectRoom, cvs, cvsContainer, doorFlipped, doorHingeRight, doorType, doorWidth, findDimSnap, findNear, findProxHover, floorMaterial, gn, htrackAngle, inToPx, isWallTool, lastCopyInfo, layerLocked, lightingIsNew, lightingType, markerFinish, markerLocked, markerNotes, markerVisible, mode, outletIsNew, outletType, phaseVisible, proxHover, pxPerFoot, resolveDimEndpoints, resolveLeaderTip, resolvePoints, resolvePos, s2c, setBgOffset, setCursorPos, setDimInput, setEditingLabelId, setEditingLabelText, setGuideScrub, setHoverGuideId, setLastCopyInfo, setProxHover, setSmartGuides, setT, setTool, setViewOff, setZoneEdge, snapGrid, snapGuide, snapLabelAnchor, snapToWall, themeMode, tool, viewOff, visibleFurniture, wallKind, wc, windowHeight, windowSill, windowType, windowWidth, zoneEdge, zoneLibrary, zoneNotes, zonePaintColor, zonePaintFinish, zoom,
@@ -178,12 +178,14 @@ export function useCanvasEvents(ctx) {
       }
     }
     // Floor region hit testing — checked last so everything above wins. Also a BUILD-only
-    // tool, so only selectable while building.
+    // tool, so only selectable while building. Vertex/edge handles need the floor UNLOCKED
+    // (double-clicked into edit mode), not merely selected — see the floorRegion onDown branch.
+    const editFloorId = useInteractionStore.getState().floorEditId;
+    let smallest = null, smallestArea = Infinity;
     for (let i = floorRegions.length - 1; i >= 0 && mode === "build" && !layerLocked("floorRegions"); i--) {
       const fr = floorRegions[i];
       if (!phaseVisible(fr.phase)) continue;
-      const isSel = selectedId === fr.id && selType === "floorRegion";
-      if (isSel) {
+      if (editFloorId === fr.id) {
         for (let vi = 0; vi < fr.points.length; vi++)
           if (dst(pos.x, pos.y, fr.points[vi].x, fr.points[vi].y) < SNAP_R)
             return { type: "floorRegion-vertex", id: fr.id, vertexIndex: vi };
@@ -193,9 +195,16 @@ export function useCanvasEvents(ctx) {
             return { type: "floorRegion-edge", id: fr.id, edgeIndex: ei };
         }
       }
-      if (fr.points.length >= 3 && pointInPoly(pos.x, pos.y, fr.points))
-        return { type: "floorRegion", id: fr.id };
+      // Rooms nest, so several floors can hold the same point. The SMALLEST one wins: it is
+      // the room actually clicked, and the bigger ones are carved out there anyway
+      // (nestedFloorHoles). Taking the first match would hand back whichever floor happened
+      // to sit later in the array.
+      if (fr.points.length >= 3 && pointInPoly(pos.x, pos.y, fr.points)) {
+        const a = Math.abs(polyArea(fr.points));
+        if (a < smallestArea) { smallest = fr; smallestArea = a; }
+      }
     }
+    if (smallest) return { type: "floorRegion", id: smallest.id };
     return null;
   }, [mode, nodes, walls, zones, furniture, visibleFurniture, markers, doors, windows, columns, dims, labels, revClouds, flowPaths, floorRegions, guides, zoom, pxPerFoot, wc, inToPx, resolvePos, resolvePoints, phaseVisible, resolveLeaderTip, resolveDimEndpoints, layerLocked, markerLocked, markerVisible]);
 
@@ -1019,8 +1028,14 @@ export function useCanvasEvents(ctx) {
           else if (hit.type === "floorRegion") {
             const fr = floorRegions.find(r => r.id === hit.id);
             if (fr) {
-              const c = polyCentroid(fr.points);
-              setDrag({ type: "floorRegion", id: hit.id, ox: pos.x - c.x, oy: pos.y - c.y, startX: c.x, startY: c.y, startPts: fr.points.map(p => ({ ...p })) });
+              // A placed floor fills its whole room, so it sits under almost every press in
+              // that room — a single click only SELECTS it (Room card). Moving it or editing
+              // its vertices needs a deliberate double-click to unlock first.
+              if (e.detail >= 2) setFloorEditId(hit.id);
+              if (e.detail >= 2 || floorEditId === hit.id) {
+                const c = polyCentroid(fr.points);
+                setDrag({ type: "floorRegion", id: hit.id, ox: pos.x - c.x, oy: pos.y - c.y, startX: c.x, startY: c.y, startPts: fr.points.map(p => ({ ...p })) });
+              }
             }
           }
         }
@@ -1038,7 +1053,7 @@ export function useCanvasEvents(ctx) {
       }
     }
   }, [tool, activeZoneType, activeSpecLayer, activeFurnitureType, s2c, findNear, findDimSnap, hitTest, walls, wc, zones, markers, furniture, doors, windows, columns, labels, revClouds, flowPaths, viewOff, drawChain, drawRect, commitWallSegment, floorMaterial, spaceHeld, doorWidth, windowWidth, columnSize, columnShape, snapToWall, snapGrid, activeComponentType, markerFinish, nodeCentroid, bgImage, bgOffset, gn, calibrationLine, drawDim, dims, nodes, pxPerFoot, zoneEdge, resolvePos, resolvePoints, activePhase, addingLeaderToId, snapLabelAnchor, drawRevCloud, drawFlowPath, floorRegions, drawFloorRegion, polyCentroid, resolveDimEndpoints,
-    columnLabel, columnNotes, doorFlipped, doorHingeRight, doorType, htrackAngle, isWallTool, lightingIsNew, lightingType, markerNotes, mode, outletIsNew, outletType, setCursorPos, setDimInput, setLastCopyInfo, setT, setTool, wallKind, windowHeight, windowSill, windowType, zoneLibrary, zoneNotes, zonePaintColor, zonePaintFinish, zoneFurnStart, polyCarry, commitRectRoom,]);
+    columnLabel, columnNotes, doorFlipped, doorHingeRight, doorType, htrackAngle, isWallTool, lightingIsNew, lightingType, markerNotes, mode, outletIsNew, outletType, setCursorPos, setDimInput, setLastCopyInfo, setT, setTool, wallKind, windowHeight, windowSill, windowType, zoneLibrary, zoneNotes, zonePaintColor, zonePaintFinish, zoneFurnStart, polyCarry, commitRectRoom, floorEditId, setFloorEditId,]);
 
   const onMove = useCallback((e) => {
     if (panning && panSt) {

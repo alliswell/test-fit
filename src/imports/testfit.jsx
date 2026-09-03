@@ -5,7 +5,7 @@ import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "../app
 // Lazy-loaded so three.js / r3f / drei (a large bundle) only download when a 3D pane is shown.
 const TestFit3D = lazy(() => import("./testfit3d"));
 import { uid, sn, dst, ptSeg, polyArea, polyCentroid, pointInPoly, polyInteriorPoint, orthoSnap, isLightComponent, parseDimInput, migrateProjectData, PROJECT_VERSION, AUTOSAVE_KEY, dedupeWalls, splitWallThroughNodes, splitWallAtNode, weldWallCrossings } from "./model";
-import { wallResizeCursor, applySmartGuides, lineInt, revCloudPath, insetFloorPolygon, computeWallFootprints, junctionCapPolys, traceOuterBoundary, markerDrawPos, wallSideSign, polyCarryStart, applyPolyCarry, contentBounds, centerViewOn, gridStepFeet, traceRoomLoops } from "./geometry";
+import { wallResizeCursor, applySmartGuides, lineInt, revCloudPath, insetFloorPolygon, computeWallFootprints, junctionCapPolys, traceOuterBoundary, markerDrawPos, wallSideSign, polyCarryStart, applyPolyCarry, contentBounds, centerViewOn, gridStepFeet, traceRoomLoops, nestedFloorHoles } from "./geometry";
 import { defaultMountHeightIn } from "./markerMount";
 import { Toaster, toast } from "sonner";
 import ShortcutSheet from "../components/ShortcutSheet";
@@ -77,6 +77,7 @@ export default function TestfitTool() {
     drag, setDrag, resize, setResize, marquee, setMarquee, ghostPos, setGhostPos,
     rotatingMarker, setRotatingMarker, rotatingFurniture, setRotatingFurniture, furnitureResize, setFurnitureResize, calibrationLine, setCalibrationLine, hoverNid, setHoverNid,
     guideDraft, setGuideDraft, addingLeaderToId, setAddingLeaderToId,
+    floorEditId, setFloorEditId,
     panning, setPanning, panSt, setPanSt, spaceHeld, setSpaceHeld,
   } = useInteractionStore();
   // Docs stage: slide deck + sheet settings (project-level artifact, like snapshots).
@@ -642,23 +643,20 @@ export default function TestfitTool() {
     reader.readAsText(file);
   }, [applyProjectData]);
 
+  // A new project is just an empty one loaded, so it goes through the SAME hydrator as file
+  // import and autosave restore. It used to re-list every collection by hand, and that list
+  // drifted: furniture and columns were never added to it, so New left them standing on the
+  // canvas and read as doing nothing. Anything stored in the model belongs in
+  // applyProjectData; only genuinely non-model state (view, tools, phases) is reset here.
   const newProject = useCallback(() => {
-    knownRoomsRef.current = null;
-    setProjectName("New Club"); setNodes([]); setWalls([]); setZones([]);
-    setMarkers([]); setDoors([]); setWindows([]); setDims([]); setLabels([]); setRevClouds([]); setFlowPaths([]); setFloorRegions([]); setFloorMaterial("Wood");
-    setElevAnnotations({}); setPanes([{ view: "plan" }]); setLockedLayers({});
-    setBgImage(null); setBgOpacity(0.35); setBgScale(1); setBgOffset({ x: 0, y: 0 });
-    setPxPerFoot(20); setShowDims(true); setShowGrid(true);
-    setSelectedId(null); setSelType(null); setDrawChain(null); setDrawPolyZone(null); setCursorPos(null);
-    setViewOff({ x: 0, y: 0 }); setZoom(1);
-    historyRef.current = []; historyIdxRef.current = -1;
-    setCanUndo(false); setCanRedo(false);
+    applyProjectData({ ...migrateProjectData({}), projectName: "New Club" }, true);
     setZoneLibrary(ZONE_LIBRARY_DEFAULTS);
     localStorage.removeItem("testfit-zone-library");
     localStorage.removeItem(AUTOSAVE_KEY);
-    setPhases(DEFAULT_PHASES); setActivePhase("existing"); setSnapshots([]); setActiveSnapshotId(null);
-    setSlides([]); setDocSettings({ ...DEFAULT_DOC_SETTINGS }); setActiveSlideId(null);
-  }, []);
+    setSelectedIds([]); setDrawChain(null); setDrawPolyZone(null); setCursorPos(null);
+    setViewOff({ x: 0, y: 0 }); setZoom(1); setShowGrid(true);
+    setPhases(DEFAULT_PHASES); setActivePhase("existing");
+  }, [applyProjectData]);
 
   // ── Mono drawing tiers ──────────────────────────────────────────────────
   // Which walls sit on the outer envelope: in the mono PLAN profile those are T1
@@ -745,10 +743,28 @@ export default function TestfitTool() {
   // slightly overstates usable floor. Inset each walled edge by that wall's half-thickness
   // (kind/pony-aware — same formula the wall renderer uses) and measure what's left.
   const wallHalfT = useCallback((w) => (((w.kind === "pony" ? (w.ponyDepth || 6) : (wallKinds[w.kind || "existing"]?.thickness || 5)) / 12) * pxPerFoot) / 2, [wallKinds, pxPerFoot]);
-  const clearInsideSf = useCallback((pts) => {
+  // Rooms nested inside other rooms: each floor's ring minus the floors carved out of it.
+  // Derived, never stored — see nestedFloorHoles. One memo feeds the plan render, both sf
+  // readouts and the 3D floor meshes, so they can't disagree about where a floor stops.
+  const floorHoles = useMemo(() => nestedFloorHoles(floorRegions.filter(f => phaseVisible(f.phase))),
+    [floorRegions, phaseVisible]);
+  // Each visible floor's outline as one path, its nested rooms appended as extra subpaths
+  // (fillRule evenodd knocks them out). Built once because two things must agree exactly on
+  // where a floor stops: the hatch, and the mask that hides the grid underneath it.
+  const floorPaths = useMemo(() => {
+    const ring = (pts) => "M " + pts.map(p => `${p.x},${p.y}`).join(" L ") + " Z";
+    return new Map(floorRegions
+      .filter(f => f.points?.length >= 3 && phaseVisible(f.phase))
+      .map(f => [f.id, ring(f.points) + (floorHoles.get(f.id) || []).map(h => " " + ring(h)).join("")]));
+  }, [floorRegions, floorHoles, phaseVisible]);
+  const clearInsideSf = useCallback((pts, holes) => {
     if (!pts || pts.length < 3) return null;
     const inset = insetFloorPolygon(pts, walls, nodes, wallHalfT);
-    return Math.round(polyArea(inset) / (pxPerFoot * pxPerFoot));
+    // A nested room is carved out at its OUTSIDE face: its walls stand in this room, so
+    // they come off this room's clear area too — hence the outward offset.
+    const cut = (holes || []).reduce((s, h) =>
+      s + polyArea(insetFloorPolygon(h, walls, nodes, wallHalfT, 1.5, true)), 0);
+    return Math.round((polyArea(inset) - cut) / (pxPerFoot * pxPerFoot));
   }, [walls, nodes, wallHalfT, pxPerFoot]);
 
   // gn: resolve node position, applying per-phase override if the wall has one
@@ -1022,11 +1038,18 @@ export default function TestfitTool() {
     const fresh = rooms.filter(r => !prev.keys.has(keyOf(r)));
     if (!fresh.length) return;
     setFloorRegions(p => {
-      // Skip any room that some floor already covers — the rect tool lays its own floor down,
-      // and undo/redo restores floors alongside the walls that re-close their rooms.
+      // Skip any room that already has a floor of its OWN — the rect tool lays one down as it
+      // draws, and undo/redo restores floors alongside the walls that re-close their rooms.
+      // Covering the room's interior point isn't enough to qualify: a room built inside
+      // another room sits under the outer room's floor, and a bare containment test denied it
+      // a floor entirely. A floor can never extend past the walls of the room it belongs to,
+      // so one bigger than the room is somebody else's — the area bound is what says so.
       const add = fresh.filter(r => {
         const c = polyInteriorPoint(r.points);
-        return c && !p.some(fr => fr.points?.length >= 3 && pointInPoly(c.x, c.y, fr.points));
+        if (!c) return false;
+        const roomArea = polyArea(r.points) * 1.05;   // slack for hand-drawn / inset floors
+        return !p.some(fr => fr.points?.length >= 3 && polyArea(fr.points) <= roomArea
+          && pointInPoly(c.x, c.y, fr.points));
       }).map(r => ({ id: uid(), points: r.points, material: floorMaterial || "Wood", label: "", phase: activePhase }));
       return add.length ? [...p, ...add] : p;   // same ref when nothing's added — no wasted render
     });
@@ -1171,6 +1194,14 @@ export default function TestfitTool() {
   const selFlowPath = useMemo(() => selType === "flowPath" ? flowPaths.find(r => r.id === selectedId) : null, [selType, selectedId, flowPaths]);
   const selFloorRegion = useMemo(() => selType === "floorRegion" ? floorRegions.find(r => r.id === selectedId) : null, [selType, selectedId, floorRegions]);
   const updFloorRegion = (u) => setFloorRegions(p => p.map(r => r.id === selectedId ? { ...r, ...u } : r));
+  // Edit mode is unlocked per-floor by a double-click and relocks the moment that floor
+  // stops being the selection. Deriving it from selection rather than clearing it at each
+  // exit (Esc, delete, undo, another object, leaving Build) means every one of those paths
+  // relocks for free — a floor left silently draggable is the bug this whole gate prevents.
+  useEffect(() => {
+    if (floorEditId && !(mode === "build" && selType === "floorRegion" && selectedId === floorEditId))
+      setFloorEditId(null);
+  }, [floorEditId, mode, selType, selectedId, setFloorEditId]);
   const updFlowPath = (u) => setFlowPaths(p => p.map(r => r.id === selectedId ? { ...r, ...u } : r));
 
   // A room's floor and its zone are linked POSITIONALLY — same outline, no stored id —
@@ -3078,6 +3109,10 @@ export default function TestfitTool() {
     // only; the surrounding app chrome keeps the outer `T`.
     const T = interactive ? outerT : docsSheetT;
     const wallKinds = interactive ? outerWallKinds : docsSheetWallKinds;
+    // A floor is a finished surface, not a transparency — the grid belongs to the empty
+    // paper around it, so it's masked out wherever a floor is drawn. Hiding the Floors layer
+    // brings the grid straight back, since the mask is built from what actually renders.
+    const gridMasked = showGrid && visibleFloorRegions && floorPaths.size > 0;
     return (
           <svg ref={interactive ? cvs : undefined} data-testid={interactive ? "plan-canvas" : "docs-slide-canvas"}
             width={interactive ? "100%" : width} height={interactive ? "100%" : height}
@@ -3199,8 +3234,36 @@ export default function TestfitTool() {
                 // own 1'-pitch indices — same as startI/startJ except when gridStep coarsens.
                 const subI = Math.floor(minX / pxPerFoot), subJ = Math.floor(minY / pxPerFoot);
                 const subEndI = Math.ceil(maxX / pxPerFoot), subEndJ = Math.ceil(maxY / pxPerFoot);
+                // Mask extent, padded a full step: the lines round OUTWARD off startI/endI, so
+                // they overrun minX..maxX by up to one step and a mask cut to the nominal
+                // bounds shaves a strip of grid off the right and bottom edges.
+                const mPad = stepPx;
+                const mx = minX - mPad, my = minY - mPad;
+                const mw = (maxX - minX) + mPad * 2, mh = (maxY - minY) + mPad * 2;
+                // Keyed by the very numbers that define it, so an identical canvas shares the
+                // mask and a differently-framed one gets its own.
+                const gridMaskId = "grid-floor-mask-" +
+                  [mx, my, mw, mh].map(Math.round).join("_").replace(/-/g, "n");
 
                 return <>
+                  {/* x/y/width/height are REQUIRED here, not optional tidiness: a mask region
+                      defaults to -10%,-10%,120%,120%, and under maskUnits="userSpaceOnUse"
+                      those percentages resolve against the SVG viewport but apply in the
+                      ZOOMED model space this group lives in. Pan past that window and the
+                      grid falls outside the region, where a mask reads as zero — so the grid
+                      vanished from most of the canvas instead of just under the floors.
+                      The id carries the extent because it varies per canvas (live pane, each
+                      Docs sheet, each printed page) while the floor paths are global: same
+                      extent means an identical mask that's safe to share, and a different one
+                      can't collide. A single fixed id would let whichever copy the document
+                      holds first govern canvases framed differently. */}
+                  {gridMasked && (
+                    <mask id={gridMaskId} maskUnits="userSpaceOnUse" x={mx} y={my} width={mw} height={mh}>
+                      <rect x={mx} y={my} width={mw} height={mh} fill="#fff" />
+                      {[...floorPaths].map(([id, d]) => <path key={id} d={d} fillRule="evenodd" fill="#000" />)}
+                    </mask>
+                  )}
+                  <g data-testid="plan-grid" mask={gridMasked ? `url(#${gridMaskId})` : undefined}>
                   {/* Base grid lines, `gridStep` feet apart */}
                   <g data-testid="plan-grid-base" data-grid-step={gridStep} opacity={0.25}>
                     {Array.from({ length: endI - startI + 1 }, (_, i) => {
@@ -3248,27 +3311,33 @@ export default function TestfitTool() {
                         stroke={T.gridSub} strokeWidth={0.25} />;
                     })}
                   </g>}
+                  </g>
                 </>;
               })()}
               {bgImage && <image href={bgImage} x={bgOffset.x} y={bgOffset.y} style={{ opacity: bgOpacity, transform: `scale(${bgScale})`, transformOrigin: `${bgOffset.x}px ${bgOffset.y}px` }} preserveAspectRatio="xMidYMid meet" />}
 
               {/* Floor regions — hatch fill, above bg image / below walls */}
               {visibleFloorRegions && floorRegions.map(fr => {
-                if (!phaseVisible(fr.phase)) return null;
-                if (!fr.points || fr.points.length < 3) return null;
+                // Same path the grid mask is cut from — a floor and the hole it punches in
+                // the grid have to be the same shape, or the grid shows in the seam.
+                const d = floorPaths.get(fr.id);
+                if (!d) return null;
                 const sel = (selectedId === fr.id && selType === "floorRegion") || selectedIds.includes(fr.id);
-                const d = "M " + fr.points.map(p => `${p.x},${p.y}`).join(" L ") + " Z";
+                // Handles appear only once the floor is UNLOCKED by a double-click. Selected-
+                // but-locked still reads as selected (dashed outline + Room card) — it just
+                // can't be dragged, which is the whole point of the gate.
+                const editing = floorEditId === fr.id;
                 const hatchId = FLOOR_MATERIAL_HATCHES[fr.material] || FLOOR_MATERIAL_HATCHES.Wood;
                 const c = polyCentroid(fr.points);
-                return <g key={fr.id} style={{ cursor: tool === "select" ? "pointer" : "inherit", pointerEvents: (layerLocked("floorRegions") || mode !== "build") ? "none" : undefined }}
+                return <g key={fr.id} style={{ cursor: tool !== "select" ? "inherit" : editing ? "move" : "pointer", pointerEvents: (layerLocked("floorRegions") || mode !== "build") ? "none" : undefined }}
                   onClick={() => { if (tool === "select") { setSelectedId(fr.id); setSelType("floorRegion"); setSelectedIds([fr.id]); } }}>
-                  <path d={d} fill={`url(#${hatchId})`} stroke={sel ? T.accent : "transparent"} strokeWidth={sel ? 1.5 : 0} strokeDasharray={sel ? "4 3" : "none"} />
-                  {sel && fr.points.map((a, ei) => {
+                  <path data-testid={"floor-path-" + fr.id} d={d} fillRule="evenodd" fill={`url(#${hatchId})`} stroke={sel ? T.accent : "transparent"} strokeWidth={sel ? 1.5 : 0} strokeDasharray={editing ? "none" : sel ? "4 3" : "none"} />
+                  {editing && fr.points.map((a, ei) => {
                     const b = fr.points[(ei + 1) % fr.points.length];
                     return <line key={"e" + ei} x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke="transparent" strokeWidth={10} strokeLinecap="round" style={{ cursor: wallResizeCursor(a.x, a.y, b.x, b.y) }} />;
                   })}
                   {fr.label && <text x={c.x} y={c.y} textAnchor="middle" dominantBaseline="middle" fontSize={11} fill={T.textMuted} fontFamily="inherit" style={{ pointerEvents: "none" }}>{fr.label}</text>}
-                  {sel && fr.points.map((p, i) => <circle key={i} cx={p.x} cy={p.y} r={5} fill={T.accent} stroke={T.nodeFill} strokeWidth={1.5} style={{ cursor: "move" }} />)}
+                  {editing && fr.points.map((p, i) => <circle key={i} cx={p.x} cy={p.y} r={5} fill={T.accent} stroke={T.nodeFill} strokeWidth={1.5} style={{ cursor: "move" }} />)}
                 </g>;
               })}
               {/* Floor region ghost while drawing */}
@@ -5364,13 +5433,33 @@ export default function TestfitTool() {
             </>}
             {selectedIds.length <= 1 && selFloorRegion && (() => {
               const FR_COLORS = { "Wood": "#C8A878", "Concrete": "#AEABA4", "Vinyl": "#BFA889", "Carpet": "#786758" };
-              const frSf = selFloorRegion.points?.length >= 3 ? Math.round(polyArea(selFloorRegion.points) / (pxPerFoot * pxPerFoot)) : 0;
-              const frClearSf = clearInsideSf(selFloorRegion.points);
+              // A room built inside this one is carved out of it, so it can't be counted here
+              // either — the sf has to agree with the hatch the canvas actually paints.
+              const frCarved = floorHoles.get(selFloorRegion.id);
+              const frSf = selFloorRegion.points?.length >= 3
+                ? Math.round((polyArea(selFloorRegion.points)
+                    - (frCarved || []).reduce((s, h) => s + polyArea(h), 0)) / (pxPerFoot * pxPerFoot))
+                : 0;
+              const frClearSf = clearInsideSf(selFloorRegion.points, frCarved);
               const zHex = zoneForFloor ? zoneLibrary[zoneForFloor.type]?.color : null;
               return <>
                 <div data-testid="room-title" style={{ fontSize: 12, color: T.textBright, marginBottom: 10, fontWeight: 600 }}>
                   Room · {frSf.toLocaleString()} sf
                 </div>
+                {/* The floor is inert until double-clicked. Say so, and offer a click-path
+                    to the same state — the gesture alone isn't discoverable. */}
+                <button data-testid="room-shape-lock"
+                  onClick={() => setFloorEditId(floorEditId === selFloorRegion.id ? null : selFloorRegion.id)}
+                  style={{ width: "100%", display: "flex", alignItems: "center", gap: 6, marginBottom: 10, padding: "6px 9px",
+                    background: floorEditId === selFloorRegion.id ? T.accent + "20" : T.bg2,
+                    border: "1px solid " + (floorEditId === selFloorRegion.id ? T.accent : T.border), borderRadius: 5,
+                    cursor: "pointer", fontFamily: "inherit", fontSize: 10, textAlign: "left",
+                    color: floorEditId === selFloorRegion.id ? T.textBright : T.textMuted }}>
+                  <span style={{ fontSize: 11 }}>{floorEditId === selFloorRegion.id ? "◇" : "🔒"}</span>
+                  {floorEditId === selFloorRegion.id
+                    ? "Editing shape — click elsewhere to lock"
+                    : "Locked in place — double-click the floor to move or reshape"}
+                </button>
                 <div style={{ marginBottom: 10, padding: "6px 9px", background: T.bg2, borderRadius: 5 }}>
                   <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between" }}>
                     <span style={{ fontSize: 10, color: T.textMuted }}>Area (to wall centerline)</span>

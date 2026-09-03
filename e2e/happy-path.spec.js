@@ -1843,6 +1843,249 @@ test("alt-drag duplicating a room leaves the original's floor behind", async ({ 
   expect(after.floorRegions.find(f => f.id === "f1").points).toEqual(before.floorRegions[0].points);
 });
 
+// ── A room inside a room keeps its own floor ──────────────────────────────────
+// Two floors used to sit stacked: the outer one spans the inner room, so its hatch showed
+// through underneath and its sf counted a room it doesn't own.
+const NESTED = {
+  version: "testfit-v17", pxPerFoot: 20, projectName: "Nested",
+  nodes: [{ id: "a", x: 160, y: 140 }, { id: "b", x: 660, y: 140 },
+          { id: "c", x: 660, y: 520 }, { id: "d", x: 160, y: 520 },
+          { id: "e", x: 300, y: 240 }, { id: "f", x: 500, y: 240 },
+          { id: "g", x: 500, y: 400 }, { id: "h", x: 300, y: 400 }],
+  walls: [{ id: "w1", n1: "a", n2: "b", kind: "existing" }, { id: "w2", n1: "b", n2: "c", kind: "existing" },
+          { id: "w3", n1: "c", n2: "d", kind: "existing" }, { id: "w4", n1: "d", n2: "a", kind: "existing" },
+          { id: "w5", n1: "e", n2: "f", kind: "new" }, { id: "w6", n1: "f", n2: "g", kind: "new" },
+          { id: "w7", n1: "g", n2: "h", kind: "new" }, { id: "w8", n1: "h", n2: "e", kind: "new" }],
+  // Inner floor FIRST, so "smallest wins" is doing the work and not array order.
+  floorRegions: [
+    { id: "inner", material: "Carpet", label: "", phase: "existing",
+      points: [{ x: 300, y: 240 }, { x: 500, y: 240 }, { x: 500, y: 400 }, { x: 300, y: 400 }] },
+    { id: "outer", material: "Wood", label: "", phase: "existing",
+      points: [{ x: 160, y: 140 }, { x: 660, y: 140 }, { x: 660, y: 520 }, { x: 160, y: 520 }] }],
+};
+
+test("the outer room's floor is carved out where the inner room sits", async ({ page }) => {
+  await page.addInitScript((s) => localStorage.setItem("testfit-autosave", JSON.stringify(s)), NESTED);
+  await page.goto("/");
+  // The outer floor draws as two subpaths — its ring plus the inner room knocked out by
+  // fillRule evenodd. The inner floor is a plain ring; nothing is nested in it.
+  const d = await page.getByTestId("floor-path-outer").getAttribute("d");
+  expect(d.match(/M /g)).toHaveLength(2);
+  expect(d).toContain("300,240");                       // the inner room's own corner
+  expect(await page.getByTestId("floor-path-outer").getAttribute("fill-rule")).toBe("evenodd");
+  expect((await page.getByTestId("floor-path-inner").getAttribute("d")).match(/M /g)).toHaveLength(1);
+});
+
+test("each room reports only its own area, carve-out excluded", async ({ page }) => {
+  await page.addInitScript((s) => localStorage.setItem("testfit-autosave", JSON.stringify(s)), NESTED);
+  await page.goto("/");
+  const box = await page.getByTestId("plan-canvas").boundingBox();
+
+  await page.mouse.click(box.x + 220, box.y + 480);     // outer room, clear of the inner one
+  // 25' × 19' = 475 centerline, less the 10' × 8' room inside it.
+  await expect(page.getByTestId("room-title")).toHaveText("Room · 395 sf");
+
+  await page.mouse.click(box.x + 400, box.y + 320);     // inside the inner room
+  await expect(page.getByTestId("room-title")).toHaveText("Room · 80 sf");
+});
+
+test("clicking inside the inner room selects the inner floor, not the room around it", async ({ page }) => {
+  // Both floors contain the point, and the OUTER one is stored last — first-match-wins
+  // handed back the wrong room.
+  await page.addInitScript((s) => localStorage.setItem("testfit-autosave", JSON.stringify(s)), NESTED);
+  await page.goto("/");
+  const box = await page.getByTestId("plan-canvas").boundingBox();
+  await page.mouse.click(box.x + 400, box.y + 320);
+  await page.getByTestId("room-floor-Vinyl").click();
+  await expect.poll(async () =>
+    (await readModel(page)).floorRegions.find(f => f.id === "inner").material).toBe("Vinyl");
+  expect((await readModel(page)).floorRegions.find(f => f.id === "outer").material).toBe("Wood");
+});
+
+test("enclosing a room inside an already-floored room still gives it a floor", async ({ page }) => {
+  // The outer room's floor covers the new room's interior point, which used to read as
+  // "already floored" and denied the inner room a floor of its own.
+  await page.addInitScript((s) => localStorage.setItem("testfit-autosave", JSON.stringify({
+    ...s, walls: s.walls.filter(w => w.id !== "w8"),          // inner room one wall short
+    floorRegions: s.floorRegions.filter(f => f.id === "outer"),
+  })), NESTED);
+  await page.goto("/");
+  const box = await page.getByTestId("plan-canvas").boundingBox();
+  expect((await readModel(page)).floorRegions).toHaveLength(1);
+
+  await page.keyboard.press("w");
+  await page.mouse.click(box.x + 300, box.y + 400);           // h → e closes the inner room
+  await page.mouse.dblclick(box.x + 300, box.y + 240);
+
+  await expect.poll(async () => (await readModel(page)).floorRegions.length).toBe(2);
+  const added = (await readModel(page)).floorRegions.find(f => f.id !== "outer");
+  expect(sortPts(added.points)).toEqual(sortPts([{ x: 300, y: 240 }, { x: 500, y: 240 },
+                                                 { x: 500, y: 400 }, { x: 300, y: 400 }]));
+});
+
+// ── The grid stops at the floor ───────────────────────────────────────────────
+// Resolve the mask a grid group actually points at. The id carries the canvas extent, so
+// it's never a constant.
+const gridMaskOf = async (page) => {
+  const ref = await page.getByTestId("plan-grid").getAttribute("mask");
+  expect(ref).toMatch(/^url\(#grid-floor-mask-/);
+  return ref.slice(5, -1);
+};
+// Does the mask cover the grid it masks — both its REGION and its white field? A mask reads
+// as zero outside its region, so anything the region misses is grid that silently vanishes.
+const maskCoversGrid = (page, maskId) => page.evaluate((id) => {
+  const m = document.getElementById(id);
+  const b = document.querySelector('[data-testid="plan-grid"]').getBBox();
+  const n = (el, a) => Number(el.getAttribute(a));
+  const fits = (el) => n(el, "x") <= b.x && n(el, "y") <= b.y
+    && n(el, "x") + n(el, "width") >= b.x + b.width
+    && n(el, "y") + n(el, "height") >= b.y + b.height;
+  return { region: fits(m), field: fits(m.querySelector("rect")) };
+}, maskId);
+
+test("the grid is masked out under a floor, and comes back when Floors is hidden", async ({ page }) => {
+  await page.addInitScript((s) => localStorage.setItem("testfit-autosave", JSON.stringify(s)), NESTED);
+  await page.goto("/");
+  const maskId = await gridMaskOf(page);
+
+  // The mask must be cut from exactly the floors that render — same path strings, holes and
+  // all. A mask that merely approximates the floor leaves the grid showing along the seam.
+  const cut = await page.locator(`mask[id="${maskId}"] path`).evaluateAll(ns => ns.map(n => n.getAttribute("d")));
+  const drawn = await Promise.all(["outer", "inner"].map(id =>
+    page.getByTestId("floor-path-" + id).getAttribute("d")));
+  expect(cut.sort()).toEqual(drawn.sort());
+  // …over a white field, or the mask would hide the grid instead of revealing it.
+  expect(await page.locator(`mask[id="${maskId}"] rect`).getAttribute("fill")).toBe("#fff");
+  expect(await maskCoversGrid(page, maskId)).toEqual({ region: true, field: true });
+
+  await page.getByTestId("plan-layer-row-floorRegions").locator("svg.lucide-eye").click();
+  await expect(page.getByTestId("floor-path-outer")).toHaveCount(0);
+  await expect(page.getByTestId("plan-grid")).not.toHaveAttribute("mask", /.*/);
+});
+
+test("the grid survives panning away from the plan", async ({ page }) => {
+  // The mask REGION defaults to -10%,-10%,120%,120%, and under userSpaceOnUse those resolve
+  // against the viewport but apply in zoomed model space — so panning past that window used
+  // to drop the grid across most of the canvas, floor or no floor.
+  await page.addInitScript((s) => localStorage.setItem("testfit-autosave", JSON.stringify(s)), NESTED);
+  await page.goto("/");
+  const box = await page.getByTestId("plan-canvas").boundingBox();
+  await page.keyboard.down("Space");
+  await page.mouse.move(box.x + 800, box.y + 600);
+  await page.mouse.down();
+  await page.mouse.move(box.x + 100, box.y + 100, { steps: 12 });
+  await page.mouse.up();
+  await page.keyboard.up("Space");
+
+  expect(await maskCoversGrid(page, await gridMaskOf(page))).toEqual({ region: true, field: true });
+});
+
+test("a plan with no floors leaves the grid unmasked", async ({ page }) => {
+  await page.addInitScript((s) => localStorage.setItem("testfit-autosave",
+    JSON.stringify({ ...s, floorRegions: [] })), NESTED);
+  await page.goto("/");
+  await expect(page.getByTestId("plan-grid")).not.toHaveAttribute("mask", /.*/);
+});
+
+// ── New project ───────────────────────────────────────────────────────────────
+test("New clears everything the model holds, not just the collections it used to list", async ({ page }) => {
+  // New re-listed each collection by hand and the list drifted: furniture and columns were
+  // never added, so a "new" project opened with the old ones still on the canvas.
+  page.on("dialog", d => d.accept());
+  await page.addInitScript(() => localStorage.setItem("testfit-autosave", JSON.stringify({
+    version: "testfit-v17", pxPerFoot: 20, projectName: "Old Project",
+    nodes: [{ id: "a", x: 200, y: 200 }, { id: "b", x: 500, y: 200 },
+            { id: "c", x: 500, y: 450 }, { id: "d", x: 200, y: 450 }],
+    walls: [{ id: "w1", n1: "a", n2: "b", kind: "existing" }, { id: "w2", n1: "b", n2: "c", kind: "existing" },
+            { id: "w3", n1: "c", n2: "d", kind: "existing" }, { id: "w4", n1: "d", n2: "a", kind: "existing" }],
+    floorRegions: [{ id: "f1", material: "Wood", label: "", phase: "existing",
+      points: [{ x: 200, y: 200 }, { x: 500, y: 200 }, { x: 500, y: 450 }, { x: 200, y: 450 }] }],
+    furniture: [{ id: "fn1", type: "cafe_table", x: 300, y: 300, angle: 0, w: 3, d: 3, phase: "existing" }],
+    columns: [{ id: "col1", x: 600, y: 600, size: 12, shape: "square", phase: "existing" }],
+    guides: [{ id: "g1", dir: "front", pos: 300 }],
+    zones: [{ id: "z1", type: "cafe", points: [{ x: 220, y: 220 }, { x: 400, y: 220 }, { x: 400, y: 400 }, { x: 220, y: 400 }] }],
+    markers: [{ id: "mk1", type: "outlet", x: 250, y: 205, layer: "power", phase: "existing" }],
+  })));
+  await page.goto("/");
+  await expect.poll(async () => (await readModel(page)).furniture.length).toBe(1);
+
+  await page.getByRole("button", { name: "New", exact: true }).click();
+  await expect.poll(async () => (await readModel(page)).projectName).toBe("New Club");
+
+  const m = await readModel(page);
+  for (const k of ["nodes", "walls", "zones", "furniture", "markers", "doors", "windows",
+                   "columns", "dims", "labels", "revClouds", "flowPaths", "floorRegions", "guides"])
+    expect({ [k]: m[k] ?? [] }).toEqual({ [k]: [] });
+  await expect(page.getByTestId("floor-path-f1")).toHaveCount(0);
+});
+
+// ── A placed floor is inert until double-clicked ──────────────────────────────
+// A floor covers its entire room, so it sits under nearly every press inside that room.
+// A plain click-drag used to slide it straight out of register with the walls.
+test("dragging inside a room selects its floor but never moves it", async ({ page }) => {
+  await page.addInitScript((s) => localStorage.setItem("testfit-autosave", JSON.stringify({ ...s, projectName: "FloorLock" })), CARRY_ROOM);
+  await page.goto("/");
+  const box = await page.getByTestId("plan-canvas").boundingBox();
+  const before = await readModel(page);
+
+  await page.mouse.move(box.x + 300, box.y + 300);   // well inside the room, on the floor
+  await page.mouse.down();
+  await page.mouse.move(box.x + 380, box.y + 340, { steps: 10 });
+  await page.mouse.up();
+
+  // Selected (Room card is up) but the shape is locked, and nothing moved.
+  await expect(page.getByTestId("room-title")).toBeVisible();
+  await expect(page.getByTestId("room-shape-lock")).toContainText("Locked in place");
+  await page.waitForTimeout(900);
+  const after = await readModel(page);
+  expect(after.floorRegions[0].points).toEqual(before.floorRegions[0].points);
+  expect(after.nodes).toEqual(before.nodes);
+});
+
+test("double-clicking a floor unlocks it, and then it drags", async ({ page }) => {
+  await page.addInitScript((s) => localStorage.setItem("testfit-autosave", JSON.stringify({ ...s, projectName: "FloorUnlock" })), CARRY_ROOM);
+  await page.goto("/");
+  const box = await page.getByTestId("plan-canvas").boundingBox();
+  const before = await readModel(page);
+
+  await page.mouse.dblclick(box.x + 300, box.y + 300);
+  await expect(page.getByTestId("room-shape-lock")).toContainText("Editing shape");
+
+  await page.mouse.move(box.x + 300, box.y + 300);
+  await page.mouse.down();
+  await page.mouse.move(box.x + 380, box.y + 300, { steps: 10 });
+  await page.mouse.up();
+
+  await expect.poll(async () => (await readModel(page)).floorRegions[0].points[0].x).toBe(before.floorRegions[0].points[0].x + 80);
+  const after = await readModel(page);
+  after.floorRegions[0].points.forEach((p, i) => {
+    expect(p.x - before.floorRegions[0].points[i].x).toBe(80);
+    expect(p.y).toBe(before.floorRegions[0].points[i].y);
+  });
+  expect(after.nodes).toEqual(before.nodes);   // the walls stayed — only the floor moved
+});
+
+test("a floor relocks the moment it stops being the selection", async ({ page }) => {
+  await page.addInitScript((s) => localStorage.setItem("testfit-autosave", JSON.stringify({ ...s, projectName: "FloorRelock" })), CARRY_ROOM);
+  await page.goto("/");
+  const box = await page.getByTestId("plan-canvas").boundingBox();
+
+  await page.mouse.dblclick(box.x + 300, box.y + 300);
+  await expect(page.getByTestId("room-shape-lock")).toContainText("Editing shape");
+  await page.mouse.click(box.x + 750, box.y + 550);          // empty canvas → deselect
+  await expect(page.getByTestId("room-title")).toHaveCount(0);
+  const before = await readModel(page);
+
+  await page.mouse.move(box.x + 300, box.y + 300);           // back onto the floor
+  await page.mouse.down();
+  await page.mouse.move(box.x + 380, box.y + 300, { steps: 10 });
+  await page.mouse.up();
+
+  await expect(page.getByTestId("room-shape-lock")).toContainText("Locked in place");
+  await page.waitForTimeout(900);
+  expect((await readModel(page)).floorRegions[0].points).toEqual(before.floorRegions[0].points);
+});
+
 // ── Furnish-stage parity + selection-lifetime bugs ────────────────────────────
 const FURN_SEED = {
   version: "testfit-v17", pxPerFoot: 20,

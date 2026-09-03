@@ -649,3 +649,50 @@ test("print output stays Vellum (light) even when the app is in Dark mode", asyn
   });
   expect(bg).toBe("rgb(236, 228, 213)"); // Vellum canvas #ECE4D5
 });
+
+test("printing every slide at once can't cross the plan grid masks", async ({ page }) => {
+  // Printing renders each slide's sheet into the document alongside the on-screen one, so
+  // several plan canvases coexist. Each carries its own extent, so each needs its own mask —
+  // a single fixed id would let whichever copy came first govern the rest, clipping the grid
+  // on pages framed differently. The id encodes the extent, so sharing only happens when the
+  // masks are genuinely interchangeable.
+  await page.addInitScript(() => { window.print = () => {}; });
+  await page.addInitScript(() => localStorage.setItem("testfit-autosave", JSON.stringify({
+    version: "testfit-v17", pxPerFoot: 20, projectName: "MaskIds",
+    nodes: [{ id: "a", x: 200, y: 200 }, { id: "b", x: 500, y: 200 },
+            { id: "c", x: 500, y: 450 }, { id: "d", x: 200, y: 450 }],
+    walls: [{ id: "w1", n1: "a", n2: "b", kind: "existing" }, { id: "w2", n1: "b", n2: "c", kind: "existing" },
+            { id: "w3", n1: "c", n2: "d", kind: "existing" }, { id: "w4", n1: "d", n2: "a", kind: "existing" }],
+    floorRegions: [{ id: "f1", material: "Wood", label: "", phase: "existing",
+      points: [{ x: 200, y: 200 }, { x: 500, y: 200 }, { x: 500, y: 450 }, { x: 200, y: 450 }] }],
+  })));
+  await page.goto("/");
+  await page.getByTestId("save-to-docs-0").click();
+  await page.getByTestId("save-to-docs-0").click();
+  await page.keyboard.press("6");
+  await expect(page.getByTestId("deck-slide-1")).toBeVisible();
+  await page.getByTestId("print-deck").click();
+  await page.waitForTimeout(400);
+
+  const report = await page.evaluate(() => {
+    const grids = [...document.querySelectorAll('[data-testid="plan-grid"][mask]')];
+    const byId = new Map();
+    for (const m of document.querySelectorAll("mask[id^='grid-floor-mask-']")) {
+      const prev = byId.get(m.id);
+      if (prev !== undefined && prev !== m.outerHTML) return { conflict: m.id };
+      byId.set(m.id, m.outerHTML);
+    }
+    // Every masked grid resolves to a mask that actually contains it.
+    const short = grids.filter(g => {
+      const m = document.getElementById(g.getAttribute("mask").slice(5, -1));
+      if (!m) return true;
+      const b = g.getBBox(), n = (a) => Number(m.getAttribute(a));
+      return !(n("x") <= b.x && n("y") <= b.y
+        && n("x") + n("width") >= b.x + b.width && n("y") + n("height") >= b.y + b.height);
+    }).length;
+    return { grids: grids.length, conflict: null, short };
+  });
+  expect(report.grids).toBeGreaterThan(1);   // the sheet plus every printed page
+  expect(report.conflict).toBeNull();        // no id means two different masks
+  expect(report.short).toBe(0);              // and none of them clips its own grid
+});

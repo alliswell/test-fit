@@ -5,6 +5,7 @@ import {
   cutawayHiddenWalls, wallSideSign, markerDrawPos,
   polyCarryStart, applyPolyCarry, carryPolyWithNodes,
   contentBounds, fitTransform, viewportRect, centerViewOn, gridStepFeet, traceRoomLoops,
+  nestedFloorHoles,
 } from "./geometry";
 import { polyArea } from "./model";
 
@@ -142,6 +143,15 @@ describe("insetFloorPolygon — clear inside-face outline", () => {
     out.forEach((p, i) => { expect(p.x).toBeCloseTo(square[i].x, 6); expect(p.y).toBeCloseTo(square[i].y, 6); });
     const rev = [...square].reverse();
     expect(polyArea(insetFloorPolygon(rev, wallsAll, nodes, hOf))).toBeCloseTo((200 - 2 * halfT) ** 2, 1);
+  });
+
+  it("outward offsets the other way — a nested room's carve-out grows by its wall thickness", () => {
+    // The reversed-winding trick can't do this: inSign normalizes winding first (above).
+    const out = insetFloorPolygon(square, wallsAll, nodes, hOf, 1.5, true);
+    expect(polyArea(out)).toBeCloseTo((200 + 2 * halfT) ** 2, 1);
+    expect(out[0].x).toBeCloseTo(-halfT, 3);
+    expect(polyArea(insetFloorPolygon([...square].reverse(), wallsAll, nodes, hOf, 1.5, true)))
+      .toBeCloseTo((200 + 2 * halfT) ** 2, 1);
   });
 
   it("a wall split into collinear segments still insets its edge; missing nodes are skipped", () => {
@@ -697,5 +707,61 @@ describe("gridStepFeet — plan grid coarsens as you zoom out", () => {
   it("steps to 10' below 40% zoom", () => {
     expect(gridStepFeet(0.39)).toBe(10);
     expect(gridStepFeet(0.15)).toBe(10); // the canvas's minimum zoom
+  });
+});
+
+describe("nestedFloorHoles — a floor drawn inside another is carved out of it", () => {
+  const rect = (id, x1, y1, x2, y2) => ({ id, points: [{ x: x1, y: y1 }, { x: x2, y: y1 }, { x: x2, y: y2 }, { x: x1, y: y2 }] });
+
+  it("gives the outer floor the inner one as a hole, and the inner floor none", () => {
+    const h = nestedFloorHoles([rect("out", 0, 0, 400, 300), rect("in", 100, 100, 200, 200)]);
+    expect(h.get("out")).toHaveLength(1);
+    expect(h.get("out")[0]).toEqual(rect("in", 100, 100, 200, 200).points);
+    expect(h.has("in")).toBe(false);
+  });
+
+  it("doesn't care which order the floors are stored in", () => {
+    const a = nestedFloorHoles([rect("out", 0, 0, 400, 300), rect("in", 100, 100, 200, 200)]);
+    const b = nestedFloorHoles([rect("in", 100, 100, 200, 200), rect("out", 0, 0, 400, 300)]);
+    expect(b.get("out")).toEqual(a.get("out"));
+    expect(b.has("in")).toBe(false);
+  });
+
+  it("leaves side-by-side rooms alone", () => {
+    const h = nestedFloorHoles([rect("L", 0, 0, 100, 100), rect("R", 100, 0, 200, 100)]);
+    expect(h.size).toBe(0);
+  });
+
+  it("assigns three levels of nesting to the IMMEDIATE parent only", () => {
+    // Listing every descendant would subtract the core twice from the grandparent's area
+    // and flip it back to filled under the even-odd rule that draws these.
+    const h = nestedFloorHoles([
+      rect("big", 0, 0, 600, 600), rect("mid", 100, 100, 400, 400), rect("core", 150, 150, 250, 250)]);
+    expect(h.get("big").map(r => r[0])).toEqual([{ x: 100, y: 100 }]);   // mid only, never core
+    expect(h.get("mid").map(r => r[0])).toEqual([{ x: 150, y: 150 }]);
+    expect(h.has("core")).toBe(false);
+  });
+
+  it("carves out every sibling nested in the same room", () => {
+    const h = nestedFloorHoles([
+      rect("out", 0, 0, 600, 300), rect("a", 50, 50, 150, 150), rect("b", 300, 50, 400, 150)]);
+    expect(h.get("out")).toHaveLength(2);
+  });
+
+  it("holds an L-shaped room's nested floor, whose parent's centroid falls outside it", () => {
+    const L = { id: "L", points: [{ x: 0, y: 0 }, { x: 400, y: 0 }, { x: 400, y: 100 },
+                                  { x: 100, y: 100 }, { x: 100, y: 400 }, { x: 0, y: 400 }] };
+    const h = nestedFloorHoles([L, rect("in", 200, 20, 300, 80)]);
+    expect(h.get("L")).toHaveLength(1);
+  });
+
+  it("treats two floors with the same outline as duplicates, not a nesting", () => {
+    const h = nestedFloorHoles([rect("a", 0, 0, 100, 100), rect("b", 0, 0, 100, 100)]);
+    expect(h.size).toBe(0);
+  });
+
+  it("ignores degenerate rings", () => {
+    expect(nestedFloorHoles([{ id: "x", points: [{ x: 0, y: 0 }, { x: 1, y: 1 }] }, null]).size).toBe(0);
+    expect(nestedFloorHoles(undefined).size).toBe(0);
   });
 });

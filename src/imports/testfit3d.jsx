@@ -1,5 +1,5 @@
 import { useState, useMemo, useRef, useEffect, useCallback } from "react";
-import { traceOuterBoundary, computeWallFootprints, junctionCapPolys, cutawayHiddenWalls } from "./geometry";
+import { traceOuterBoundary, computeWallFootprints, junctionCapPolys, cutawayHiddenWalls, nestedFloorHoles } from "./geometry";
 import { footprintToLocal, buildWallSolidGeometry, buildCapSolidGeometry, solidEdgesGeometry, buildWallEdgeSegments } from "./wallGeo3d";
 import { DOOR_TYPE_STYLES } from "../constants/theme";
 import { DOOR_KNOB_HEIGHT_IN, FINISH_COLORS } from "../constants/specs";
@@ -1540,14 +1540,20 @@ function ZoneFloor({ zone, cx, cz, pxPerFoot, zoneLibrary, style3d = "clay" }) {
 
 // Build a flat ShapeGeometry from canvas-space points, with world-foot UVs so
 // a single texture tiles correctly across any room size.
-function buildFloorGeo(points, cx, cz, pxPerFoot, tile) {
+// `holes` are the rings of any rooms nested inside this one — without them two floors sit
+// coplanar at the same y and z-fight, on top of the inner room simply being covered.
+function buildFloorGeo(points, cx, cz, pxPerFoot, tile, holes) {
   if (!points || points.length < 3) return null;
   const toSX = sx =>  (sx - cx) / pxPerFoot;
   const toSY = sy => -((sy - cz) / pxPerFoot);
-  const shape = new THREE.Shape();
-  shape.moveTo(toSX(points[0].x), toSY(points[0].y));
-  for (let i = 1; i < points.length; i++) shape.lineTo(toSX(points[i].x), toSY(points[i].y));
-  shape.closePath();
+  const ring = (pts, path) => {
+    path.moveTo(toSX(pts[0].x), toSY(pts[0].y));
+    for (let i = 1; i < pts.length; i++) path.lineTo(toSX(pts[i].x), toSY(pts[i].y));
+    path.closePath();
+    return path;
+  };
+  const shape = ring(points, new THREE.Shape());
+  for (const h of holes || []) if (h?.length >= 3) shape.holes.push(ring(h, new THREE.Path()));
   const geo = new THREE.ShapeGeometry(shape);
   if (tile) {
     const pos = geo.attributes.position;
@@ -1571,9 +1577,11 @@ function FloorPlane({ walls = [], nodes = [], zones, cx, cz, pxPerFoot, T, zoneL
   }, [walls, nodes, cx, cz, pxPerFoot, baseTile]);
   useEffect(() => () => roomGeo?.dispose(), [roomGeo]);
 
-  const regionGeos = useMemo(() => floorRegions.map(fr =>
-    buildFloorGeo(fr.points, cx, cz, pxPerFoot, FLOOR_MATERIAL_TILE_FT[fr.material])
-  ), [floorRegions, cx, cz, pxPerFoot]);
+  const regionGeos = useMemo(() => {
+    const holes = nestedFloorHoles(floorRegions);
+    return floorRegions.map(fr =>
+      buildFloorGeo(fr.points, cx, cz, pxPerFoot, FLOOR_MATERIAL_TILE_FT[fr.material], holes.get(fr.id)));
+  }, [floorRegions, cx, cz, pxPerFoot]);
   useEffect(() => () => regionGeos.forEach(g => g?.dispose()), [regionGeos]);
 
   const clickHandler = onSelectFloor ? (e => { e.stopPropagation(); onSelectFloor(); }) : undefined;

@@ -516,6 +516,82 @@ e2e/docs.spec.js       Playwright Docs-stage tests (save view → slide, live re
   inspector is the **Room card**: area, floor material (+ None, which deletes the region),
   zone (+ None), label. There is deliberately no Room section on the wall inspector — a
   shared wall borders two rooms and would have to disambiguate.
+- **New goes through `applyProjectData`, the same hydrator as file import and autosave
+  restore.** It used to re-list every collection by hand, and that list drifted: `furniture`,
+  `columns` and `guides` were never added to it, so New left them standing on the canvas and
+  read as doing nothing at all. It now loads `migrateProjectData({})` — which returns a fully
+  defaulted empty model, panes and deck included — and only resets genuinely NON-model state
+  (view offset/zoom, tool drafts, phases, grid toggle, zone library). Anything stored in the
+  model belongs in `applyProjectData`; adding a collection there fixes load, snapshot-switch
+  and New at once. Never re-enumerate collections in a second place.
+- **The grid stops at the floor** — a floor is a finished surface, not a transparency, so the
+  grid belongs to the empty paper around it. An SVG `<mask>` (white field, floors punched out
+  in black) wraps the whole grid `<g>`. Hiding the Floors layer brings the grid straight back
+  with no extra branch, because the mask is built from what actually renders. Masking the GRID
+  rather than painting an opaque base under the floor is deliberate: the floor sits above the
+  underlay `<image>`, and an opaque base would hide the very thing people trace over.
+  Mask and hatch are cut from **one shared `floorPaths` memo** — two path strings that
+  disagree by a hair leave the grid showing in the seam.
+  **The `<mask>` MUST carry explicit x/y/width/height.** A mask region defaults to
+  `-10%,-10%,120%,120%`, and under `maskUnits="userSpaceOnUse"` those percentages resolve
+  against the SVG viewport but apply in the ZOOMED model space the grid group lives in — so
+  panning past that window put the grid outside the region, where a mask reads as zero, and
+  the grid vanished from most of the canvas. Shipped that way once; it is not cosmetic.
+  The extent is padded **a full `stepPx`**: lines round outward off `startI`/`endI` and
+  overrun `minX..maxX` by up to one step, so a mask cut to the nominal bounds shaves a strip
+  off the right and bottom edges.
+  The **id encodes that extent** (`grid-floor-mask-<x>_<y>_<w>_<h>`) because the extent varies
+  per canvas — live pane, each Docs sheet, each printed page — while the floor paths are
+  global. Same extent means an interchangeable mask that's safe to share; a different one
+  can't collide. One fixed id would let whichever copy the document holds first govern
+  canvases framed differently, and printing renders every slide's sheet alongside the
+  on-screen one, so several coexist. Scoping by slide id does NOT work: the selected slide
+  renders twice (sheet + printed page) at different extents under one id.
+- **A room inside a room is CARVED OUT of the room around it** (`nestedFloorHoles` in
+  geometry.js). A floor drawn inside another lies wholly within it, so both hatches painted,
+  the outer sf counted a room it doesn't own, and in 3D the two sat coplanar and z-fought.
+  The holes are **DERIVED from the current floor set, never stored** — no schema change, no
+  migration, and a hole appears, moves and closes on its own as the inner room is added,
+  resized or deleted. Storing them would mean keeping a second copy of the inner room's
+  outline in sync through every carry, weld and undo.
+  Each floor gets its **immediate** children only (parent = the SMALLEST floor containing it).
+  Every descendant would break both consumers at three levels of nesting: the area subtracts
+  the core twice, and the even-odd rule flips it back to filled. Strictly-larger-only, so two
+  floors with identical outlines read as a duplicate rather than holing each other.
+  Four consumers, one memo (`floorHoles`) so they can't disagree: the plan `<path>` appends
+  each hole as a subpath under `fillRule="evenodd"` (which also lets clicks fall through to
+  the inner room's own floor); the Room card's centerline sf subtracts the hole areas; 3D
+  passes them to `buildFloorGeo` → `THREE.Shape.holes`; and hitTest returns the **smallest**
+  containing floor, since several now hold the same point and first-match-wins was really
+  array order.
+  Two non-obvious knock-ons. **`clearInsideSf` offsets a hole OUTWARD** — the nested room's
+  walls stand in the surrounding room, so they come off its clear area too. That needed a new
+  `outward` flag on `insetFloorPolygon`: it normalizes winding by design (there's a test
+  pinning that), so passing a reversed ring can't flip the direction. **The auto-floor
+  "already floored?" test is area-bounded**: covering the room's interior point stopped being
+  proof, because a room built inside another sits under that room's floor — and it was being
+  denied a floor entirely. A floor can never extend past the walls of the room it belongs to,
+  so one bigger than the room is somebody else's. Point-in-polygon alone can't fix this in
+  either direction: a centered inner room contains the outer floor's interior point too.
+- **A placed floor is INERT until double-clicked** (`floorEditId` in interactionStore). A
+  floor covers its whole room, so it lies under nearly every press inside that room — a plain
+  click-drag slid it out of register with the walls, which is easy to do by accident while
+  panning and easy to miss afterwards. Now a single click only SELECTS it (Room card, dashed
+  outline); a **double-click** unlocks that one floor for moving and vertex editing. The
+  second mousedown of the double-click both unlocks and starts the drag (`e.detail >= 2` in
+  the `floorRegion` onDown branch, the same idiom the flowPath/vertex branches already use),
+  so double-click-and-drag works as one gesture. hitTest gates the vertex/edge handles on
+  `floorEditId`, not on selection — otherwise selecting a floor would hand back the very
+  handles the lock exists to withhold — and reads it via `useInteractionStore.getState()`,
+  matching how it already reads selection, so it stays out of the deps array.
+  **Relocking is DERIVED from selection**, not cleared at each exit: one effect in testfit.jsx
+  drops `floorEditId` whenever that floor stops being the Build-mode selection, so Esc,
+  delete, undo, clicking another object and leaving Build all relock for free. Enumerating
+  those exits instead would leave a floor silently draggable the first time someone adds a
+  sixth way out. The Room card carries a `room-shape-lock` chip that states which state
+  you're in and toggles it — the gesture alone isn't discoverable.
+  NOT gated: marquee multi-drag (`selectedIds.length > 1`), which is already a deliberate
+  two-step gesture, and the arrow-key nudge.
 - **Plan annotation text holds a constant on-screen size as you zoom OUT** (`textZoom` in
   testfit.jsx, `= zoom < 1 ? 1/zoom : 1`, applied to `DimLbl` plus the zone and rect-ghost
   dimension labels). At 40% a 10px dimension renders 4px and is unreadable. Deliberately NOT
