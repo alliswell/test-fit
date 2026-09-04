@@ -52,6 +52,7 @@ export const SHORTCUT_GROUPS = [
       { keys: ["⌘", "⇧", "Z"], label: "Redo" },
       { keys: ["⌘", "C"], label: "Copy" },
       { keys: ["⌘", "V"], label: "Paste" },
+      { keys: ["⌘", "D"], label: "Duplicate selection" },
       { keys: ["⌘", "A"], label: "Select all in this stage" },
       { keys: ["⌘", "⇧", "A"], label: "Select all of the same type" },
       { keys: ["←↑↓→"], label: "Nudge 1 inch" },

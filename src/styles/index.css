@@ -139,13 +139,10 @@ body {
   outline: none;
 }
 
-/* TestFit plan canvas: every stroke/line inside the live-editing view keeps a constant
-   on-screen weight at any zoom, instead of ballooning at 400% or vanishing at 15% — matches
-   how it looked at 100%. The whole plan draws through a single `scale(zoom)` group
-   (testfit.jsx renderPlanCanvas), so stroke widths there are otherwise multiplied by zoom
-   like any other geometry. Same technique Furniture2D.jsx already applies per-element
-   (vectorEffect="non-scaling-stroke"); this applies it once to the whole zoomed layer
-   instead of touching every wall/dim/grid/symbol primitive individually. */
+/* Below 100% zoom the plan's strokes are pinned to their 100% screen weight (applied once
+   to the zoomed layer, rather than on every wall/dim/grid/symbol primitive). testfit.jsx
+   adds the class only while zoom < 1: above 100% the canvas is a magnifier and strokes
+   scale with their geometry. Spatial bands opt out with an inline vector-effect: none. */
 .tf-const-stroke, .tf-const-stroke * {
   vector-effect: non-scaling-stroke;
 }

@@ -19,18 +19,19 @@ export default function Furniture2D({ f, pxPerFoot, sel = false, tt, tier = null
   const lw = sel ? 2 : 1.25;
   const fill = (tier?.color || tt.furniture || tt.text) + "14"; // faint tint
   const prims = spec.draw(W, D, f.w, f.d) || [];
-  // vectorEffect non-scaling-stroke → the line renders at a CONSTANT screen weight (lw px)
-  // regardless of the canvas zoom (the whole plan sits inside a scale(zoom) group).
-  const NS = "non-scaling-stroke";
+  // Stroke weight follows the canvas policy set by the zoomed group's .tf-const-stroke
+  // class (pinned to the 100% weight below 100% zoom, magnified above it) — no per-element
+  // vector-effect here, or furniture would stay hairline-thin while the walls it sits by
+  // grow with the zoom. Docs sheets, which never pin, scale it with the drawing.
 
   const shape = (p, i) => {
     // key is passed directly (never spread — React warns on a key inside {...props}).
-    const common = { stroke: line, strokeWidth: lw, vectorEffect: NS, fill: p.fill === false ? "none" : fill, strokeLinejoin: "round" };
+    const common = { stroke: line, strokeWidth: lw, fill: p.fill === false ? "none" : fill, strokeLinejoin: "round" };
     switch (p.t) {
       case "rect": return <rect key={i} {...common} x={p.x} y={p.y} width={p.w} height={p.h} rx={p.r || 0} />;
       case "circle": return <circle key={i} {...common} cx={p.cx} cy={p.cy} r={p.r} />;
       case "ellipse": return <ellipse key={i} {...common} cx={p.cx} cy={p.cy} rx={p.rx} ry={p.ry} />;
-      case "line": return <line key={i} x1={p.x1} y1={p.y1} x2={p.x2} y2={p.y2} stroke={line} strokeWidth={lw} vectorEffect={NS} strokeLinecap="round" />;
+      case "line": return <line key={i} x1={p.x1} y1={p.y1} x2={p.x2} y2={p.y2} stroke={line} strokeWidth={lw} strokeLinecap="round" />;
       case "path": return <path key={i} {...common} d={p.d} />;
       default: return null;
     }
@@ -41,8 +42,8 @@ export default function Furniture2D({ f, pxPerFoot, sel = false, tt, tier = null
     : <rect x={-W / 2 - 6} y={-D / 2 - 6} width={W + 12} height={D + 12} fill="transparent" style={{ cursor: moveCursor }} />;
 
   const outline = spec.round
-    ? <ellipse cx={0} cy={0} rx={W / 2} ry={D / 2} fill="none" stroke={line} strokeWidth={lw} vectorEffect={NS} strokeDasharray={sel ? "4 3" : undefined} />
-    : <rect x={-W / 2} y={-D / 2} width={W} height={D} fill="none" stroke={line} strokeWidth={lw} vectorEffect={NS} strokeDasharray={sel ? "4 3" : undefined} rx={2} />;
+    ? <ellipse cx={0} cy={0} rx={W / 2} ry={D / 2} fill="none" stroke={line} strokeWidth={lw} strokeDasharray={sel ? "4 3" : undefined} />
+    : <rect x={-W / 2} y={-D / 2} width={W} height={D} fill="none" stroke={line} strokeWidth={lw} strokeDasharray={sel ? "4 3" : undefined} rx={2} />;
 
   return (
     <g transform={`translate(${f.x},${f.y}) rotate(${(f.angle || 0) * 180 / Math.PI})`}>

@@ -5,13 +5,18 @@ import { useState } from "react";
 import { Tooltip, TooltipTrigger, TooltipContent } from "../app/components/ui/tooltip";
 import { ChevronDown, PanelLeft, PanelLeftClose, Plus, Redo2, RotateCcw, Settings, Undo2, X } from "lucide-react";
 import MonoSkinPanel from "./MonoSkinPanel";
+import { historySummary, relativeTime } from "../utils/autosaveHistory";
 
 export default function TopBar({
-  $, MODES, S, T, activeSnapshotId, canRedo, canUndo, cost, deleteSnapshot, display, exportPdf, exportPng, exportSvg, exportDxf, exportProject, font, importProject, liveDirty, loadRef, markers, mode, modeMenuRect, newProject, newSnapMode, redo, renameSnapshot, renamingSnapId, saveMenuRect, setMode, setModeMenuRect, setNewSnapMode, setRenamingSnapId, setSaveMenuRect, setShowModeMenu, setShowSaveMenu, setShowSettings, setShowSnapMenu, setSidebarOpen, setSnapDraftName, setSnapMenuRect, setT, setMonoDraw, monoDraw, monoSkin, setMonoSkin, monoTiers = [], setThemeMode, showModeMenu, showSaveMenu, showSnapMenu, sidebarOpen, slidesCount = 0, snapDraftName, snapMenuRect, snapshot, snapshots, switchSnapshot, takeSnapshot, themeMode, undo, updateSnapshot, walls, zones, furnitureCount = 0, panes, setLayout, setSelType, setSelectedId, setSelectedIds,
+  $, MODES, S, T, activeSnapshotId, canRedo, canUndo, cost, deleteSnapshot, display, exportPdf, exportPng, exportSvg, exportDxf, exportDxfSlide = null, activeSlideName = "", exportProject, font, readAutosaveHistory, restoreAutosave, importProject, liveDirty, loadRef, markers, mode, modeMenuRect, newProject, newSnapMode, redo, renameSnapshot, renamingSnapId, saveMenuRect, setMode, setModeMenuRect, setNewSnapMode, setRenamingSnapId, setSaveMenuRect, setShowModeMenu, setShowSaveMenu, setShowSettings, setShowSnapMenu, setSidebarOpen, setSnapDraftName, setSnapMenuRect, setT, setMonoDraw, monoDraw, monoSkin, setMonoSkin, monoTiers = [], setThemeMode, showModeMenu, showSaveMenu, showSnapMenu, sidebarOpen, slidesCount = 0, snapDraftName, snapMenuRect, snapshot, snapshots, switchSnapshot, takeSnapshot, themeMode, undo, updateSnapshot, walls, zones, furnitureCount = 0, panes, setLayout, setSelType, setSelectedId, setSelectedIds,
 }) {
   // Mono style options live in a split-button dropdown (main = toggle, chevron = skin panel).
   const [showMono, setShowMono] = useState(false);
   const [monoRect, setMonoRect] = useState(null);
+  // Load menu: file import + the autosave history ring (read when the menu opens).
+  const [showLoad, setShowLoad] = useState(false);
+  const [loadRect, setLoadRect] = useState(null);
+  const [history, setHistory] = useState([]);
   return (
       <div style={S.bar}>
         {/* Wordmark — simple monospace logotype */}
@@ -221,6 +226,7 @@ export default function TopBar({
                 { label: "Export PNG", fn: exportPng },
                 { label: "Export SVG", fn: exportSvg },
                 { label: "Export DXF (CAD)", fn: exportDxf },
+                ...(exportDxfSlide ? [{ label: `Export DXF · this sheet${activeSlideName ? ` (${activeSlideName})` : ""}`, fn: exportDxfSlide }] : []),
                 { label: "Export PDF", fn: exportPdf },
               ].map(({ label, fn }) => (
                 <div key={label} onClick={() => { setShowSaveMenu(false); fn(); }}
@@ -231,7 +237,32 @@ export default function TopBar({
             </div>
           </>}
         </div>
-        <button style={S.smBtn} onClick={() => loadRef.current?.click()}>Load</button>
+        <div style={{ position: "relative" }}>
+          <button data-testid="load-menu" style={{ ...S.smBtn, display: "flex", alignItems: "center", gap: 4 }}
+            onClick={e => { setLoadRect(e.currentTarget.getBoundingClientRect()); setHistory(readAutosaveHistory ? readAutosaveHistory() : []); setShowLoad(v => !v); }}>
+            Load<ChevronDown size={11} style={{ opacity: 0.7, transition: "transform 0.15s", transform: showLoad ? "rotate(180deg)" : "none" }} />
+          </button>
+          {showLoad && <>
+            <div style={{ position: "fixed", inset: 0, zIndex: 999 }} onClick={() => setShowLoad(false)} />
+            <div style={{ position: "fixed", top: (loadRect?.bottom ?? 44) + 6, left: loadRect?.left ?? 12, background: T.panelBg, border: "1px solid " + T.border, borderRadius: 8, padding: 6, zIndex: 1000, minWidth: 230, maxWidth: 320, boxShadow: T.panelShadow, backdropFilter: "blur(16px)" }}>
+              <div onClick={() => { setShowLoad(false); loadRef.current?.click(); }}
+                style={{ padding: "7px 10px", borderRadius: 6, cursor: "pointer", fontSize: 11, color: T.textMuted, fontFamily: "inherit", transition: "background 0.12s" }}
+                onMouseEnter={e => e.currentTarget.style.background = T.border + "60"}
+                onMouseLeave={e => e.currentTarget.style.background = "transparent"}>Load Project (.json)…</div>
+              <div style={{ fontSize: 8, color: T.textDim, textTransform: "uppercase", letterSpacing: "0.08em", padding: "8px 10px 4px", fontWeight: 600, borderTop: "1px solid " + T.border, marginTop: 4 }}>Restore earlier autosave</div>
+              {history.length === 0 && <div style={{ padding: "6px 10px 8px", fontSize: 10, color: T.textFaint, fontStyle: "italic" }}>None yet — a copy is kept every ~2 minutes of editing.</div>}
+              {history.map(h => (
+                <div key={h.ts} data-testid="autosave-entry" onClick={() => { setShowLoad(false); restoreAutosave?.(h); }}
+                  style={{ padding: "6px 10px", borderRadius: 6, cursor: "pointer", fontSize: 11, color: T.textMuted, fontFamily: "inherit", transition: "background 0.12s", display: "flex", justifyContent: "space-between", gap: 10 }}
+                  onMouseEnter={e => e.currentTarget.style.background = T.border + "60"}
+                  onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
+                  <span style={{ color: T.textBright, fontWeight: 500, whiteSpace: "nowrap" }}>{relativeTime(h.ts)}</span>
+                  <span style={{ fontSize: 10, color: T.textDim, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{historySummary(h.data)}</span>
+                </div>
+              ))}
+            </div>
+          </>}
+        </div>
         <button style={S.smBtn} onClick={() => { if (walls.length || zones.length || markers.length) { if (confirm("New project?")) newProject(); } else newProject(); }}>New</button>
         <input ref={loadRef} type="file" accept=".json" style={{ display: "none" }} onChange={e => { const f = e.target.files?.[0]; if (f) importProject(f); e.target.value = ""; }} />
         <div style={{ width: 1, height: 20, background: T.border, margin: "0 3px" }} />

@@ -310,8 +310,21 @@ src/
                        A-ANNO-*, E-POWR/T-DATA/A-AV/M-HVAC/E-SECU). R12 primitives only
                        (LINE/POLYLINE/CIRCLE/ARC/TEXT) for maximum reader compatibility;
                        wall runs are cut at openings via wallSolidRuns (dxf.test.js).
+                       opts.clip {x,y,w,h} (plan px) keeps only entities whose bounds touch
+                       the rect — entities straddling the edge stay whole, and a polygon's
+                       label travels with its kept polygon — which is how "Export DXF · this
+                       sheet" (Docs mode, plan slide open) exports exactly the slide's crop.
                        Wired to TopBar's Save menu ("Export DXF (CAD)") next to the new
                        "Export SVG" (a vector serialization of the live plan canvas).
+    autosaveHistory.js a five-deep ring of earlier autosaves (localStorage
+                       "testfit-autosave-history"): pushHistory records a slimmed copy
+                       (slide 3D captures stripped) when the newest entry is ≥90 s old and
+                       the content changed — so five entries span a session, not four
+                       seconds; force=true records regardless (a restore pushes the state it
+                       replaces first, so restores are themselves reversible). Pure: every
+                       function takes the storage as a parameter (tests use a Map stub).
+                       Surfaced in TopBar's Load menu ("Restore earlier autosave", rows are
+                       relativeTime + historySummary; data-testid load-menu / autosave-entry).
     labels.js          wrapLabelLines, labelBounds (label box layout)
     docs.js            pure Docs-stage helpers: SHEET_SIZES, sheetDims/Inches,
                        fitRectToViewport, fitStandardScale (true architectural scales),
@@ -528,8 +541,16 @@ e2e/docs.spec.js       Playwright Docs-stage tests (save view → slide, live re
   zoom-IN subdivisions index off their own always-1'-pitch `subI/subJ`, not the coarsened
   `startI/startJ` — they only render at zoom >= 1.5, well above where the grid ever coarsens,
   but they'd silently misalign if that ever changed without updating this note.
-- **Plan strokes keep a constant on-screen weight at any zoom (`.tf-const-stroke` in
-  index.css, wired onto `renderPlanCanvas`'s zoomed `<g>` only when `interactive`).** The
+- **Plan line weights follow the 100% look: magnified above 100%, pinned below it
+  (`.tf-const-stroke` in index.css, wired onto `renderPlanCanvas`'s zoomed `<g>` only when
+  `interactive && zoom < 1`).** Zooming IN is a magnifier — strokes scale with the geometry
+  they belong to, so a door swing or furniture outline keeps its proportion to the wall
+  beside it (they used to stay hairline-thin while the walls grew, which read as "the line
+  weights change"). Zooming OUT pins strokes to their 100% screen weight so they never fade
+  to hairlines. Spatial bands (flow-path walkway, window glazing) opt out with an inline
+  `style={{ vectorEffect: "none" }}` — an inline style is the only thing that beats the
+  class rule — because they are widths, not weights. Furniture2D relies on the group policy
+  (no per-element vector-effect). The rest of this note describes how the pin works: The
   whole live-editing canvas draws through one `translate(viewOff) scale(zoom)` group, so a
   literal `strokeWidth={1.5}` used to render 4x thicker at 400% zoom and 4x thinner (near
   invisible) at 15% — every wall/dim/grid/symbol stroke scaled with the geometry it belonged
@@ -769,7 +790,11 @@ e2e/docs.spec.js       Playwright Docs-stage tests (save view → slide, live re
   on 4174 for perf checks after `npx vite build`).
 - Build: `npx vite build` (must be clean).
 - Unit: `npx vitest run` (model/geometry/dxf/wallGeo3d).
-- E2E: `npx playwright test` (boots the app, draws, annotates, checks autosave). The port
+- Keyboard: ⌘C / ⌘V / ⌘D share `collectSelection` + `placeClip` in the keydown handler
+  (testfit.jsx); ⌘D places a copy one 20 px step away without touching the clipboard. The
+  plain-D dimensions toggle excludes both Ctrl and Meta. Cheat sheet: constants/shortcuts.js.
+- E2E: `npx playwright test` (boots the app, draws, annotates, checks autosave; `e2e/features.spec.js`
+  covers ⌘D and the autosave-history restore). The port
   comes from `PORT`, else the dev entry in `../.claude/launch.json`, else 5173 — so it
   follows whatever the desktop app is serving instead of colliding with it.
 - Dependencies: package.json lists only what the app imports (react, three + r3f/drei +

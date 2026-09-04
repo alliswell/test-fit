@@ -925,7 +925,7 @@ test("the plan grid coarsens as you zoom out, so it stays a scale reference", as
   await expect(grid).toHaveAttribute("data-grid-step", "1");
 });
 
-test("plan strokes keep a constant on-screen weight at any zoom, matching how they look at 100%", async ({ page }) => {
+test("plan line weights follow the 100% look: magnified above 100%, pinned below it", async ({ page }) => {
   const seed = {
     version: "testfit-v17", pxPerFoot: 20,
     nodes: [
@@ -941,27 +941,34 @@ test("plan strokes keep a constant on-screen weight at any zoom, matching how th
   await page.goto("/");
 
   // The whole live-editing canvas renders through one `scale(zoom)` group; a wall edge's
-  // strokeWidth attribute is a plain literal (1.5) with no per-zoom math of its own — whether
-  // it reaches the screen at a constant weight is entirely down to `vector-effect:
-  // non-scaling-stroke`, which SVG guarantees keeps a stroke's rendered width pinned to the
-  // outer viewport regardless of any ancestor scale transform. So the meaningful assertion is
-  // that the effect is actually wired up (class present, computed style resolves), and stays
-  // that way — not a pixel measurement, which getBoundingClientRect doesn't reliably expose
-  // for a zero-height SVG <line>'s stroke paint in the first place.
-  await expect(page.locator('[data-testid="plan-canvas"] g.tf-const-stroke')).toHaveCount(1);
+  // strokeWidth attribute is a plain literal (1.5) with no per-zoom math of its own. Line
+  // weights follow the 100% look: ABOVE 100% the canvas is a magnifier (no vector-effect,
+  // strokes scale with their geometry); BELOW 100% `vector-effect: non-scaling-stroke` pins
+  // them to the 100% screen weight so edges don't fade to hairlines. So the meaningful
+  // assertion is that the pin is wired up exactly when zoomed out (class present, computed
+  // style resolves) and absent when zoomed in — not a pixel measurement, which
+  // getBoundingClientRect doesn't reliably expose for a zero-height <line>'s stroke paint.
   const wallEdgeStyle = () => page.evaluate(() => {
     const line = [...document.querySelectorAll('[data-testid="plan-canvas"] line[stroke-width="1.5"]')]
       .find(l => l.getAttribute("y1") === l.getAttribute("y2"));
     return line && { ve: getComputedStyle(line).vectorEffect, sw: line.getAttribute("stroke-width") };
   });
-
-  expect(await wallEdgeStyle()).toEqual({ ve: "non-scaling-stroke", sw: "1.5" });
+  // At exactly 100% nothing is pinned — the reference look.
+  await expect(page.locator('[data-testid="plan-canvas"] g.tf-const-stroke')).toHaveCount(0);
+  expect(await wallEdgeStyle()).toEqual({ ve: "none", sw: "1.5" });
 
   for (let i = 0; i < 8; i++) await page.keyboard.press("Control+="); // 100% → clamps at 400%
-  expect(await wallEdgeStyle()).toEqual({ ve: "non-scaling-stroke", sw: "1.5" });
+  await expect(page.locator('[data-testid="plan-canvas"] g.tf-const-stroke')).toHaveCount(0);
+  expect(await wallEdgeStyle()).toEqual({ ve: "none", sw: "1.5" });
 
   for (let i = 0; i < 16; i++) await page.keyboard.press("Control+-"); // 400% → well under 100%
+  await expect(page.locator('[data-testid="plan-canvas"] g.tf-const-stroke')).toHaveCount(1);
   expect(await wallEdgeStyle()).toEqual({ ve: "non-scaling-stroke", sw: "1.5" });
+  // A flow path's walkway band is a WIDTH (36"), not a line weight: it always scales.
+  expect(await page.evaluate(() => {
+    const band = [...document.querySelectorAll('[data-testid="plan-canvas"] path')].find(p => Number(p.getAttribute("stroke-width")) > 20);
+    return band ? getComputedStyle(band).vectorEffect : "no-band";
+  })).toMatch(/none|no-band/);
 
   // Docs/print rendering reuses the same draw code at a fixed architectural-scale zoom,
   // where line weights SHOULD stay proportional to the drawing — it must NOT pick up the
