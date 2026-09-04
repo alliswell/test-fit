@@ -124,3 +124,10 @@ export const DEFAULT_PHASES = [
   { id: "phase3",   name: "v2",       color: "#9060B0", visible: true },
   { id: "phase4",   name: "v3",       color: "#B06040", visible: true },
 ];
+
+// ─── Floor materials ─────────────────────────────────────────────────────────
+// The project-default floor + per-region material options, their swatch colours, and the
+// plan hatch pattern ids (patterns are defined in the plan SVG's <defs>).
+export const FLOOR_MATERIALS = ["Wood", "Concrete", "Vinyl", "Carpet"];
+export const FLOOR_MATERIAL_HEX = { "Wood": "#C8A878", "Concrete": "#AEABA4", "Vinyl": "#BFA889", "Carpet": "#786758" };
+export const FLOOR_MATERIAL_HATCHES = { "Wood": "floor-hatch-wood", "Concrete": "floor-hatch-concrete", "Vinyl": "floor-hatch-vinyl", "Carpet": "floor-hatch-carpet" };

@@ -42,11 +42,24 @@ instead of growing `testfit.jsx`:**
 src/
   app/                 App.tsx entry → renders <TestfitTool/>; shadcn ui/ (Tooltip…)
   imports/
-    testfit.jsx        TestfitTool — main editor: undo/redo, persistence, plan-canvas SVG,
-                       sidebar/inspector/top-bar JSX, pane layout. (largest file, ~5.1k lines)
-                       Geometry/interaction state live in stores (destructured to the same
-                       local names); the canvas handlers live in useCanvasEvents.js;
+    testfit.jsx        TestfitTool — main editor: undo/redo, persistence, plan-canvas SVG
+                       composition, pane layout. (~3.9k lines) Geometry/interaction state
+                       live in stores (destructured to the same local names); the canvas
+                       handlers live in useCanvasEvents.js; the chrome is props-only
+                       components (TopBar / Sidebar / ToolRail / Inspector / ToolOptions);
+                       the heavy plan layers are memoized components under components/plan/;
                        <TestFit3D> is lazy-loaded (React.lazy + Suspense).
+                       PERF MODEL (read before adding render-time work here): this component
+                       re-renders on every real state change, so nothing per-mousemove may
+                       live in its render scope. Hover feedback goes through hoverStore +
+                       <HoverSubscriber> islands (below); wall geometry is the `wallGeom`
+                       memo; the keyboard handler is a latest-ref (bound once, reads the
+                       current render's closure) — never re-bind it on a deps list.
+                       LOD: `lod` (0/1/2 at 100%/<50%/<30% zoom, live canvas only) drops
+                       hatching, then dimensions/labels/marker glyphs; the zoomed <g>
+                       carries data-lod for tests. The status bar's plan-load readout
+                       (data-testid="plan-load") turns brand-coloured past 400 walls /
+                       1500 elements — the same plans the LOD exists for.
     useCanvasEvents.js hitTest + onDown/onMove/onUp (+ nodeCentroid), extracted from
                        testfit.jsx. Reads geometry/interaction/selection via their stores;
                        receives helper callbacks, UI scalars, refs & tool-config via `ctx`.
@@ -135,6 +148,14 @@ src/
                        then UNLIT color at depthFunc EqualDepth (renderOrder 11) so the
                        whole demo run — including overlapping cap wedges — blends exactly
                        once per pixel; unlit keeps end-cap lighting from reading as a seam.
+    wallCsg.worker.js  module Web Worker: runs buildWallSolidGeometry (extrude + CSG cuts)
+    wallCsgClient.js   off the main thread; the client owns one shared worker + request ids.
+                       testfit3d's useWallSolidGeometry keeps the LAST finished solid while
+                       a new one is in flight (no uncut-prism flash mid-drag); walls with no
+                       openings, and Node/vitest (no Worker), take the synchronous path.
+                       geometryToTransferable / transferableToGeometry (wallGeo3d.js) move
+                       typed arrays across by transfer. Set window.__TF_NO_CSG_WORKER to
+                       force the sync path when debugging.
     wallGeo3d.js       three-dependent (only testfit3d imports it — keeps the lazy chunk):
                        footprintToLocal, buildWallSolidGeometry (Shape→Extrude→rotateX,
                        CCW-enforced winding, butterfly-quad fallback, CSG cuts w/ try/catch
@@ -156,7 +177,9 @@ src/
                        quads + junction cap wedges, plan px — SINGLE source of truth for
                        wall shapes, consumed by BOTH the 2D plan render pass and the 3D
                        WallSolid/CapSolids; neighbours match by node id OR 6px endpoint
-                       proximity), insetFloorPolygon (clear-inside
+                       proximity), wallSolidRuns (which parametric runs of a wall stay
+                       solid once its doors/windows are cut — shared by the plan's wallGeom
+                       memo and the DXF export so they can't disagree), insetFloorPolygon (clear-inside
                        room outline: floor polygons sit on wall CENTERLINES — all dims/sf
                        in the app are centerline by convention — so this insets each edge
                        that has a wall along it by that wall's half-thickness to get the
@@ -281,6 +304,14 @@ src/
                        {id,type,x,y,angle,w,d,label,phase,fromZone?} — plain x/y (no per-phase
                        px override). Rendered by Furniture2D.jsx.
   utils/
+    dxf.js             pure buildDxf(model, {wallHalfT, zoneLibrary, resolveDim}) → AutoCAD
+                       R12 (AC1009) ASCII DXF in FEET, y flipped to y-up, on AIA-style
+                       layers (A-WALL, A-DOOR, A-GLAZ, S-COLS, A-AREA, A-FLOR, A-FURN,
+                       A-ANNO-*, E-POWR/T-DATA/A-AV/M-HVAC/E-SECU). R12 primitives only
+                       (LINE/POLYLINE/CIRCLE/ARC/TEXT) for maximum reader compatibility;
+                       wall runs are cut at openings via wallSolidRuns (dxf.test.js).
+                       Wired to TopBar's Save menu ("Export DXF (CAD)") next to the new
+                       "Export SVG" (a vector serialization of the live plan canvas).
     labels.js          wrapLabelLines, labelBounds (label box layout)
     docs.js            pure Docs-stage helpers: SHEET_SIZES, sheetDims/Inches,
                        fitRectToViewport, fitStandardScale (true architectural scales),
@@ -295,6 +326,27 @@ src/
                        flat slides array; sanitizeSlideTree repairs bad refs on load)
                        (docs.test.js)
   components/
+    HoverSubscriber.jsx render island for per-mousemove state: `{(hover) => …}` render
+                       prop, subscribed (useShallow) to hoverStore. Every ghost / preview /
+                       proximity ring / smart guide / hovered-node block inside the plan SVG
+                       is wrapped in one, so a hover repaints those islands only.
+    Sidebar.jsx        props-only chrome extracted from testfit.jsx (React.memo — its props
+    ToolRail.jsx       are store arrays, useCallbacks and the memoized `S`, so a canvas
+    Inspector.jsx      hover/pan never re-renders them). Inspector = the selected-element
+    ToolOptions.jsx    option panel (all `sel*` / `upd*` come in as props); ToolOptions = the
+                       active placement tool's settings. Both are plain (not memo): their
+                       upd* props are re-created per render by design.
+    MarkerSymbol.jsx   the IT/MEP plan glyphs (see the MarkerSymbol notes under constants/)
+                       + uiColor(c, themeMode, T); props T = CHROME theme, tool, mode, pxPerFoot.
+    plan/              memoized layers of the plan SVG, each props-only and skipped by
+                       React.memo while the camera or hover changes:
+      PlanGridLayer    viewport-clamped grid + the floor mask (data-testid plan-grid/-base)
+      PlanFloorsLayer  floor hatches, selection outline, unlocked-floor handles
+      PlanWallsLayer   two-pass wall render over the `wallGeom` memo (geometry in, style out)
+      PlanZonesLayer   zones + clear-inside overlay (moved here from testfit.jsx)
+      PlanOpeningsLayer doors / windows / columns; OpeningSymbols.jsx holds DoorSvg/WindowSvg
+      PlanMarkersLayer IT/MEP markers (+ rotate handle, NEW badge; lod 2 → dots)
+      Dims.jsx         DimLbl / WallDim / DimString primitives + FONT
     icons.jsx          tool-rail SVG icons (Wall/Window/Column…)
     Furniture2D.jsx    one placed furniture piece as a top-down parametric symbol (props-
                        only). Draws the base footprint (rect or ellipse) + the catalog
@@ -392,8 +444,14 @@ src/
                        theme toggle instead of flashing light every time you open Docs.
                        PrintDeck ignores its `T` prop entirely and always uses THEMES.light.
   store/               zustand stores (view/panes, layers, selection, geometry, interaction,
-                       docs: slides + docSettings — project-level like snapshots, excluded
-                       from captureModel so snapshot switching never clobbers the deck)
+                       hover, docs: slides + docSettings — project-level like snapshots,
+                       excluded from captureModel so snapshot switching never clobbers the deck)
+                       hoverStore: cursorPos / ghostPos / proxHover / smartGuides / hoverNid —
+                       the per-mousemove fields. TestfitTool NEVER subscribes to it (only
+                       <HoverSubscriber> islands do); handlers and the keyboard handler read
+                       it via useHoverStore.getState(). Every store's value-or-updater setter
+                       skips the write when the value is unchanged (Object.is), because a
+                       wholesale useStore() subscriber re-renders on ANY set otherwise.
                        geometryStore: persistent plan geometry (nodes/walls/zones/markers/
                        doors/windows/columns/dims/labels/revClouds/flowPaths/floorRegions/
                        guides). interactionStore: transient canvas state (draws/drag/marquee/
@@ -685,18 +743,39 @@ e2e/docs.spec.js       Playwright Docs-stage tests (save view → slide, live re
   the one layer Build and IT/MEP share), so box-selecting in Build grabbed IT/MEP cameras and
   speakers and let arrow keys drag them. Power markers are deliberately editable in BOTH
   stages; every other spec layer belongs to IT/MEP alone.
-- Extract the chrome JSX into props-only components: **✅ top bar → `TopBar.jsx`** (done).
-  Remaining: the **sidebar** (PROJECT/SUMMARY/placed-components/LAYERS) and the **inspector /
-  option panel** (the largest, ~1.5k lines; many per-selection `updXxx` callbacks) — each its
-  own focused pass. Pattern: props-only component, pass `S`/`T` + data/handlers (store-backed
-  state can be read from the stores directly to trim the prop surface).
+- Extract the chrome JSX into props-only components: **✅ done** — `TopBar.jsx`,
+  `Sidebar.jsx`, `ToolRail.jsx`, `Inspector.jsx`, `ToolOptions.jsx`. The prop lists were
+  generated mechanically (every free identifier the JSX references, from a Babel scope pass),
+  so they are wide on purpose; trimming them by reading store-backed state directly inside
+  each component is the natural next pass. `S`, `MODES` and `uiColor` are memoized and `$`
+  is module-level so the memoized Sidebar/ToolRail actually skip renders.
+- **Performance model (Sept 2026 audit).** A 96-room plan (212 walls, ~6.5k SVG nodes) cost
+  ~20 ms of main-thread work per mousemove because hover state lived in the editor's render
+  scope (and the zustand stores notified on no-op writes). Fixed by hoverStore +
+  HoverSubscriber islands, memoized plan layers, the `wallGeom` memo, the latest-ref
+  keyboard handler, and zoom-out LOD. Re-measure with a synthetic 12×8 grid of 25×20 ft
+  rooms at 20 px/ft after touching the render path; the CSG worker keeps 3D edits off the
+  main thread. Two Babel-based scope tools live in `scripts/`: `node scripts/free-ids.mjs
+  <file> [fn]` lists the identifiers a file (or one function) references without binding —
+  run it on every file you extract JSX into; `node scripts/tdz-check.mjs
+  src/imports/testfit.jsx TestfitTool` flags a render-time reference (dep arrays included)
+  to a const declared later in the component — the white-screen class of bug. Run both
+  after touching testfit.jsx; they take a second.
 
 ## Build & test
 
-- Dev: `npm run dev` (Vite, port 5173).
+- Dev: `npm run dev` (Vite; the Claude desktop app's `.claude/launch.json` pins its own
+  port — 5174 at the time of writing — and a "Production Preview" config serves `dist/`
+  on 4174 for perf checks after `npx vite build`).
 - Build: `npx vite build` (must be clean).
-- Unit: `npx vitest run` (model/geometry).
-- E2E: `npx playwright test` (boots the app, draws, annotates, checks autosave).
+- Unit: `npx vitest run` (model/geometry/dxf/wallGeo3d).
+- E2E: `npx playwright test` (boots the app, draws, annotates, checks autosave). The port
+  comes from `PORT`, else the dev entry in `../.claude/launch.json`, else 5173 — so it
+  follows whatever the desktop app is serving instead of colliding with it.
+- Dependencies: package.json lists only what the app imports (react, three + r3f/drei +
+  three-bvh-csg, zustand, lucide-react, sonner, the radix tooltip). The Figma-Make
+  scaffolding (MUI, recharts, ~50 radix/shadcn kits) and the unused `src/app/components/ui`
+  files were removed; only `ui/tooltip.tsx` remains.
 - Persistence: autosaved to `localStorage["testfit-autosave"]`, debounced ~800ms;
   `migrateProjectData` normalizes older blobs. Bump `PROJECT_VERSION` on schema changes
   and extend the migrate test.

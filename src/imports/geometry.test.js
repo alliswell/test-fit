@@ -765,3 +765,30 @@ describe("nestedFloorHoles — a floor drawn inside another is carved out of it"
     expect(nestedFloorHoles(undefined).size).toBe(0);
   });
 });
+
+import { wallSolidRuns } from "./geometry";
+
+describe("wallSolidRuns", () => {
+  const c = { x1: 0, y1: 0, x2: 200, y2: 0 }; // 10 ft wall at 20 px/ft
+  it("is one solid run with no openings", () => {
+    expect(wallSolidRuns(c, [], 20)).toEqual({ cuts: [], segs: [{ t0: 0, t1: 1 }] });
+  });
+  it("cuts a 36in door centered on the wall into two runs", () => {
+    const { cuts, segs } = wallSolidRuns(c, [{ x: 100, y: 0, width: 36 }], 20);
+    // 36in = 60px = 0.3 of the span, centered at t=0.5
+    expect(cuts).toEqual([{ t0: 0.35, t1: 0.65 }]);
+    expect(segs).toEqual([{ t0: 0, t1: 0.35 }, { t0: 0.65, t1: 1 }]);
+  });
+  it("ignores openings off the centerline or past the ends", () => {
+    const { segs } = wallSolidRuns(c, [{ x: 100, y: 20, width: 36 }, { x: 260, y: 0, width: 36 }], 20);
+    expect(segs).toEqual([{ t0: 0, t1: 1 }]);
+  });
+  it("merges overlapping openings and clamps to the wall span", () => {
+    const { cuts } = wallSolidRuns(c, [{ x: 90, y: 0, width: 36 }, { x: 120, y: 0, width: 36 }, { x: 5, y: 0, width: 36 }], 20);
+    const r = (v) => Math.round(v * 1000) / 1000;
+    expect(cuts.map(cu => [r(cu.t0), r(cu.t1)])).toEqual([[0, 0.175], [0.3, 0.75]]);
+  });
+  it("treats a zero-length wall as one run", () => {
+    expect(wallSolidRuns({ x1: 5, y1: 5, x2: 5, y2: 5 }, [{ x: 5, y: 5, width: 36 }], 20).segs).toEqual([{ t0: 0, t1: 1 }]);
+  });
+});

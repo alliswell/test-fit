@@ -654,3 +654,38 @@ export function centerViewOn(cx, cy, zoom, canvasW, canvasH) {
 export function gridStepFeet(zoom) {
   return zoom < 0.4 ? 10 : zoom < 0.6 ? 5 : 1;
 }
+
+// ─── Wall opening runs ───────────────────────────────────────────────────────
+// Where a wall's solid runs are, once its doors/windows are cut out. `c` is the wall
+// centerline {x1,y1,x2,y2} (plan px), `openings` are the doors/windows to test (each
+// {x,y,width} with width in INCHES), pxPerFoot converts that width to px. An opening
+// belongs to the wall when its center projects inside the wall's span (5% slack past
+// the ends) and sits within 8px of the centerline — the same rule the plan renderer,
+// the DXF export and the 3D solids all need, so it lives here once.
+// Returns { cuts: [{t0,t1}] merged + sorted, segs: [{t0,t1}] solid runs } as parametric
+// t along the centerline (0 = n1, 1 = n2).
+export function wallSolidRuns(c, openings, pxPerFoot) {
+  const dx = c.x2 - c.x1, dy = c.y2 - c.y1;
+  const len = Math.hypot(dx, dy);
+  if (len < 1e-6) return { cuts: [], segs: [{ t0: 0, t1: 1 }] };
+  const cuts = [];
+  for (const o of openings) {
+    const t = ((o.x - c.x1) * dx + (o.y - c.y1) * dy) / (len * len);
+    if (t < -0.05 || t > 1.05) continue;
+    const px = c.x1 + t * dx, py = c.y1 + t * dy;
+    if (Math.hypot(o.x - px, o.y - py) > 8) continue;
+    const halfW = ((o.width / 12) * pxPerFoot) / 2 / len;
+    cuts.push({ t0: Math.max(0, t - halfW), t1: Math.min(1, t + halfW) });
+  }
+  cuts.sort((a, b) => a.t0 - b.t0);
+  const merged = [];
+  for (const cu of cuts) {
+    const last = merged[merged.length - 1];
+    if (last && cu.t0 <= last.t1) last.t1 = Math.max(last.t1, cu.t1);
+    else merged.push({ ...cu });
+  }
+  const segs = []; let tS = 0;
+  for (const cu of merged) { if (cu.t0 > tS) segs.push({ t0: tS, t1: cu.t0 }); tS = cu.t1; }
+  if (tS < 1) segs.push({ t0: tS, t1: 1 });
+  return { cuts: merged, segs };
+}
