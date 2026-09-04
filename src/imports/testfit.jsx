@@ -2888,10 +2888,15 @@ export default function TestfitTool() {
                 <line x1="0" y1="6" x2="6" y2="0" stroke="#4a3a2a" strokeWidth="0.4" opacity="0.4"/>
               </pattern>
             </defs>
-            {/* interactive-only: docs/print rendering reuses this same function at a fixed,
-                architectural-scale zoom, where line weights SHOULD scale with the drawing
-                (see .tf-const-stroke in index.css) — only live editing wants them pinned. */}
-            <g className={interactive ? "tf-const-stroke" : undefined} data-lod={lod} transform={`translate(${viewOff.x},${viewOff.y}) scale(${zoom})`}>
+            {/* Line weights follow the 100% look. ABOVE 100% the canvas is a magnifier —
+                strokes scale with the geometry they belong to, so a zoomed-in door swing or
+                furniture outline keeps its proportion to the wall it sits by. BELOW 100%
+                they are pinned to their 100% screen weight (.tf-const-stroke in index.css)
+                so a 1.5px edge doesn't fade to a hairline at 25%. Spatial bands (flow-path
+                walkway, window glazing) opt out with an inline vectorEffect:"none" — they
+                are widths, not weights. Docs/print never pin: sheets draw at a fixed
+                architectural scale where weights must stay proportional. */}
+            <g className={interactive && zoom < 1 ? "tf-const-stroke" : undefined} data-lod={lod} transform={`translate(${viewOff.x},${viewOff.y}) scale(${zoom})`}>
               {showGrid && <PlanGridLayer vw={vw} vh={vh} viewOff={viewOff} zoom={zoom} pxPerFoot={pxPerFoot} T={T} floorPaths={floorPaths} gridMasked={gridMasked} />}
               {bgImage && <image href={bgImage} x={bgOffset.x} y={bgOffset.y} style={{ opacity: bgOpacity, transform: `scale(${bgScale})`, transformOrigin: `${bgOffset.x}px ${bgOffset.y}px` }} preserveAspectRatio="xMidYMid meet" />}
 
@@ -3226,7 +3231,7 @@ export default function TestfitTool() {
                 return <g key={fp.id} style={{ cursor: tool === "select" ? "pointer" : "inherit", pointerEvents: (layerLocked("flowPaths") || mode !== "build") ? "none" : undefined }}
                   onClick={() => { if (tool === "select") { setSelectedId(fp.id); setSelType("flowPath"); setSelectedIds([fp.id]); } }}>
                   <path d={d} fill="none" stroke={fp.color} strokeWidth={bandPx} strokeOpacity={sel ? 0.32 : 0.22}
-                    strokeLinecap="round" strokeLinejoin="round" />
+                    strokeLinecap="round" strokeLinejoin="round" style={{ vectorEffect: "none" }} />
                   <path d={d} fill="none" stroke={fp.color} strokeWidth={1.5} strokeDasharray="6 5"
                     strokeOpacity={0.85} strokeLinecap="round" style={{ pointerEvents: "none" }} />
                   {fp.label && <text x={cx} y={cy} textAnchor="middle" dominantBaseline="middle" fontSize={11}
@@ -3243,7 +3248,7 @@ export default function TestfitTool() {
                 const bandPx = (36 / 12) * pxPerFoot;
                 return <g style={{ pointerEvents: "none" }}>
                   <path d={d} fill="none" stroke="#4A90D9" strokeWidth={bandPx} strokeOpacity={0.16}
-                    strokeLinecap="round" strokeLinejoin="round" />
+                    strokeLinecap="round" strokeLinejoin="round" style={{ vectorEffect: "none" }} />
                   <path d={d} fill="none" stroke="#4A90D9" strokeWidth={1.5} strokeDasharray="6 5" opacity={0.7} />
                   {drawFlowPath.points.map((pt, i) => <circle key={i} cx={pt.x} cy={pt.y} r={i === 0 ? 5 : 3} fill="#4A90D9" opacity={0.85} />)}
                   {ghostPos.snapped && <>

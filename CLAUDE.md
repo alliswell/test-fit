@@ -541,8 +541,16 @@ e2e/docs.spec.js       Playwright Docs-stage tests (save view → slide, live re
   zoom-IN subdivisions index off their own always-1'-pitch `subI/subJ`, not the coarsened
   `startI/startJ` — they only render at zoom >= 1.5, well above where the grid ever coarsens,
   but they'd silently misalign if that ever changed without updating this note.
-- **Plan strokes keep a constant on-screen weight at any zoom (`.tf-const-stroke` in
-  index.css, wired onto `renderPlanCanvas`'s zoomed `<g>` only when `interactive`).** The
+- **Plan line weights follow the 100% look: magnified above 100%, pinned below it
+  (`.tf-const-stroke` in index.css, wired onto `renderPlanCanvas`'s zoomed `<g>` only when
+  `interactive && zoom < 1`).** Zooming IN is a magnifier — strokes scale with the geometry
+  they belong to, so a door swing or furniture outline keeps its proportion to the wall
+  beside it (they used to stay hairline-thin while the walls grew, which read as "the line
+  weights change"). Zooming OUT pins strokes to their 100% screen weight so they never fade
+  to hairlines. Spatial bands (flow-path walkway, window glazing) opt out with an inline
+  `style={{ vectorEffect: "none" }}` — an inline style is the only thing that beats the
+  class rule — because they are widths, not weights. Furniture2D relies on the group policy
+  (no per-element vector-effect). The rest of this note describes how the pin works: The
   whole live-editing canvas draws through one `translate(viewOff) scale(zoom)` group, so a
   literal `strokeWidth={1.5}` used to render 4x thicker at 400% zoom and 4x thinner (near
   invisible) at 15% — every wall/dim/grid/symbol stroke scaled with the geometry it belonged
