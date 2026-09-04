@@ -8,7 +8,12 @@ import { create } from "zustand";
 // Read pervasively across hit-testing, rendering, the inspector, nudge/delete, and copy.
 // Setters mimic the useState value-or-updater contract so call sites are unchanged.
 
-const vou = (set, key) => (v) => set((s) => ({ [key]: typeof v === "function" ? v(s[key]) : v }));
+// Skips the write when the value is unchanged: zustand allocates a new state object on
+// every set, which re-renders every wholesale `useStore()` subscriber even for a no-op.
+const vou = (set, key) => (v) => set((s) => {
+  const next = typeof v === "function" ? v(s[key]) : v;
+  return Object.is(next, s[key]) ? {} : { [key]: next };
+});
 
 export const useSelectionStore = create((set) => ({
   selectedId: null,

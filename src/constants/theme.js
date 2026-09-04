@@ -215,3 +215,9 @@ export const WALL_KINDS_MONO = {
   new:      { label: "New",      color: "#000000", dash: null,  thickness: 7 },
   pony:     { label: "Pony",     color: "#000000", dash: null,  thickness: 4, thin: true },
 };
+
+// Tier token lookup for the mono drawing system. Takes the theme explicitly because the
+// canvas and the chrome use DIFFERENT themes (inside renderPlanCanvas `T` is the shadowed
+// canvas theme, which is what this must read). Returns null outside mono so every call
+// site keeps its existing look with a single `?? existing` fallback.
+export const tierOf = (theme, i) => (theme?.mono ? theme.tiers[Math.max(0, Math.min(3, i))] : null);

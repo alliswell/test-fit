@@ -118,3 +118,29 @@ describe("buildWallSolidGeometry", () => {
     expect(edges.getAttribute("position").count % 2).toBe(0); // line segments
   });
 });
+
+import { geometryToTransferable, transferableToGeometry } from "./wallGeo3d";
+
+describe("worker transport (geometryToTransferable ↔ transferableToGeometry)", () => {
+  it("round-trips a cut wall solid losslessly, transferring its buffers", () => {
+    const quad = [{ x: -5, z: -0.25 }, { x: 5, z: -0.25 }, { x: 5, z: 0.25 }, { x: -5, z: 0.25 }];
+    const geo = buildWallSolidGeometry(quad, 9, [{ x0: -1.5, x1: 1.5, y0: 0, y1: 7 }], { cutDepth: 4 });
+    const t = geometryToTransferable(geo);
+    expect(t.position.length).toBe(geo.getAttribute("position").array.length);
+    expect(t.buffers.length).toBeGreaterThanOrEqual(2);
+    expect(t.buffers[0]).toBe(t.position.buffer);
+    const back = transferableToGeometry(t);
+    expect(back.getAttribute("position").count).toBe(geo.getAttribute("position").count);
+    expect(Array.from(back.getAttribute("normal").array.slice(0, 9))).toEqual(Array.from(geo.getAttribute("normal").array.slice(0, 9)));
+    expect(!!back.getAttribute("uv")).toBe(!!geo.getAttribute("uv"));
+    back.computeBoundingBox(); geo.computeBoundingBox();
+    expect(back.boundingBox.max.y).toBeCloseTo(geo.boundingBox.max.y, 6);
+  });
+  it("rebuilds normals when the payload has none", () => {
+    const geo = new THREE.BoxGeometry(1, 1, 1);
+    const t = geometryToTransferable(geo); t.normal = null;
+    const back = transferableToGeometry(t);
+    expect(back.getAttribute("normal")).toBeTruthy();
+    expect(back.getIndex().count).toBe(geo.getIndex().count);
+  });
+});

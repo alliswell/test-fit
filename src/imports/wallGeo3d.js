@@ -171,3 +171,32 @@ export function buildWallEdgeSegments(quad, heightFt, cuts = []) {
   };
   return { shell: geo(shellSegs), openings: geo(openSegs) };
 }
+
+// ─── Worker transport ────────────────────────────────────────────────────────
+// A BufferGeometry can't cross a Worker boundary, but its typed arrays can — by
+// TRANSFER (zero-copy), not clone. geometryToTransferable flattens the attributes the CSG
+// path produces (position / normal / uv, plus an index when present); transferableToGeometry
+// rebuilds an equivalent geometry on the other side. Round-trips are lossless for what
+// WallSolid needs (positions, normals, box-projected UVs).
+export function geometryToTransferable(geo) {
+  const pos = geo.getAttribute("position"), nrm = geo.getAttribute("normal"), uv = geo.getAttribute("uv");
+  const index = geo.getIndex();
+  const out = {
+    position: pos ? pos.array : new Float32Array(0),
+    normal: nrm ? nrm.array : null,
+    uv: uv ? uv.array : null,
+    index: index ? index.array : null,
+  };
+  out.buffers = [out.position, out.normal, out.uv, out.index].filter(Boolean).map(a => a.buffer);
+  return out;
+}
+
+export function transferableToGeometry(t) {
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.BufferAttribute(t.position, 3));
+  if (t.normal) geo.setAttribute("normal", new THREE.BufferAttribute(t.normal, 3));
+  if (t.uv) geo.setAttribute("uv", new THREE.BufferAttribute(t.uv, 2));
+  if (t.index) geo.setIndex(new THREE.BufferAttribute(t.index, 1));
+  if (!t.normal) geo.computeVertexNormals();
+  return geo;
+}

@@ -10,7 +10,12 @@ import { create } from "zustand";
 // (`setWalls(prev => ...)` or `setWalls(arr)`) are unchanged. The main component
 // destructures these to the same local names it used for useState.
 
-const vou = (set, key) => (v) => set((s) => ({ [key]: typeof v === "function" ? v(s[key]) : v }));
+// Skips the write when the value is unchanged: zustand allocates a new state object on
+// every set, which re-renders every wholesale `useStore()` subscriber even for a no-op.
+const vou = (set, key) => (v) => set((s) => {
+  const next = typeof v === "function" ? v(s[key]) : v;
+  return Object.is(next, s[key]) ? {} : { [key]: next };
+});
 
 export const useGeometryStore = create((set) => ({
   nodes: [],

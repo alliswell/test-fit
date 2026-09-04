@@ -1,6 +1,7 @@
 import { useState, useMemo, useRef, useEffect, useCallback } from "react";
 import { traceOuterBoundary, computeWallFootprints, junctionCapPolys, cutawayHiddenWalls, nestedFloorHoles } from "./geometry";
-import { footprintToLocal, buildWallSolidGeometry, buildCapSolidGeometry, solidEdgesGeometry, buildWallEdgeSegments } from "./wallGeo3d";
+import { footprintToLocal, buildWallSolidGeometry, buildCapSolidGeometry, solidEdgesGeometry, buildWallEdgeSegments, transferableToGeometry } from "./wallGeo3d";
+import { buildWallSolidAsync, csgWorkerAvailable } from "./wallCsgClient";
 import { DOOR_TYPE_STYLES } from "../constants/theme";
 import { DOOR_KNOB_HEIGHT_IN, FINISH_COLORS } from "../constants/specs";
 import { FURNITURE_CATALOG } from "../constants/furniture";
@@ -744,6 +745,42 @@ function WindowGlow({ lenFt, winHFt, sillFt, thickFt }) {
   return <mesh ref={ref} position={[0, sillFt + winHFt / 2, 0]}><boxGeometry args={[lenFt + G * 2, winHFt + G * 2, thickFt + G * 2]} /><meshLambertMaterial color={GLOW_COLOR} transparent opacity={0.5} side={THREE.BackSide} depthWrite={false} /></mesh>;
 }
 
+const NO_CUTS = [];
+// ─── useWallSolidGeometry ────────────────────────────────────────────────────
+// Builds a wall's solid, cutting its openings in the CSG worker (wallCsg.worker.js) when
+// one is available so a door/window edit never stalls the frame. While a new solid is in
+// flight the LAST finished one keeps rendering — a wall being dragged shows its previous
+// (still-cut) shape rather than flashing an uncut prism; only a wall's very first build
+// with openings shows the plain prism until the worker answers. Walls with no openings,
+// and every environment without module workers (vitest), take the synchronous path —
+// identical geometry, same as before the worker existed. Disposal stays with the caller's
+// dispose-on-change effect: every geometry this returns is handed over exactly once.
+function useWallSolidGeometry(localQuad, heightFt, cuts, tileFt) {
+  // cutDepth safely exceeds any miter-widened footprint (runaway cap ≤ 6×halfT per side)
+  const opts = useMemo(() => ({ cutDepth: 12, tileFt }), [tileFt]);
+  const viaWorker = !!localQuad && cuts.length > 0 && csgWorkerAvailable();
+  const syncGeo = useMemo(
+    () => (localQuad && !viaWorker) ? buildWallSolidGeometry(localQuad, heightFt, cuts, opts) : null,
+    [localQuad, heightFt, cuts, opts, viaWorker]);
+  const [asyncGeo, setAsyncGeo] = useState(null);
+  const placeholder = useMemo(
+    () => (viaWorker && !asyncGeo) ? buildWallSolidGeometry(localQuad, heightFt, NO_CUTS, opts) : null,
+    [viaWorker, asyncGeo, localQuad, heightFt, opts]);
+  const reqRef = useRef(0);
+  useEffect(() => {
+    if (!viaWorker) return undefined;
+    const id = ++reqRef.current;
+    let live = true;
+    buildWallSolidAsync(localQuad, heightFt, cuts, opts)
+      .then(t => { if (live && id === reqRef.current) setAsyncGeo(transferableToGeometry(t)); })
+      .catch(() => { if (live && id === reqRef.current) setAsyncGeo(buildWallSolidGeometry(localQuad, heightFt, cuts, opts)); });
+    return () => { live = false; };
+  }, [viaWorker, localQuad, heightFt, cuts, opts]);
+  // Leaving the worker path (last opening deleted, wall gone) drops the stale result.
+  useEffect(() => { if (!viaWorker && asyncGeo) setAsyncGeo(null); }, [viaWorker, asyncGeo]);
+  return viaWorker ? (asyncGeo || placeholder) : syncGeo;
+}
+
 // ─── Wall with openings ────────────────────────────────────────────────────────
 function Wall3D({ w, fp, nodes, doors, windows, cx, cz, pxPerFoot, ceilingHeight, onSelect, selectedId, selType, showDims, style3d = "clay", interactive = true, monoTier = null, monoT = null }) {
   const n1 = nodes.find(n => n.id === w.n1), n2 = nodes.find(n => n.id === w.n2);
@@ -802,8 +839,8 @@ function Wall3D({ w, fp, nodes, doors, windows, cx, cz, pxPerFoot, ceilingHeight
   // a ghost wall read as "these stay", which is backwards.
   const isDemo = w.kind === "demo";
   const tileFt = (style3d === "detailed" && !isDemo) ? WALL_MATERIAL_TILE_FT[w.material] : null;
-  const { solidGeo, edgeGeo, openEdgeGeo } = useMemo(() => {
-    if (!ok) return { solidGeo: null, edgeGeo: null, openEdgeGeo: null };
+  const { localQuad, cuts, edgeGeo, openEdgeGeo } = useMemo(() => {
+    if (!ok) return { localQuad: null, cuts: NO_CUTS, edgeGeo: null, openEdgeGeo: null };
     const midPx = { x: (x1 + x2) / 2, y: (y1 + y2) / 2 };
     const localQuad = footprintToLocal(fp.quad, midPx, angle, pxPerFoot);
     const cuts = segs.filter(s => !s.solid).map(seg => {
@@ -812,15 +849,12 @@ function Wall3D({ w, fp, nodes, doors, windows, cx, cz, pxPerFoot, ceilingHeight
       const sillFt = (seg.item?.sill ?? 30) / 12, winHFt = (seg.item?.height ?? 48) / 12;
       return { x0, x1: x1c, y0: sillFt, y1: Math.min(sillFt + winHFt, heightFt) };
     });
+    // Outlines are procedural (cheap) and stay synchronous; only the CSG solid goes async.
     const edges = buildWallEdgeSegments(localQuad, heightFt, cuts);
-    return {
-      // cutDepth safely exceeds any miter-widened footprint (runaway cap ≤ 6×halfT per side)
-      solidGeo: buildWallSolidGeometry(localQuad, heightFt, cuts, { cutDepth: 12, tileFt }),
-      edgeGeo: edges.shell,
-      openEdgeGeo: edges.openings,
-    };
+    return { localQuad, cuts: cuts.length ? cuts : NO_CUTS, edgeGeo: edges.shell, openEdgeGeo: edges.openings };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fp, segs, heightFt, doorHFt, wallLenFt, angle, pxPerFoot, isDemo, tileFt, x1, y1, x2, y2, ok]);
+  }, [fp, segs, heightFt, doorHFt, wallLenFt, angle, pxPerFoot, isDemo, x1, y1, x2, y2, ok]);
+  const solidGeo = useWallSolidGeometry(localQuad, heightFt, cuts, tileFt);
   useEffect(() => () => { solidGeo?.dispose(); edgeGeo?.dispose(); openEdgeGeo?.dispose(); },
     [solidGeo, edgeGeo, openEdgeGeo]);
 

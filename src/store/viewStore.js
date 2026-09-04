@@ -12,7 +12,12 @@ import { create } from "zustand";
 // `setPaneView`) own the layout invariants.
 
 // value-or-updater setter, matching the useState contract.
-const vou = (set, key) => (v) => set((s) => ({ [key]: typeof v === "function" ? v(s[key]) : v }));
+// Skips the write when the value is unchanged: zustand allocates a new state object on
+// every set, which re-renders every wholesale `useStore()` subscriber even for a no-op.
+const vou = (set, key) => (v) => set((s) => {
+  const next = typeof v === "function" ? v(s[key]) : v;
+  return Object.is(next, s[key]) ? {} : { [key]: next };
+});
 
 export const useViewStore = create((set) => ({
   panes: [{ view: "plan" }],

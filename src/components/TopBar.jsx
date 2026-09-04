@@ -7,7 +7,7 @@ import { ChevronDown, PanelLeft, PanelLeftClose, Plus, Redo2, RotateCcw, Setting
 import MonoSkinPanel from "./MonoSkinPanel";
 
 export default function TopBar({
-  $, MODES, S, T, activeSnapshotId, canRedo, canUndo, cost, deleteSnapshot, display, exportPdf, exportPng, exportProject, font, importProject, liveDirty, loadRef, markers, mode, modeMenuRect, newProject, newSnapMode, redo, renameSnapshot, renamingSnapId, saveMenuRect, setMode, setModeMenuRect, setNewSnapMode, setRenamingSnapId, setSaveMenuRect, setShowModeMenu, setShowSaveMenu, setShowSettings, setShowSnapMenu, setSidebarOpen, setSnapDraftName, setSnapMenuRect, setT, setMonoDraw, monoDraw, monoSkin, setMonoSkin, monoTiers = [], setThemeMode, showModeMenu, showSaveMenu, showSnapMenu, sidebarOpen, slidesCount = 0, snapDraftName, snapMenuRect, snapshot, snapshots, switchSnapshot, takeSnapshot, themeMode, undo, updateSnapshot, walls, zones, furnitureCount = 0, panes, setLayout, setSelType, setSelectedId, setSelectedIds,
+  $, MODES, S, T, activeSnapshotId, canRedo, canUndo, cost, deleteSnapshot, display, exportPdf, exportPng, exportSvg, exportDxf, exportProject, font, importProject, liveDirty, loadRef, markers, mode, modeMenuRect, newProject, newSnapMode, redo, renameSnapshot, renamingSnapId, saveMenuRect, setMode, setModeMenuRect, setNewSnapMode, setRenamingSnapId, setSaveMenuRect, setShowModeMenu, setShowSaveMenu, setShowSettings, setShowSnapMenu, setSidebarOpen, setSnapDraftName, setSnapMenuRect, setT, setMonoDraw, monoDraw, monoSkin, setMonoSkin, monoTiers = [], setThemeMode, showModeMenu, showSaveMenu, showSnapMenu, sidebarOpen, slidesCount = 0, snapDraftName, snapMenuRect, snapshot, snapshots, switchSnapshot, takeSnapshot, themeMode, undo, updateSnapshot, walls, zones, furnitureCount = 0, panes, setLayout, setSelType, setSelectedId, setSelectedIds,
 }) {
   // Mono style options live in a split-button dropdown (main = toggle, chevron = skin panel).
   const [showMono, setShowMono] = useState(false);
@@ -219,6 +219,8 @@ export default function TopBar({
               {[
                 { label: "Save Project (.json)", fn: exportProject },
                 { label: "Export PNG", fn: exportPng },
+                { label: "Export SVG", fn: exportSvg },
+                { label: "Export DXF (CAD)", fn: exportDxf },
                 { label: "Export PDF", fn: exportPdf },
               ].map(({ label, fn }) => (
                 <div key={label} onClick={() => { setShowSaveMenu(false); fn(); }}
