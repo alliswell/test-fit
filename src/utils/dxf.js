@@ -33,7 +33,16 @@ const num = (n) => {
 const esc = (s) => String(s ?? "").replace(/[\r\n]+/g, " ").replace(/[^\x20-\x7E]/g, "?");
 
 class DxfWriter {
-  constructor(pxPerFoot) { this.ppf = pxPerFoot; this.out = []; this.counts = {}; this.ext = null; }
+  // `clip` ({x,y,w,h} in plan px) drops every entity whose bounding box falls entirely
+  // outside it — used to export just what a Docs sheet shows. Entities that straddle the
+  // edge are kept whole (a clipped wall is worse than a slightly longer one).
+  constructor(pxPerFoot, clip = null) { this.ppf = pxPerFoot; this.out = []; this.counts = {}; this.ext = null; this.clip = clip; }
+  keep(pts) {
+    const c = this.clip; if (!c) return true;
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const p of pts) { x0 = Math.min(x0, p.x); y0 = Math.min(y0, p.y); x1 = Math.max(x1, p.x); y1 = Math.max(y1, p.y); }
+    return x1 >= c.x && x0 <= c.x + c.w && y1 >= c.y && y0 <= c.y + c.h;
+  }
   x(px) { return px / this.ppf; }
   y(px) { return -px / this.ppf; }
   pt(p) { const x = this.x(p.x), y = this.y(p.y); this.bump(x, y); return [x, y]; }
@@ -44,13 +53,14 @@ class DxfWriter {
   tag(code, value) { this.out.push(String(code), String(value)); }
   entity(type, layer) { this.tag(0, type); this.tag(8, layer); this.counts[type] = (this.counts[type] || 0) + 1; }
   line(layer, a, b) {
+    if (!this.keep([a, b])) return;
     const [x1, y1] = this.pt(a), [x2, y2] = this.pt(b);
     this.entity("LINE", layer);
     this.tag(10, num(x1)); this.tag(20, num(y1)); this.tag(30, 0);
     this.tag(11, num(x2)); this.tag(21, num(y2)); this.tag(31, 0);
   }
   polyline(layer, pts, closed) {
-    if (!pts || pts.length < 2) return;
+    if (!pts || pts.length < 2 || !this.keep(pts)) return;
     this.entity("POLYLINE", layer);
     this.tag(66, 1); this.tag(70, closed ? 1 : 0);
     this.tag(10, 0); this.tag(20, 0); this.tag(30, 0);
@@ -62,6 +72,7 @@ class DxfWriter {
     this.tag(0, "SEQEND"); this.tag(8, layer);
   }
   circle(layer, c, rPx) {
+    if (!this.keep([{ x: c.x - rPx, y: c.y - rPx }, { x: c.x + rPx, y: c.y + rPx }])) return;
     const [x, y] = this.pt(c); const r = rPx / this.ppf;
     this.bump(x - r, y - r); this.bump(x + r, y + r);
     this.entity("CIRCLE", layer);
@@ -69,6 +80,7 @@ class DxfWriter {
   }
   // Angles in DEGREES, counter-clockwise in DXF (y-up) space.
   arc(layer, c, rPx, startDeg, endDeg) {
+    if (!this.keep([{ x: c.x - rPx, y: c.y - rPx }, { x: c.x + rPx, y: c.y + rPx }])) return;
     const [x, y] = this.pt(c); const r = rPx / this.ppf;
     this.bump(x - r, y - r); this.bump(x + r, y + r);
     this.entity("ARC", layer);
@@ -76,8 +88,9 @@ class DxfWriter {
     this.tag(50, num(startDeg)); this.tag(51, num(endDeg));
   }
   // Centre-justified text; `hPx` is the cap height in plan px, `rotDeg` in DXF space.
-  text(layer, c, hPx, str, rotDeg = 0) {
-    const s = esc(str).trim(); if (!s) return;
+  // `force` skips the clip test — a label that belongs to a kept polygon travels with it.
+  text(layer, c, hPx, str, rotDeg = 0, force = false) {
+    const s = esc(str).trim(); if (!s || !(force || this.keep([c]))) return;
     const [x, y] = this.pt(c);
     this.entity("TEXT", layer);
     this.tag(10, num(x)); this.tag(20, num(y)); this.tag(30, 0);
@@ -129,11 +142,13 @@ const dxfAngle = (from, to, w) => { // degrees, in DXF (y-up) space
 //            markers, labels, dims, revClouds, flowPaths, pxPerFoot }
 //   opts:  { wallHalfT(w) → px  (required: half the wall's thickness, kind-aware),
 //            zoneLibrary (for zone names),
-//            resolveDim(d) → {x1,y1,x2,y2}  (optional: anchored dim endpoints) }
+//            resolveDim(d) → {x1,y1,x2,y2}  (optional: anchored dim endpoints),
+//            clip: {x,y,w,h} plan px (optional: keep only entities touching this rect —
+//                  a Docs plan slide's crop, so "export this sheet" matches the sheet) }
 // Returns { dxf, counts } — counts is the per-entity-type tally, for the toast.
 export function buildDxf(model, opts = {}) {
   const ppf = model.pxPerFoot || 20;
-  const w = new DxfWriter(ppf);
+  const w = new DxfWriter(ppf, opts.clip || null);
   const nodes = model.nodes || [], walls = model.walls || [];
   const doors = model.doors || [], windows = model.windows || [], columns = model.columns || [];
   const halfTOf = opts.wallHalfT || (() => (5 / 12) * ppf / 2);
@@ -210,16 +225,16 @@ export function buildDxf(model, opts = {}) {
   const centroid = (pts) => ({ x: pts.reduce((s, p) => s + p.x, 0) / pts.length, y: pts.reduce((s, p) => s + p.y, 0) / pts.length });
   const areaSf = (pts) => { let a = 0; for (let i = 0; i < pts.length; i++) { const j = (i + 1) % pts.length; a += pts[i].x * pts[j].y - pts[j].x * pts[i].y; } return Math.round(Math.abs(a) / 2 / (ppf * ppf)); };
   for (const z of model.zones || []) {
-    const pts = polyPts(z); if (pts.length < 3) continue;
+    const pts = polyPts(z); if (pts.length < 3 || !w.keep(pts)) continue;
     w.polyline("A-AREA", pts, true);
     const c = centroid(pts);
-    w.text("A-AREA", { x: c.x, y: c.y - 6 }, 10, z.label || zoneLib[z.type]?.name || z.type);
-    w.text("A-AREA", { x: c.x, y: c.y + 8 }, 9, `${areaSf(pts)} SF`);
+    w.text("A-AREA", { x: c.x, y: c.y - 6 }, 10, z.label || zoneLib[z.type]?.name || z.type, 0, true);
+    w.text("A-AREA", { x: c.x, y: c.y + 8 }, 9, `${areaSf(pts)} SF`, 0, true);
   }
   for (const fr of model.floorRegions || []) {
-    if (!fr.points || fr.points.length < 3) continue;
+    if (!fr.points || fr.points.length < 3 || !w.keep(fr.points)) continue;
     w.polyline("A-FLOR", fr.points, true);
-    if (fr.label) w.text("A-FLOR", centroid(fr.points), 10, fr.label);
+    if (fr.label) w.text("A-FLOR", centroid(fr.points), 10, fr.label, 0, true);
   }
 
   // ── Furniture: rotated w×d footprint ──
@@ -266,14 +281,14 @@ export function buildDxf(model, opts = {}) {
     w.text("A-ANNO-DIMS", mid, 9, formatFtIn(len, ppf), ang);
   }
   for (const rc of model.revClouds || []) {
-    if (!rc.points || rc.points.length < 3) continue;
+    if (!rc.points || rc.points.length < 3 || !w.keep(rc.points)) continue;
     w.polyline("A-ANNO-REVC", rc.points, true);
-    if (rc.label) w.text("A-ANNO-REVC", centroid(rc.points), 10, rc.label);
+    if (rc.label) w.text("A-ANNO-REVC", centroid(rc.points), 10, rc.label, 0, true);
   }
   for (const fp of model.flowPaths || []) {
-    if (!fp.points || fp.points.length < 2) continue;
+    if (!fp.points || fp.points.length < 2 || !w.keep(fp.points)) continue;
     w.polyline("A-FLOW", fp.points, false);
-    if (fp.label) w.text("A-FLOW", centroid(fp.points), 10, fp.label);
+    if (fp.label) w.text("A-FLOW", centroid(fp.points), 10, fp.label, 0, true);
   }
 
   return { dxf: w.finish(), counts: w.counts };

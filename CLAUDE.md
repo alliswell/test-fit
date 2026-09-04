@@ -310,8 +310,21 @@ src/
                        A-ANNO-*, E-POWR/T-DATA/A-AV/M-HVAC/E-SECU). R12 primitives only
                        (LINE/POLYLINE/CIRCLE/ARC/TEXT) for maximum reader compatibility;
                        wall runs are cut at openings via wallSolidRuns (dxf.test.js).
+                       opts.clip {x,y,w,h} (plan px) keeps only entities whose bounds touch
+                       the rect — entities straddling the edge stay whole, and a polygon's
+                       label travels with its kept polygon — which is how "Export DXF · this
+                       sheet" (Docs mode, plan slide open) exports exactly the slide's crop.
                        Wired to TopBar's Save menu ("Export DXF (CAD)") next to the new
                        "Export SVG" (a vector serialization of the live plan canvas).
+    autosaveHistory.js a five-deep ring of earlier autosaves (localStorage
+                       "testfit-autosave-history"): pushHistory records a slimmed copy
+                       (slide 3D captures stripped) when the newest entry is ≥90 s old and
+                       the content changed — so five entries span a session, not four
+                       seconds; force=true records regardless (a restore pushes the state it
+                       replaces first, so restores are themselves reversible). Pure: every
+                       function takes the storage as a parameter (tests use a Map stub).
+                       Surfaced in TopBar's Load menu ("Restore earlier autosave", rows are
+                       relativeTime + historySummary; data-testid load-menu / autosave-entry).
     labels.js          wrapLabelLines, labelBounds (label box layout)
     docs.js            pure Docs-stage helpers: SHEET_SIZES, sheetDims/Inches,
                        fitRectToViewport, fitStandardScale (true architectural scales),
@@ -769,7 +782,11 @@ e2e/docs.spec.js       Playwright Docs-stage tests (save view → slide, live re
   on 4174 for perf checks after `npx vite build`).
 - Build: `npx vite build` (must be clean).
 - Unit: `npx vitest run` (model/geometry/dxf/wallGeo3d).
-- E2E: `npx playwright test` (boots the app, draws, annotates, checks autosave). The port
+- Keyboard: ⌘C / ⌘V / ⌘D share `collectSelection` + `placeClip` in the keydown handler
+  (testfit.jsx); ⌘D places a copy one 20 px step away without touching the clipboard. The
+  plain-D dimensions toggle excludes both Ctrl and Meta. Cheat sheet: constants/shortcuts.js.
+- E2E: `npx playwright test` (boots the app, draws, annotates, checks autosave; `e2e/features.spec.js`
+  covers ⌘D and the autosave-history restore). The port
   comes from `PORT`, else the dev entry in `../.claude/launch.json`, else 5173 — so it
   follows whatever the desktop app is serving instead of colliding with it.
 - Dependencies: package.json lists only what the app imports (react, three + r3f/drei +

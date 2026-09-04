@@ -86,4 +86,15 @@ describe("buildDxf", () => {
     expect(empty).toContain("EOF");
     expect(Object.keys(c)).toEqual([]);
   });
+
+  it("clip keeps only entities touching the rect (a Docs sheet's crop)", () => {
+    const west = buildDxf(model, { ...opts, clip: { x: -10, y: -10, w: 100, h: 220 } }); // x < 90px
+    expect(west.counts.LINE).toBeLessThan(counts.LINE);
+    expect(west.dxf).toContain("1\r\nLounge");           // zone at 20..180 straddles the rect
+    expect(west.dxf).not.toContain("1\r\nCoffee bar");   // label at x=250 is outside
+    expect(west.counts.ARC).toBeUndefined();               // door swing spans x 110..230: outside
+    // A rect that straddles the door keeps it whole.
+    const mid = buildDxf(model, { ...opts, clip: { x: 190, y: 150, w: 20, h: 60 } });
+    expect(mid.counts.ARC).toBe(1);
+  });
 });

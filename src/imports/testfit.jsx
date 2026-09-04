@@ -41,6 +41,7 @@ import PlanZonesLayer from "../components/plan/PlanZonesLayer";
 import PlanOpeningsLayer from "../components/plan/PlanOpeningsLayer";
 import PlanMarkersLayer from "../components/plan/PlanMarkersLayer";
 import { buildDxf } from "../utils/dxf";
+import { pushHistory, readHistory, relativeTime } from "../utils/autosaveHistory";
 import { SliderInput, LabelAnnotation, AlignBtn } from "../components/ui";
 import ElevationView from "../components/ElevationView";
 import TopBar from "../components/TopBar";
@@ -535,11 +536,25 @@ export default function TestfitTool() {
   useEffect(() => {
     if (!hydratedRef.current) return;
     const t = setTimeout(() => {
-      try { localStorage.setItem(AUTOSAVE_KEY, JSON.stringify(getProjectData())); }
+      try {
+        const data = getProjectData();
+        localStorage.setItem(AUTOSAVE_KEY, JSON.stringify(data));
+        // A short ring of earlier autosaves (utils/autosaveHistory.js): one copy every
+        // ~90 s of change, five deep, restorable from the Load menu.
+        pushHistory(data);
+      }
       catch (e) { /* quota exceeded or non-serializable — autosave is best-effort */ }
     }, 800);
     return () => clearTimeout(t);
   }, [getProjectData]);
+  const readAutosaveHistory = useCallback(() => readHistory(), []);
+  // Restoring records the CURRENT state first (forced past the gap), so a restore is
+  // itself recoverable from the same menu.
+  const restoreAutosave = useCallback((entry) => {
+    pushHistory(getProjectData(), { force: true });
+    applyProjectData(migrateProjectData(entry.data), true);
+    toast("Restored earlier autosave", { description: `from ${relativeTime(entry.ts)} · ⌘Z won't undo this — the state you left is now the newest entry` });
+  }, [getProjectData, applyProjectData]);
 
   // ── Snapshot operations ──────────────────────────────────────────────
   // Has the live model diverged from the active snapshot's stored data?
@@ -1186,6 +1201,18 @@ export default function TestfitTool() {
     const n = Object.values(counts).reduce((sum, v) => sum + v, 0);
     toast("DXF exported", { description: `${a.download} · ${n} entities` });
   }, [captureModel, wallHalfT, zoneLibrary, resolveDimEndpoints, projectName]);
+  // The same DXF, clipped to the open Docs plan slide's crop — "export this sheet".
+  const exportDxfSlide = useCallback(() => {
+    const slide = activeDocsSlide;
+    if (!slide?.rect || slide.view !== "plan") return;
+    const { dxf, counts } = buildDxf(captureModel(), { wallHalfT, zoneLibrary, resolveDim: resolveDimEndpoints, clip: slide.rect });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([dxf], { type: "application/dxf" }));
+    a.download = ((projectName || "testfit") + " - " + (slide.title || slide.name || "sheet")).replace(/[^a-zA-Z0-9-_ ]/g, "") + ".dxf";
+    a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+    const n = Object.values(counts).reduce((sum, v) => sum + v, 0);
+    toast("Sheet DXF exported", { description: `${a.download} · ${n} entities` });
+  }, [activeDocsSlide, captureModel, wallHalfT, zoneLibrary, resolveDimEndpoints, projectName]);
 
   // Smooth zoom centered on cursor
   const onWheel = useCallback((e) => {
@@ -1761,43 +1788,34 @@ export default function TestfitTool() {
       if (k === "Z" && (e.ctrlKey || e.metaKey) && e.shiftKey) { e.preventDefault(); redo(); return; }
       if (k === "Y" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); redo(); return; }
       if (k === "Z" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); undo(); return; }
-      // ── Copy ────────────────────────────────────────────────────────────
-      if (k === "C" && (e.ctrlKey || e.metaKey)) {
-        e.preventDefault();
+      // Copy / paste / duplicate share two helpers: what the selection holds, and how a
+      // clip lands back on the canvas (fresh ids, remapped wall nodes, offset, reselect).
+      const collectSelection = () => {
         const ids = new Set(selectedIds.length > 1 ? selectedIds : selectedId ? [selectedId] : []);
-        if (ids.size === 0) return;
+        if (ids.size === 0) return null;
         // Collect walls and their nodes
         const copiedWalls = walls.filter(w => ids.has(w.id));
         const wallNodeIds = new Set();
         copiedWalls.forEach(w => { wallNodeIds.add(w.n1); wallNodeIds.add(w.n2); });
-        const copiedNodes = nodes.filter(n => wallNodeIds.has(n.id));
-        const copiedDoors = doors.filter(d => ids.has(d.id));
-        const copiedWindows = windows.filter(w => ids.has(w.id));
-        const copiedColumns = columns.filter(c => ids.has(c.id));
-        const copiedMarkers = markers.filter(m => ids.has(m.id));
-        const copiedFurniture = furniture.filter(f => ids.has(f.id));
-        const copiedZones = zones.filter(z => ids.has(z.id));
-        setClipboard({ walls: copiedWalls, nodes: copiedNodes, doors: copiedDoors, windows: copiedWindows, columns: copiedColumns, markers: copiedMarkers, furniture: copiedFurniture, zones: copiedZones });
-        toast(`Copied ${ids.size} item${ids.size === 1 ? "" : "s"}`);
-        setPasteOffset(0);
-        return;
-      }
-      // ── Paste ────────────────────────────────────────────────────────────
-      if (k === "V" && (e.ctrlKey || e.metaKey)) {
-        e.preventDefault();
-        if (!clipboard) return;
-        const off = (pasteOffset + 1) * 20;
-        setPasteOffset(p => p + 1);
+        return {
+          count: ids.size,
+          walls: copiedWalls, nodes: nodes.filter(n => wallNodeIds.has(n.id)),
+          doors: doors.filter(d => ids.has(d.id)), windows: windows.filter(w => ids.has(w.id)),
+          columns: columns.filter(c => ids.has(c.id)), markers: markers.filter(m => ids.has(m.id)),
+          furniture: furniture.filter(f => ids.has(f.id)), zones: zones.filter(z => ids.has(z.id)),
+        };
+      };
+      const placeClip = (clip, off, verb) => {
         // Remap node IDs
         const nodeMap = {};
-        const newNodes = clipboard.nodes.map(n => { const nid = uid(); nodeMap[n.id] = nid; return { ...n, id: nid, x: n.x + off, y: n.y + off }; });
-        const newWalls = clipboard.walls.map(w => ({ ...w, id: uid(), n1: nodeMap[w.n1] ?? w.n1, n2: nodeMap[w.n2] ?? w.n2 }));
-        const newDoors = clipboard.doors.map(d => ({ ...d, id: uid(), x: d.x + off, y: d.y + off }));
-        const newWindows = clipboard.windows.map(w => ({ ...w, id: uid(), x: w.x + off, y: w.y + off }));
-        const newColumns = clipboard.columns.map(c => ({ ...c, id: uid(), x: c.x + off, y: c.y + off }));
-        const newMarkers = clipboard.markers.map(m => ({ ...m, id: uid(), x: m.x + off, y: m.y + off, deletedAtPhase: undefined }));
-        const newFurniture = (clipboard.furniture || []).map(f => ({ ...f, id: uid(), x: f.x + off, y: f.y + off, fromZone: undefined }));
-        const newZones = clipboard.zones.map(z => z.points
+        const newNodes = clip.nodes.map(n => { const nid = uid(); nodeMap[n.id] = nid; return { ...n, id: nid, x: n.x + off, y: n.y + off }; });
+        const newWalls = clip.walls.map(w => ({ ...w, id: uid(), n1: nodeMap[w.n1] ?? w.n1, n2: nodeMap[w.n2] ?? w.n2 }));
+        const newDoors = clip.doors.map(d => ({ ...d, id: uid(), x: d.x + off, y: d.y + off }));
+        const newWindows = clip.windows.map(w => ({ ...w, id: uid(), x: w.x + off, y: w.y + off }));
+        const newColumns = clip.columns.map(c => ({ ...c, id: uid(), x: c.x + off, y: c.y + off }));
+        const newMarkers = clip.markers.map(m => ({ ...m, id: uid(), x: m.x + off, y: m.y + off, deletedAtPhase: undefined }));
+        const newFurniture = (clip.furniture || []).map(f => ({ ...f, id: uid(), x: f.x + off, y: f.y + off, fromZone: undefined }));
+        const newZones = clip.zones.map(z => z.points
           ? { ...z, id: uid(), points: z.points.map(pt => ({ x: pt.x + off, y: pt.y + off })) }
           : { ...z, id: uid(), x: z.x + off, y: z.y + off });
         setNodes(p => [...p, ...newNodes]);
@@ -1808,11 +1826,37 @@ export default function TestfitTool() {
         setMarkers(p => [...p, ...newMarkers]);
         if (newFurniture.length) setFurniture(p => [...p, ...newFurniture]);
         setZones(p => [...p, ...newZones]);
-        // Select all pasted objects
+        // Select all placed objects
         const allNewIds = [...newWalls.map(w => w.id), ...newDoors.map(d => d.id), ...newWindows.map(w => w.id), ...newColumns.map(c => c.id), ...newMarkers.map(m => m.id), ...newFurniture.map(f => f.id), ...newZones.map(z => z.id)];
         if (allNewIds.length === 1) { setSelectedId(allNewIds[0]); setSelType(newWalls.length ? "wall" : newDoors.length ? "door" : newWindows.length ? "window" : newColumns.length ? "column" : newMarkers.length ? "marker" : newFurniture.length ? "furniture" : "zone"); setSelectedIds([]); }
         else if (allNewIds.length > 1) { setSelectedIds(allNewIds); setSelectedId(allNewIds[0]); setSelType(newWalls.length ? "wall" : null); }
-        if (allNewIds.length) toast(`Pasted ${allNewIds.length} item${allNewIds.length === 1 ? "" : "s"}`);
+        if (allNewIds.length) toast(`${verb} ${allNewIds.length} item${allNewIds.length === 1 ? "" : "s"}`);
+      };
+      // ── Copy ────────────────────────────────────────────────────────────
+      if (k === "C" && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        const clip = collectSelection();
+        if (!clip) return;
+        setClipboard(clip);
+        toast(`Copied ${clip.count} item${clip.count === 1 ? "" : "s"}`);
+        setPasteOffset(0);
+        return;
+      }
+      // ── Paste ────────────────────────────────────────────────────────────
+      if (k === "V" && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        if (!clipboard) return;
+        const off = (pasteOffset + 1) * 20;
+        setPasteOffset(p => p + 1);
+        placeClip(clipboard, off, "Pasted");
+        return;
+      }
+      // ── Duplicate (⌘D) — copy + paste in one step, leaving the clipboard alone ──
+      if (k === "D" && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        const clip = collectSelection();
+        if (!clip) return;
+        placeClip(clip, 20, "Duplicated");
         return;
       }
       // Number keys for modes
@@ -1850,7 +1894,7 @@ export default function TestfitTool() {
       else if (mode === "build" && k === "A" && !(e.ctrlKey || e.metaKey)) { setT("floorRegion"); }
       else if (mode === "zone" && k === "Z") { setT("zone"); }
       else if (mode === "itmep" && k === "P") { setT("marker"); }
-      if (k === "D" && !e.ctrlKey) setShowDims(d => !d);
+      if (k === "D" && !(e.ctrlKey || e.metaKey)) setShowDims(d => !d);
       if (k === "G") setShowGrid(g => !g);
       if (k === "R" && ((tool === "outlet" && outletType.startsWith("htrack_")) || (tool === "lighting" && lightingType.startsWith("htrack_")))) { setHtrackAngle(a => (a + 45) % 180); }
       if (k === "R" && selMarker && SPEC_COMPONENTS[selMarker.layer]?.[selMarker.componentType]?.directional) { setMarkers(p => p.map(m => m.id === selMarker.id ? { ...m, angle: (m.angle || 0) + Math.PI / 12 } : m)); }
@@ -3465,7 +3509,7 @@ export default function TestfitTool() {
         fontFamily: font, fontSize: 11, backdropFilter: "blur(12px)" } }} />
       {showShortcuts && <ShortcutSheet T={T} S={S} font={font} display={display} onClose={() => setShowShortcuts(false)} />}
       {/* ── Top Mode Bar ──────────────────────────────────────────── */}
-      <TopBar $={$} MODES={MODES} S={S} T={T} activeSnapshotId={activeSnapshotId} canRedo={canRedo} canUndo={canUndo} cost={cost} deleteSnapshot={deleteSnapshot} display={display} exportPdf={exportPdf} exportPng={exportPng} exportSvg={exportSvg} exportDxf={exportDxf} exportProject={exportProject} font={font} importProject={importProject} liveDirty={liveDirty} loadRef={loadRef} markers={markers} mode={mode} modeMenuRect={modeMenuRect} newProject={newProject} newSnapMode={newSnapMode} redo={redo} renameSnapshot={renameSnapshot} renamingSnapId={renamingSnapId} saveMenuRect={saveMenuRect} setMode={setMode} setModeMenuRect={setModeMenuRect} setNewSnapMode={setNewSnapMode} setRenamingSnapId={setRenamingSnapId} setSaveMenuRect={setSaveMenuRect} setShowModeMenu={setShowModeMenu} setShowSaveMenu={setShowSaveMenu} setShowSettings={setShowSettings} setShowSnapMenu={setShowSnapMenu} setSidebarOpen={setSidebarOpen} setSnapDraftName={setSnapDraftName} setSnapMenuRect={setSnapMenuRect} setT={setT} setThemeMode={setThemeMode} monoDraw={monoDraw} setMonoDraw={setMonoDraw} monoSkin={monoSkin} setMonoSkin={setMonoSkin} monoTiers={monoT.tiers} showModeMenu={showModeMenu} showSaveMenu={showSaveMenu} showSnapMenu={showSnapMenu} sidebarOpen={sidebarOpen} snapDraftName={snapDraftName} snapMenuRect={snapMenuRect} snapshot={snapshot} snapshots={snapshots} switchSnapshot={switchSnapshot} takeSnapshot={takeSnapshot} themeMode={themeMode} undo={undo} updateSnapshot={updateSnapshot} walls={walls} zones={zones} furnitureCount={furniture.length} panes={panes} setLayout={setLayout} setSelType={setSelType} setSelectedId={setSelectedId} setSelectedIds={setSelectedIds} slidesCount={slides.length} />
+      <TopBar $={$} MODES={MODES} S={S} T={T} activeSnapshotId={activeSnapshotId} canRedo={canRedo} canUndo={canUndo} cost={cost} deleteSnapshot={deleteSnapshot} display={display} exportPdf={exportPdf} exportPng={exportPng} exportSvg={exportSvg} exportDxf={exportDxf} exportProject={exportProject} exportDxfSlide={mode === "docs" && activeDocsSlide?.view === "plan" && activeDocsSlide.rect ? exportDxfSlide : null} activeSlideName={activeDocsSlide?.title || activeDocsSlide?.name || ""} readAutosaveHistory={readAutosaveHistory} restoreAutosave={restoreAutosave} font={font} importProject={importProject} liveDirty={liveDirty} loadRef={loadRef} markers={markers} mode={mode} modeMenuRect={modeMenuRect} newProject={newProject} newSnapMode={newSnapMode} redo={redo} renameSnapshot={renameSnapshot} renamingSnapId={renamingSnapId} saveMenuRect={saveMenuRect} setMode={setMode} setModeMenuRect={setModeMenuRect} setNewSnapMode={setNewSnapMode} setRenamingSnapId={setRenamingSnapId} setSaveMenuRect={setSaveMenuRect} setShowModeMenu={setShowModeMenu} setShowSaveMenu={setShowSaveMenu} setShowSettings={setShowSettings} setShowSnapMenu={setShowSnapMenu} setSidebarOpen={setSidebarOpen} setSnapDraftName={setSnapDraftName} setSnapMenuRect={setSnapMenuRect} setT={setT} setThemeMode={setThemeMode} monoDraw={monoDraw} setMonoDraw={setMonoDraw} monoSkin={monoSkin} setMonoSkin={setMonoSkin} monoTiers={monoT.tiers} showModeMenu={showModeMenu} showSaveMenu={showSaveMenu} showSnapMenu={showSnapMenu} sidebarOpen={sidebarOpen} snapDraftName={snapDraftName} snapMenuRect={snapMenuRect} snapshot={snapshot} snapshots={snapshots} switchSnapshot={switchSnapshot} takeSnapshot={takeSnapshot} themeMode={themeMode} undo={undo} updateSnapshot={updateSnapshot} walls={walls} zones={zones} furnitureCount={furniture.length} panes={panes} setLayout={setLayout} setSelType={setSelType} setSelectedId={setSelectedId} setSelectedIds={setSelectedIds} slidesCount={slides.length} />
 
       <div style={S.main}>
         <Sidebar $={$} S={S} T={T} activeFurnitureType={activeFurnitureType} activeSlideId={activeSlideId} activeSpecLayer={activeSpecLayer} activeZoneType={activeZoneType} addSlide={addSlide} bgImage={bgImage} bgOpacity={bgOpacity} bgScale={bgScale} calibrationFeet={calibrationFeet} calibrationLine={calibrationLine} columns={columns} cost={cost} dims={dims} docSettings={docSettings} doors={doors} dropSlide={dropSlide} fRef={fRef} floorRegions={floorRegions} flowPaths={flowPaths} font={font} ft={ft} furniture={furniture} guides={guides} labels={labels} layerLocked={layerLocked} lockedLayers={lockedLayers} markers={markers} mode={mode} projectName={projectName} pxPerFoot={pxPerFoot} removeSlide={removeSlide} revClouds={revClouds} selectedId={selectedId} selectedIds={selectedIds} setActiveComponentType={setActiveComponentType} setActiveFurnitureType={setActiveFurnitureType} setActiveSlideId={setActiveSlideId} setActiveSpecLayer={setActiveSpecLayer} setActiveZoneType={setActiveZoneType} setBgImage={setBgImage} setBgOffset={setBgOffset} setBgOpacity={setBgOpacity} setBgScale={setBgScale} setCalibrationFeet={setCalibrationFeet} setCalibrationLine={setCalibrationLine} setLockedLayers={setLockedLayers} setProjectName={setProjectName} setSelType={setSelType} setSelectedId={setSelectedId} setSelectedIds={setSelectedIds} setShowGrid={setShowGrid} setT={setT} setTool={setTool} setVisibleBuildElectrical={setVisibleBuildElectrical} setVisibleBuildLighting={setVisibleBuildLighting} setVisibleDims={setVisibleDims} setVisibleFloorRegions={setVisibleFloorRegions} setVisibleFlowPaths={setVisibleFlowPaths} setVisibleFurniture={setVisibleFurniture} setVisibleGuides={setVisibleGuides} setVisibleITMEP={setVisibleITMEP} setVisibleLabels={setVisibleLabels} setVisibleLayers={setVisibleLayers} setVisibleRevClouds={setVisibleRevClouds} setVisibleZones={setVisibleZones} showGrid={showGrid} slides={slides} tool={tool} uiColor={uiColor} updateSlide={updateSlide} visibleBuildElectrical={visibleBuildElectrical} visibleBuildLighting={visibleBuildLighting} visibleDims={visibleDims} visibleFloorRegions={visibleFloorRegions} visibleFlowPaths={visibleFlowPaths} visibleFurniture={visibleFurniture} visibleGuides={visibleGuides} visibleITMEP={visibleITMEP} visibleLabels={visibleLabels} visibleLayers={visibleLayers} visibleRevClouds={visibleRevClouds} visibleZones={visibleZones} wallKinds={wallKinds} walls={walls} windows={windows} wl={wl} zoneLibrary={zoneLibrary} zones={zones} />
