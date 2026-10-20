@@ -140,3 +140,54 @@ test("projects: save, update, save-as-new, rename, open, delete", async ({ page 
     await expect(entries).toHaveCount(remaining);
   }
 });
+
+test("furnish checks: overlap flags, the clearance apron, and wall-hug snapping", async ({ page }) => {
+  // A 20' wall along y=200 (x 200→600) and three sofas: two overlapping, one free.
+  const seed = {
+    version: "testfit-v18", pxPerFoot: 20, projectName: "Furnish checks",
+    nodes: [{ id: "a", x: 200, y: 200 }, { id: "b", x: 600, y: 200 }],
+    walls: [{ id: "w1", n1: "a", n2: "b", kind: "new" }],
+    furniture: [
+      { id: "s1", type: "sofa", x: 300, y: 500, angle: 0, w: 7, d: 3, label: "" },
+      { id: "s2", type: "sofa", x: 360, y: 500, angle: 0, w: 7, d: 3, label: "" },   // overlaps s1
+      { id: "s3", type: "sofa", x: 700, y: 400, angle: 0, w: 7, d: 3, label: "" },
+    ],
+    zones: [], markers: [], doors: [], windows: [], columns: [], dims: [], labels: [], revClouds: [], flowPaths: [], floorRegions: [], guides: [], snapshots: [], slides: [],
+  };
+  await page.addInitScript((s) => localStorage.setItem("testfit-autosave", JSON.stringify(s)), seed);
+  await page.goto("/");
+  await expect.poll(async () => (await readModel(page)).furniture?.length).toBe(3);
+  const box = await page.getByTestId("plan-canvas").boundingBox();
+
+  // Flags exist only in Furnish, and say what is wrong in words.
+  await expect(page.getByTestId("furniture-flag")).toHaveCount(0);
+  await page.keyboard.press("4");
+  await page.keyboard.press("v");
+  await expect(page.getByTestId("furniture-flag")).toHaveCount(2);
+  await expect(page.getByTestId("furniture-flag").first()).toContainText("overlaps 1");
+
+  // Selecting the free sofa shows its 36" apron with nothing inside it.
+  await page.mouse.click(box.x + 700, box.y + 400);
+  await expect(page.getByTestId("furniture-apron")).toHaveCount(1);
+  await expect(page.getByTestId("furniture-apron")).toContainText("36″ clearance");
+  await expect(page.getByTestId("furniture-apron")).toHaveAttribute("data-hits", "0");
+
+  // Drag it to within 10" of the wall: it snaps back-flush (y ≈ 200 + half wall + 1.5') and
+  // says so while dragging. Snapping along the wall lands it on the grid at x = 400.
+  await page.mouse.move(box.x + 700, box.y + 400);
+  await page.mouse.down();
+  await page.mouse.move(box.x + 400, box.y + 245, { steps: 10 });
+  await expect(page.getByTestId("furniture-snap-label")).toBeVisible();
+  await page.mouse.up();
+  await expect.poll(async () => (await readModel(page)).furniture.find(f => f.id === "s3").x).toBe(400);
+  const s3 = (await readModel(page)).furniture.find(f => f.id === "s3");
+  expect(s3.y).toBeGreaterThan(230);  // 200 + half the wall's thickness + 1.5' (30px): flush, not at the cursor's 245
+  expect(s3.y).toBeLessThan(241);
+  expect(Math.abs(s3.angle)).toBeLessThan(0.01);
+  await expect(page.getByTestId("furniture-snap-label")).toHaveCount(0); // cleared on mouse-up
+
+  // Clearance is a project setting: 2' shrinks the apron label.
+  await page.getByTestId("furniture-clearance").fill("2");
+  await expect(page.getByTestId("furniture-apron")).toContainText("24″ clearance");
+  await expect.poll(async () => (await readModel(page)).furnitureClearance).toBe(2);
+});

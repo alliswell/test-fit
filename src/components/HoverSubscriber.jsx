@@ -17,7 +17,7 @@ import { useHoverStore } from "../store/hoverStore";
 // hover fields come from the store. A falsy result renders nothing.
 const pick = (s) => ({
   cursorPos: s.cursorPos, ghostPos: s.ghostPos, proxHover: s.proxHover,
-  smartGuides: s.smartGuides, hoverNid: s.hoverNid,
+  smartGuides: s.smartGuides, hoverNid: s.hoverNid, furnSnap: s.furnSnap,
 });
 
 export default function HoverSubscriber({ children }) {

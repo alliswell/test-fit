@@ -4,10 +4,10 @@
 // else (helper callbacks, UI scalars, refs, tool config) arrives via `ctx`.
 import { useCallback, useMemo } from "react";
 import { uid, sn, dst, ptSeg, orthoSnap, pointInPoly, polyArea, polyCentroid, furnitureInZone, splitWallAtNode, mergeNode, dedupeWalls, splitWallThroughNodes } from "./model";
-import { applySmartGuides, wallResizeCursor, wallSideSign, markerDrawPos, polyCarryStart, applyPolyCarry } from "./geometry";
+import { applySmartGuides, wallResizeCursor, wallSideSign, markerDrawPos, polyCarryStart, applyPolyCarry, wallHugSnap, furnitureCorners } from "./geometry";
 import { labelBounds } from "../utils/labels";
 import { SPEC_COMPONENTS, SNAP_R, PROX_DRAG_TYPES, isWallOffsetComponent } from "../constants/specs";
-import { newFurniture, pointInFurniture } from "../constants/furniture";
+import { newFurniture, pointInFurniture, FURNITURE_CATALOG } from "../constants/furniture";
 import { useGeometryStore } from "../store/geometryStore";
 import { useInteractionStore } from "../store/interactionStore";
 import { useSelectionStore } from "../store/selectionStore";
@@ -17,14 +17,14 @@ import { useHoverStore } from "../store/hoverStore";
 // Per-mousemove feedback goes to hoverStore, which the editor never subscribes to. Its
 // setters are stable, so binding them once here keeps them out of every deps array; the
 // handlers READ hover values via useHoverStore.getState() at event time for the same reason.
-const { setCursorPos, setGhostPos, setProxHover, setSmartGuides, setHoverNid } = useHoverStore.getState();
+const { setCursorPos, setGhostPos, setProxHover, setSmartGuides, setHoverNid, setFurnSnap } = useHoverStore.getState();
 
 export function useCanvasEvents(ctx) {
   const { nodes, setNodes, walls, setWalls, zones, setZones, furniture, setFurniture, markers, setMarkers, doors, setDoors, windows, setWindows, columns, setColumns, dims, setDims, labels, setLabels, revClouds, setRevClouds, flowPaths, setFlowPaths, floorRegions, setFloorRegions, guides, setGuides } = useGeometryStore();
   const { drawChain, setDrawChain, drawRect, setDrawRect, drawDim, setDrawDim, drawPolyZone, setDrawPolyZone, drawRevCloud, setDrawRevCloud, drawFlowPath, setDrawFlowPath, drawFloorRegion, setDrawFloorRegion, drag, setDrag, resize, setResize, marquee, setMarquee, rotatingMarker, setRotatingMarker, rotatingFurniture, setRotatingFurniture, furnitureResize, setFurnitureResize, calibrationLine, setCalibrationLine, floorEditId, setFloorEditId, guideDraft, setGuideDraft, addingLeaderToId, setAddingLeaderToId, panning, setPanning, panSt, setPanSt, spaceHeld, setSpaceHeld } = useInteractionStore();
   const { selectedId, setSelectedId, selType, setSelType, selectedIds, setSelectedIds } = useSelectionStore();
   const {
-    activeComponentType, activeFurnitureType, activePhase, activeSpecLayer, activeZoneType, bgImage, bgOffset, canvasRotation, columnLabel, columnNotes, columnShape, columnSize, commitWallSegment, commitRectRoom, cvs, cvsContainer, doorFlipped, doorHingeRight, doorType, doorWidth, findDimSnap, findNear, findProxHover, floorMaterial, gn, htrackAngle, inToPx, isWallTool, lastCopyInfo, layerLocked, lightingIsNew, lightingType, markerFinish, markerLocked, markerNotes, markerVisible, mode, outletIsNew, outletType, phaseVisible, pxPerFoot, resolveDimEndpoints, resolveLeaderTip, resolvePoints, resolvePos, s2c, setBgOffset, setDimInput, setEditingLabelId, setEditingLabelText, setGuideScrub, setHoverGuideId, setLastCopyInfo, setT, setTool, setViewOff, setZoneEdge, snapGrid, snapGuide, snapLabelAnchor, snapToWall, themeMode, tool, viewOff, visibleFurniture, wallKind, wc, windowHeight, windowSill, windowType, windowWidth, zoneEdge, zoneLibrary, zoneNotes, zonePaintColor, zonePaintFinish, zoom,
+    activeComponentType, activeFurnitureType, activePhase, activeSpecLayer, activeZoneType, bgImage, bgOffset, canvasRotation, columnLabel, columnNotes, columnShape, columnSize, commitWallSegment, commitRectRoom, cvs, cvsContainer, doorFlipped, doorHingeRight, doorType, doorWidth, findDimSnap, findNear, findProxHover, floorMaterial, gn, htrackAngle, inToPx, isWallTool, lastCopyInfo, layerLocked, lightingIsNew, lightingType, markerFinish, markerLocked, markerNotes, markerVisible, mode, outletIsNew, outletType, phaseVisible, pxPerFoot, resolveDimEndpoints, resolveLeaderTip, resolvePoints, resolvePos, s2c, setBgOffset, setDimInput, setEditingLabelId, setEditingLabelText, setGuideScrub, setHoverGuideId, setLastCopyInfo, setT, setTool, setViewOff, setZoneEdge, snapGrid, snapGuide, snapLabelAnchor, snapToWall, themeMode, tool, viewOff, visibleFurniture, wallKind, wallHalfT, wc, windowHeight, windowSill, windowType, windowWidth, zoneEdge, zoneLibrary, zoneNotes, zonePaintColor, zonePaintFinish, zoom,
   } = ctx;
 
   const hitTest = useCallback((pos) => {
@@ -332,7 +332,9 @@ export function useCanvasEvents(ctx) {
       const nid = uid();
       const f = newFurniture(activeFurnitureType, sx, sy, nid);
       if (!f) return;
-      setFurniture(p => [...p, { ...f, phase: activePhase }]);
+      // Wall-hug pieces land back-flush to a nearby wall (Alt = snap off bypasses, like the grid).
+      const hug = snapGrid > 0 && FURNITURE_CATALOG[activeFurnitureType]?.wallHug ? wallHugSnap(pos, f, walls, nodes, pxPerFoot, { halfTOf: wallHalfT, snapAlong: snapGrid }) : null;
+      setFurniture(p => [...p, { ...f, ...(hug ? { x: hug.x, y: hug.y, angle: hug.angle } : {}), phase: activePhase }]);
       // Shift keeps the tool armed to drop more of the same piece; otherwise select it.
       if (e.shiftKey) { setSelectedId(null); setSelType(null); } else { setSelectedId(nid); setSelType("furniture"); setTool("select"); setGhostPos(null); }
       return;
@@ -1058,7 +1060,7 @@ export function useCanvasEvents(ctx) {
         }
       }
     }
-  }, [tool, activeZoneType, activeSpecLayer, activeFurnitureType, s2c, findNear, findDimSnap, hitTest, walls, wc, zones, markers, furniture, doors, windows, columns, labels, revClouds, flowPaths, viewOff, drawChain, drawRect, commitWallSegment, floorMaterial, spaceHeld, doorWidth, windowWidth, columnSize, columnShape, snapToWall, snapGrid, activeComponentType, markerFinish, nodeCentroid, bgImage, bgOffset, gn, calibrationLine, drawDim, dims, nodes, pxPerFoot, zoneEdge, resolvePos, resolvePoints, activePhase, addingLeaderToId, snapLabelAnchor, drawRevCloud, drawFlowPath, floorRegions, drawFloorRegion, polyCentroid, resolveDimEndpoints, columnLabel, columnNotes, doorFlipped, doorHingeRight, doorType, htrackAngle, isWallTool, lightingIsNew, lightingType, markerNotes, mode, outletIsNew, outletType, setDimInput, setLastCopyInfo, setT, setTool, wallKind, windowHeight, windowSill, windowType, zoneLibrary, zoneNotes, zonePaintColor, zonePaintFinish, zoneFurnStart, polyCarry, commitRectRoom, floorEditId, setFloorEditId]);
+  }, [tool, activeZoneType, activeSpecLayer, activeFurnitureType, s2c, findNear, findDimSnap, hitTest, walls, wc, zones, markers, furniture, doors, windows, columns, labels, revClouds, flowPaths, viewOff, drawChain, drawRect, commitWallSegment, floorMaterial, spaceHeld, doorWidth, windowWidth, columnSize, columnShape, snapToWall, snapGrid, activeComponentType, markerFinish, nodeCentroid, bgImage, bgOffset, gn, calibrationLine, drawDim, dims, nodes, pxPerFoot, zoneEdge, resolvePos, resolvePoints, activePhase, addingLeaderToId, snapLabelAnchor, drawRevCloud, drawFlowPath, floorRegions, drawFloorRegion, polyCentroid, resolveDimEndpoints, columnLabel, columnNotes, doorFlipped, doorHingeRight, doorType, htrackAngle, isWallTool, lightingIsNew, lightingType, markerNotes, mode, outletIsNew, outletType, setDimInput, setLastCopyInfo, setT, setTool, wallKind, windowHeight, windowSill, windowType, zoneLibrary, zoneNotes, zonePaintColor, zonePaintFinish, zoneFurnStart, polyCarry, commitRectRoom, floorEditId, setFloorEditId, wallHalfT]);
 
   const onMove = useCallback((e) => {
     if (panning && panSt) {
@@ -1152,7 +1154,12 @@ export function useCanvasEvents(ctx) {
       if (e.shiftKey && drawDim && !("x2" in drawDim)) { const o = orthoSnap(drawDim.x1, drawDim.y1, sx, sy); setGhostPos({ x: o.x, y: o.y, snapped: false }); }
       else { const dsnap = findDimSnap(pos.x, pos.y); setGhostPos(dsnap ? { x: dsnap.x, y: dsnap.y, snapped: true } : { x: pos.x, y: pos.y, snapped: false }); }
     }
-    if (tool === "zone" || tool === "marker" || tool === "column" || tool === "furniture") { setGhostPos({ x: sx, y: sy }); }
+    if (tool === "zone" || tool === "marker" || tool === "column") { setGhostPos({ x: sx, y: sy }); }
+    if (tool === "furniture") {
+      const spec = FURNITURE_CATALOG[activeFurnitureType];
+      const hug = snapGrid > 0 && spec?.wallHug ? wallHugSnap(pos, { x: sx, y: sy, angle: 0, w: spec.w, d: spec.d }, walls, nodes, pxPerFoot, { halfTOf: wallHalfT, snapAlong: snapGrid }) : null;
+      setGhostPos(hug ? { x: hug.x, y: hug.y, angle: hug.angle, snapKind: "wall" } : { x: sx, y: sy });
+    }
     if (tool === "revcloud") {
       const lp = drawRevCloud?.points?.[drawRevCloud.points.length - 1];
       if (e.shiftKey && lp) { const o = orthoSnap(lp.x, lp.y, sx, sy); setGhostPos({ x: o.x, y: o.y, snapped: false }); }
@@ -1647,8 +1654,17 @@ export function useCanvasEvents(ctx) {
       else if (drag.type === "furniture") {
         const rawX = sn(pos.x - drag.ox, snapGrid), rawY = sn(pos.y - drag.oy, snapGrid);
         const g = applySmartGuides(rawX, rawY, _guideTargets);
-        setSmartGuides(g.guides);
-        setFurniture(p => p.map(f => f.id === drag.id ? { ...f, x: g.x, y: g.y } : f));
+        // Wall hug (catalog wallHug pieces, unsnapped target, Alt bypasses): back flush to the
+        // wall face, turned to face the room. It wins over the grid and the smart guides.
+        const fcur = furniture.find(f => f.id === drag.id);
+        const hug = fcur && snapGrid > 0 && FURNITURE_CATALOG[fcur.type]?.wallHug
+          ? wallHugSnap({ x: pos.x - drag.ox, y: pos.y - drag.oy }, fcur, walls, nodes, pxPerFoot, { halfTOf: wallHalfT, snapAlong: snapGrid }) : null;
+        setSmartGuides(hug ? [] : g.guides);
+        if (hug) {
+          const top = Math.min(...furnitureCorners({ ...fcur, x: hug.x, y: hug.y, angle: hug.angle }, pxPerFoot).map(c => c.y));
+          setFurnSnap({ kind: "wall", x: hug.x, y: top });
+        } else setFurnSnap(null);
+        setFurniture(p => p.map(f => f.id === drag.id ? { ...f, x: hug ? hug.x : g.x, y: hug ? hug.y : g.y, ...(hug ? { angle: hug.angle } : {}) } : f));
       }
       else if (drag.type === "dim") {
         const dim = dims.find(x => x.id === drag.id);
@@ -1759,7 +1775,7 @@ export function useCanvasEvents(ctx) {
         return { ...z, x, y, w, h };
       }));
     }
-  }, [panning, panSt, canvasRotation, drawChain, drag, resize, s2c, findNear, findDimSnap, walls, wc, tool, snapToWall, snapGrid, marquee, calibrationLine, dims, drawDim, zones, zoom, rotatingMarker, rotatingFurniture, furnitureResize, outletType, lightingType, htrackAngle, nodes, doors, windows, columns, markers, furniture, activePhase, snapLabelAnchor, revClouds, drawRevCloud, flowPaths, drawFlowPath, floorRegions, drawFloorRegion, resolveDimEndpoints, snapGuide, guides, findProxHover, gn, isWallTool, pxPerFoot, setBgOffset, setGuideScrub, setHoverGuideId, setViewOff, setZoneEdge, applyCarry]);
+  }, [panning, panSt, canvasRotation, drawChain, drag, resize, s2c, findNear, findDimSnap, walls, wc, tool, snapToWall, snapGrid, marquee, calibrationLine, dims, drawDim, zones, zoom, rotatingMarker, rotatingFurniture, furnitureResize, outletType, lightingType, htrackAngle, nodes, doors, windows, columns, markers, furniture, activePhase, snapLabelAnchor, revClouds, drawRevCloud, flowPaths, drawFlowPath, floorRegions, drawFloorRegion, resolveDimEndpoints, snapGuide, guides, findProxHover, gn, isWallTool, pxPerFoot, setBgOffset, setGuideScrub, setHoverGuideId, setViewOff, setZoneEdge, applyCarry, activeFurnitureType, wallHalfT]);
 
   const onUp = useCallback((e) => {
     // Selection read fresh at event time → kept out of the dep array (event-only handler).
@@ -2055,7 +2071,7 @@ export function useCanvasEvents(ctx) {
       });
     }
     // No re-clipping on zone drag/vertex drag end — user controls shape manually
-    setDrag(null); setResize(null); setPanning(false); setPanSt(null); setHoverNid(null); setProxHover(null); setRotatingMarker(null); setRotatingFurniture(null); setFurnitureResize(null); setSmartGuides([]);
+    setDrag(null); setResize(null); setPanning(false); setPanSt(null); setHoverNid(null); setProxHover(null); setRotatingMarker(null); setRotatingFurniture(null); setFurnitureResize(null); setSmartGuides([]); setFurnSnap(null);
   }, [drag, resize, marquee, mode, nodes, walls, doors, windows, zones, markers, columns, furniture, labels, revClouds, flowPaths, floorRegions, guides, phaseVisible, resolvePos, resolvePoints, wc, lastCopyInfo, s2c, themeMode, activePhase, snapLabelAnchor, layerLocked, markerLocked, findNear, snapToWall, cvs, cvsContainer, markerVisible, setEditingLabelId, setEditingLabelText, setGuideScrub, setLastCopyInfo]);
 
   return { hitTest, onDown, onMove, onUp };

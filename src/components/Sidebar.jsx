@@ -13,7 +13,7 @@ import { SLIDE_VIS_PRESETS, defaultSlideName, matchSlidePreset } from "../utils/
 import { isLightComponent, polyArea } from "../imports/model";
 
 function Sidebar({
-  $, S, T, activeFurnitureType, activeSlideId, activeSpecLayer, activeZoneType, addSlide, bgImage, bgOpacity, bgScale, calibrationFeet, calibrationLine, columns, cost, dims, docSettings, doors, dropSlide, fRef, floorRegions, flowPaths, font, ft, furniture, guides, labels, layerLocked, lockedLayers, markers, mode, projectName, pxPerFoot, removeSlide, revClouds, selectedId, selectedIds, setActiveComponentType, setActiveFurnitureType, setActiveSlideId, setActiveSpecLayer, setActiveZoneType, setBgImage, setBgOffset, setBgOpacity, setBgScale, setCalibrationFeet, setCalibrationLine, setLockedLayers, setProjectName, setSelType, setSelectedId, setSelectedIds, setShowGrid, setT, setTool, setVisibleBuildElectrical, setVisibleBuildLighting, setVisibleDims, setVisibleFloorRegions, setVisibleFlowPaths, setVisibleFurniture, setVisibleGuides, setVisibleITMEP, setVisibleLabels, setVisibleLayers, setVisibleRevClouds, setVisibleZones, showGrid, slides, tool, uiColor, updateSlide, visibleBuildElectrical, visibleBuildLighting, visibleDims, visibleFloorRegions, visibleFlowPaths, visibleFurniture, visibleGuides, visibleITMEP, visibleLabels, visibleLayers, visibleRevClouds, visibleZones, wallKinds, walls, windows, wl, zoneLibrary, zones,
+  $, S, T, activeFurnitureType, activeSlideId, activeSpecLayer, activeZoneType, addSlide, bgImage, bgOpacity, bgScale, calibrationFeet, calibrationLine, columns, cost, dims, docSettings, doors, dropSlide, fRef, floorRegions, flowPaths, font, ft, furniture, furnitureClearance = 3, setFurnitureClearance, guides, labels, layerLocked, lockedLayers, markers, mode, projectName, pxPerFoot, removeSlide, revClouds, selectedId, selectedIds, setActiveComponentType, setActiveFurnitureType, setActiveSlideId, setActiveSpecLayer, setActiveZoneType, setBgImage, setBgOffset, setBgOpacity, setBgScale, setCalibrationFeet, setCalibrationLine, setLockedLayers, setProjectName, setSelType, setSelectedId, setSelectedIds, setShowGrid, setT, setTool, setVisibleBuildElectrical, setVisibleBuildLighting, setVisibleDims, setVisibleFloorRegions, setVisibleFlowPaths, setVisibleFurniture, setVisibleGuides, setVisibleITMEP, setVisibleLabels, setVisibleLayers, setVisibleRevClouds, setVisibleZones, showGrid, slides, tool, uiColor, updateSlide, visibleBuildElectrical, visibleBuildLighting, visibleDims, visibleFloorRegions, visibleFlowPaths, visibleFurniture, visibleGuides, visibleITMEP, visibleLabels, visibleLayers, visibleRevClouds, visibleZones, wallKinds, walls, windows, wl, zoneLibrary, zones,
 }) {
   return (
     <>
@@ -176,6 +176,15 @@ function Sidebar({
                 </div>
               </div>;
             })}
+            <div style={S.sec}>
+              <div style={S.sh}>Clearance</div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <input data-testid="furniture-clearance" type="number" min={0} max={10} step={0.5} value={furnitureClearance}
+                  onChange={e => setFurnitureClearance?.(Math.max(0, Math.min(10, Number(e.target.value) || 0)))}
+                  style={{ ...S.inp, width: 64, flex: "0 0 auto" }} />
+                <span style={{ fontSize: 10, color: T.textDim, lineHeight: 1.35 }}>ft ({Math.round(furnitureClearance * 12)}″) around the selected piece, checked against other furniture. Overlaps and pieces through walls are flagged on every piece.</span>
+              </div>
+            </div>
             <div style={S.sec}>
               <div style={S.sh}>Placed Furniture ({furniture.length})</div>
               {furniture.length === 0 && <div style={{ color: T.textFaint, fontSize: 10, padding: "8px 0", fontStyle: "italic" }}>Pick a piece above, then click in a zone to place it.</div>}

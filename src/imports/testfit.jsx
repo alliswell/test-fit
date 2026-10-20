@@ -5,7 +5,7 @@ import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "../app
 // Lazy-loaded so three.js / r3f / drei (a large bundle) only download when a 3D pane is shown.
 const TestFit3D = lazy(() => import("./testfit3d"));
 import { uid, sn, dst, ptSeg, polyArea, polyCentroid, pointInPoly, polyInteriorPoint, orthoSnap, isLightComponent, parseDimInput, migrateProjectData, PROJECT_VERSION, AUTOSAVE_KEY, dedupeWalls, splitWallThroughNodes, splitWallAtNode, weldWallCrossings } from "./model";
-import { wallResizeCursor, applySmartGuides, lineInt, revCloudPath, insetFloorPolygon, computeWallFootprints, junctionCapPolys, traceOuterBoundary, markerDrawPos, wallSideSign, polyCarryStart, applyPolyCarry, contentBounds, centerViewOn, gridStepFeet, traceRoomLoops, nestedFloorHoles, wallSolidRuns } from "./geometry";
+import { wallResizeCursor, applySmartGuides, lineInt, revCloudPath, insetFloorPolygon, computeWallFootprints, junctionCapPolys, traceOuterBoundary, markerDrawPos, wallSideSign, polyCarryStart, applyPolyCarry, contentBounds, centerViewOn, gridStepFeet, traceRoomLoops, nestedFloorHoles, wallSolidRuns, furnitureCorners, furnitureOverlapIds, furnitureClearanceIds, furnitureWallHits } from "./geometry";
 import { defaultMountHeightIn } from "./markerMount";
 import { Toaster, toast } from "sonner";
 import ShortcutSheet from "../components/ShortcutSheet";
@@ -20,6 +20,7 @@ import BudgetSheet from "../components/BudgetSheet";
 import FnESheet from "../components/FnESheet";
 import TitleSheet from "../components/TitleSheet";
 import Furniture2D from "../components/Furniture2D";
+import { FurnitureFlag, FurnitureApron } from "../components/plan/FurnitureChecks";
 import { FURNITURE_CATALOG, FURNITURE_CATEGORIES, ZONE_FURNISH_PLAN, layoutZoneFurniture, newFurniture } from "../constants/furniture";
 import { sheetDims, sheetInches, sheetBodyDims, fitRectToViewport, fitStandardScale, scaledRectCam, defaultSlideName, viewTitle, resolveSlideVis, SLIDE_VIS_PRESETS, matchSlidePreset } from "../utils/docs";
 import { useInteractionStore } from "../store/interactionStore";
@@ -307,6 +308,7 @@ export default function TestfitTool() {
   const gs = 20;
   const [showGrid, setShowGrid] = useState(true);
   const [showDims, setShowDims] = useState(true);
+  const [furnitureClearance, setFurnitureClearance] = useState(3); // ft — Furnish clearance apron (36" default); in the model
   const [zoneEdge, setZoneEdge] = useState(null); // { id, edge, cursor } for rect-zone edge hover
   // ── View panes ───────────────────────────────────────────────────────
   // panes[0] is always the interactive Plan canvas; aux panes (1..3) each pick
@@ -465,9 +467,9 @@ export default function TestfitTool() {
   const captureModel = useCallback(() => ({
     projectName, nodes, walls, zones, furniture, markers, doors, windows, columns, dims, labels, revClouds, flowPaths, floorRegions, guides, floorMaterial,
     elevAnnotations,
-    bgOpacity, bgScale, bgOffset, pxPerFoot, showDims, zoneLibrary,
+    bgOpacity, bgScale, bgOffset, pxPerFoot, showDims, furnitureClearance, zoneLibrary,
     version: PROJECT_VERSION,
-  }), [projectName, nodes, walls, zones, furniture, markers, doors, windows, columns, dims, labels, revClouds, flowPaths, floorRegions, guides, floorMaterial, elevAnnotations, bgOpacity, bgScale, bgOffset, pxPerFoot, showDims, zoneLibrary]);
+  }), [projectName, nodes, walls, zones, furniture, markers, doors, windows, columns, dims, labels, revClouds, flowPaths, floorRegions, guides, floorMaterial, elevAnnotations, bgOpacity, bgScale, bgOffset, pxPerFoot, showDims, furnitureClearance, zoneLibrary]);
 
   // getProjectData: full file payload — model + snapshot library + view layout + deck.
   const getProjectData = useCallback(() => ({
@@ -495,6 +497,7 @@ export default function TestfitTool() {
     setFloorMaterial(m.floorMaterial); setElevAnnotations(m.elevAnnotations);
     setBgOpacity(m.bgOpacity); setBgScale(m.bgScale); setBgOffset(m.bgOffset);
     setPxPerFoot(m.pxPerFoot); setShowDims(m.showDims);
+    setFurnitureClearance(typeof m.furnitureClearance === "number" ? m.furnitureClearance : 3);
     if (m.zoneLibrary) setZoneLibrary(m.zoneLibrary);
     if (full) {
       setSnapshots(m.snapshots); setActiveSnapshotId(m.activeSnapshotId);
@@ -2078,7 +2081,7 @@ export default function TestfitTool() {
   // Plan-canvas interaction handlers (extracted) — geometry/interaction/selection via
   // their stores; the rest via ctx. See useCanvasEvents.js.
   const { hitTest, onDown, onMove, onUp } = useCanvasEvents({
-    activeComponentType, activeFurnitureType, activePhase, activeSpecLayer, activeZoneType, bgImage, bgOffset, canvasRotation, columnLabel, columnNotes, columnShape, columnSize, commitWallSegment, commitRectRoom, cvs, cvsContainer, doorFlipped, doorHingeRight, doorType, doorWidth, findDimSnap, findNear, findProxHover, floorMaterial, gn, htrackAngle, inToPx, isWallTool, lastCopyInfo, layerLocked, lightingIsNew, lightingType, markerFinish, markerLocked, markerNotes, markerVisible, mode, outletIsNew, outletType, phaseVisible, pxPerFoot, resolveDimEndpoints, resolveLeaderTip, resolvePoints, resolvePos, s2c, setBgOffset, setDimInput, setEditingLabelId, setEditingLabelText, setGuideScrub, setHoverGuideId, setLastCopyInfo, setT, setTool, setViewOff, setZoneEdge, snapGrid, snapGuide, snapLabelAnchor, snapToWall, themeMode, tool, viewOff, visibleFurniture, wallKind, wc, windowHeight, windowSill, windowType, windowWidth, zoneEdge, zoneLibrary, zoneNotes, zonePaintColor, zonePaintFinish, zoom,
+    activeComponentType, activeFurnitureType, activePhase, activeSpecLayer, activeZoneType, bgImage, bgOffset, canvasRotation, columnLabel, columnNotes, columnShape, columnSize, commitWallSegment, commitRectRoom, cvs, cvsContainer, doorFlipped, doorHingeRight, doorType, doorWidth, findDimSnap, findNear, findProxHover, floorMaterial, gn, htrackAngle, inToPx, isWallTool, lastCopyInfo, layerLocked, lightingIsNew, lightingType, markerFinish, markerLocked, markerNotes, markerVisible, mode, outletIsNew, outletType, phaseVisible, pxPerFoot, resolveDimEndpoints, resolveLeaderTip, resolvePoints, resolvePos, s2c, setBgOffset, setDimInput, setEditingLabelId, setEditingLabelText, setGuideScrub, setHoverGuideId, setLastCopyInfo, setT, setTool, setViewOff, setZoneEdge, snapGrid, snapGuide, snapLabelAnchor, snapToWall, themeMode, tool, viewOff, visibleFurniture, wallKind, wallHalfT, wc, windowHeight, windowSill, windowType, windowWidth, zoneEdge, zoneLibrary, zoneNotes, zonePaintColor, zonePaintFinish, zoom,
   });
 
   // ── Docs stage plumbing ─────────────────────────────────────────────
@@ -3074,8 +3077,15 @@ export default function TestfitTool() {
                   }
                 }
 
+                // Furnish checks (live canvas only): the clearance apron under the editable piece,
+                // an overlap / through-wall flag over any piece the furnitureFlags memo caught.
+                const checks = interactive && mode === "furnish" && lod < 2;
+                const warn = wallKinds.demo?.color || "#B83838";
+                const clearanceHits = checks && editable ? furnitureClearanceIds(f, furnitureClearance, furniture.filter(o => phaseVisible(o.phase)), pxPerFoot).length : 0;
                 return <g key={f.id}>
+                  {checks && editable && <FurnitureApron f={f} clearanceFt={furnitureClearance} hits={clearanceHits} pxPerFoot={pxPerFoot} warn={warn} ok={T.selBorder} halo={T.canvas} textZoom={textZoom} />}
                   <Furniture2D f={f} pxPerFoot={pxPerFoot} sel={sel} tt={T} tier={monoDraw ? T.tiers?.[3] : null} moveCursor={moveCursor} zoom={zoom} />
+                  {checks && <FurnitureFlag f={f} flag={furnitureFlags.get(f.id)} pxPerFoot={pxPerFoot} warn={warn} halo={T.canvas} textZoom={textZoom} />}
                   {rotHandle}
                   {handles}
                 </g>;
@@ -3083,8 +3093,17 @@ export default function TestfitTool() {
               {/* Furniture placement ghost */}
               <HoverSubscriber>{({ ghostPos, cursorPos, proxHover, smartGuides, hoverNid }) => (tool === "furniture" && ghostPos && !drag && (
                 <g style={{ opacity: 0.5, pointerEvents: "none" }}>
-                  <Furniture2D f={{ ...newFurniture(activeFurnitureType, ghostPos.x, ghostPos.y, "ghost") }} pxPerFoot={pxPerFoot} tt={T} />
+                  <Furniture2D f={{ ...newFurniture(activeFurnitureType, ghostPos.x, ghostPos.y, "ghost"), angle: ghostPos.angle || 0 }} pxPerFoot={pxPerFoot} tt={T} />
+                  {ghostPos.snapKind === "wall" && (() => {
+                    const gf = { ...newFurniture(activeFurnitureType, ghostPos.x, ghostPos.y, "ghost"), angle: ghostPos.angle || 0 };
+                    const top = Math.min(...furnitureCorners(gf, pxPerFoot).map(c => c.y));
+                    return <text x={ghostPos.x} y={top - 6 * textZoom} textAnchor="middle" fontSize={9 * textZoom} fontFamily={FONT} fontWeight={600} fill={T.selBorder} data-testid="furniture-snap-label">snapped to wall</text>;
+                  })()}
                 </g>
+              ))}</HoverSubscriber>
+              {/* Wall-hug feedback while DRAGGING a piece (hoverStore.furnSnap, set by the drag handler) */}
+              <HoverSubscriber>{({ furnSnap }) => (interactive && mode === "furnish" && furnSnap && (
+                <text x={furnSnap.x} y={furnSnap.y - 6 * textZoom} textAnchor="middle" fontSize={9 * textZoom} fontFamily={FONT} fontWeight={600} fill={T.selBorder} style={{ pointerEvents: "none" }} data-testid="furniture-snap-label">snapped to wall</text>
               ))}</HoverSubscriber>
 
               {/* Dimension strings */}
@@ -3509,6 +3528,21 @@ export default function TestfitTool() {
     );
   };
 
+  // Furnish-stage checks: which placed pieces overlap another piece or stand through a
+  // wall (ported from the ops-space-configurator; geometry.js). Only computed in Furnish
+  // and bbox-prefiltered, so a few hundred pieces cost well under a frame per change.
+  const furnitureFlags = useMemo(() => {
+    const out = new Map();
+    if (mode !== "furnish" || !visibleFurniture) return out;
+    const live = furniture.filter(f => phaseVisible(f.phase));
+    for (const f of live) {
+      const overlap = furnitureOverlapIds(f, live, pxPerFoot).length;
+      const wall = furnitureWallHits(f, walls, nodes, pxPerFoot).length;
+      if (overlap || wall) out.set(f.id, { overlap, wall });
+    }
+    return out;
+  }, [mode, visibleFurniture, furniture, walls, nodes, pxPerFoot, phaseVisible]);
+
   return (
     <TooltipProvider>
     <div className="tf-app-root" style={S.root}>
@@ -3521,7 +3555,7 @@ export default function TestfitTool() {
       <TopBar $={$} MODES={MODES} S={S} T={T} activeSnapshotId={activeSnapshotId} canRedo={canRedo} canUndo={canUndo} cost={cost} deleteSnapshot={deleteSnapshot} display={display} exportPdf={exportPdf} exportPng={exportPng} exportSvg={exportSvg} exportDxf={exportDxf} exportProject={exportProject} exportDxfSlide={mode === "docs" && activeDocsSlide?.view === "plan" && activeDocsSlide.rect ? exportDxfSlide : null} activeSlideName={activeDocsSlide?.title || activeDocsSlide?.name || ""} readAutosaveHistory={readAutosaveHistory} restoreAutosave={restoreAutosave} projects={projectList.projects} projectsKind={projectList.backendKind} projectsCanWrite={projectList.canWrite} projectsBusy={projectList.busy} saveToProjects={projectList.saveProject} openProject={projectList.openProject} deleteProject={projectList.deleteProject} renameProject={projectList.renameProject} activeProjectId={projectList.activeId} projectName={projectName} font={font} importProject={importProject} liveDirty={liveDirty} loadRef={loadRef} markers={markers} mode={mode} modeMenuRect={modeMenuRect} newProject={newProject} newSnapMode={newSnapMode} redo={redo} renameSnapshot={renameSnapshot} renamingSnapId={renamingSnapId} saveMenuRect={saveMenuRect} setMode={setMode} setModeMenuRect={setModeMenuRect} setNewSnapMode={setNewSnapMode} setRenamingSnapId={setRenamingSnapId} setSaveMenuRect={setSaveMenuRect} setShowModeMenu={setShowModeMenu} setShowSaveMenu={setShowSaveMenu} setShowSettings={setShowSettings} setShowSnapMenu={setShowSnapMenu} setSidebarOpen={setSidebarOpen} setSnapDraftName={setSnapDraftName} setSnapMenuRect={setSnapMenuRect} setT={setT} setThemeMode={setThemeMode} monoDraw={monoDraw} setMonoDraw={setMonoDraw} monoSkin={monoSkin} setMonoSkin={setMonoSkin} monoTiers={monoT.tiers} showModeMenu={showModeMenu} showSaveMenu={showSaveMenu} showSnapMenu={showSnapMenu} sidebarOpen={sidebarOpen} snapDraftName={snapDraftName} snapMenuRect={snapMenuRect} snapshot={snapshot} snapshots={snapshots} switchSnapshot={switchSnapshot} takeSnapshot={takeSnapshot} themeMode={themeMode} undo={undo} updateSnapshot={updateSnapshot} walls={walls} zones={zones} furnitureCount={furniture.length} panes={panes} setLayout={setLayout} setSelType={setSelType} setSelectedId={setSelectedId} setSelectedIds={setSelectedIds} slidesCount={slides.length} />
 
       <div style={S.main}>
-        <Sidebar $={$} S={S} T={T} activeFurnitureType={activeFurnitureType} activeSlideId={activeSlideId} activeSpecLayer={activeSpecLayer} activeZoneType={activeZoneType} addSlide={addSlide} bgImage={bgImage} bgOpacity={bgOpacity} bgScale={bgScale} calibrationFeet={calibrationFeet} calibrationLine={calibrationLine} columns={columns} cost={cost} dims={dims} docSettings={docSettings} doors={doors} dropSlide={dropSlide} fRef={fRef} floorRegions={floorRegions} flowPaths={flowPaths} font={font} ft={ft} furniture={furniture} guides={guides} labels={labels} layerLocked={layerLocked} lockedLayers={lockedLayers} markers={markers} mode={mode} projectName={projectName} pxPerFoot={pxPerFoot} removeSlide={removeSlide} revClouds={revClouds} selectedId={selectedId} selectedIds={selectedIds} setActiveComponentType={setActiveComponentType} setActiveFurnitureType={setActiveFurnitureType} setActiveSlideId={setActiveSlideId} setActiveSpecLayer={setActiveSpecLayer} setActiveZoneType={setActiveZoneType} setBgImage={setBgImage} setBgOffset={setBgOffset} setBgOpacity={setBgOpacity} setBgScale={setBgScale} setCalibrationFeet={setCalibrationFeet} setCalibrationLine={setCalibrationLine} setLockedLayers={setLockedLayers} setProjectName={setProjectName} setSelType={setSelType} setSelectedId={setSelectedId} setSelectedIds={setSelectedIds} setShowGrid={setShowGrid} setT={setT} setTool={setTool} setVisibleBuildElectrical={setVisibleBuildElectrical} setVisibleBuildLighting={setVisibleBuildLighting} setVisibleDims={setVisibleDims} setVisibleFloorRegions={setVisibleFloorRegions} setVisibleFlowPaths={setVisibleFlowPaths} setVisibleFurniture={setVisibleFurniture} setVisibleGuides={setVisibleGuides} setVisibleITMEP={setVisibleITMEP} setVisibleLabels={setVisibleLabels} setVisibleLayers={setVisibleLayers} setVisibleRevClouds={setVisibleRevClouds} setVisibleZones={setVisibleZones} showGrid={showGrid} slides={slides} tool={tool} uiColor={uiColor} updateSlide={updateSlide} visibleBuildElectrical={visibleBuildElectrical} visibleBuildLighting={visibleBuildLighting} visibleDims={visibleDims} visibleFloorRegions={visibleFloorRegions} visibleFlowPaths={visibleFlowPaths} visibleFurniture={visibleFurniture} visibleGuides={visibleGuides} visibleITMEP={visibleITMEP} visibleLabels={visibleLabels} visibleLayers={visibleLayers} visibleRevClouds={visibleRevClouds} visibleZones={visibleZones} wallKinds={wallKinds} walls={walls} windows={windows} wl={wl} zoneLibrary={zoneLibrary} zones={zones} />
+        <Sidebar $={$} S={S} T={T} activeFurnitureType={activeFurnitureType} activeSlideId={activeSlideId} activeSpecLayer={activeSpecLayer} activeZoneType={activeZoneType} addSlide={addSlide} bgImage={bgImage} bgOpacity={bgOpacity} bgScale={bgScale} calibrationFeet={calibrationFeet} calibrationLine={calibrationLine} columns={columns} cost={cost} dims={dims} docSettings={docSettings} doors={doors} dropSlide={dropSlide} fRef={fRef} floorRegions={floorRegions} flowPaths={flowPaths} font={font} ft={ft} furniture={furniture} guides={guides} labels={labels} layerLocked={layerLocked} lockedLayers={lockedLayers} markers={markers} mode={mode} projectName={projectName} pxPerFoot={pxPerFoot} removeSlide={removeSlide} revClouds={revClouds} selectedId={selectedId} selectedIds={selectedIds} setActiveComponentType={setActiveComponentType} setActiveFurnitureType={setActiveFurnitureType} setActiveSlideId={setActiveSlideId} setActiveSpecLayer={setActiveSpecLayer} setActiveZoneType={setActiveZoneType} setBgImage={setBgImage} setBgOffset={setBgOffset} setBgOpacity={setBgOpacity} setBgScale={setBgScale} setCalibrationFeet={setCalibrationFeet} setCalibrationLine={setCalibrationLine} setLockedLayers={setLockedLayers} setProjectName={setProjectName} setSelType={setSelType} setSelectedId={setSelectedId} setSelectedIds={setSelectedIds} setShowGrid={setShowGrid} furnitureClearance={furnitureClearance} setFurnitureClearance={setFurnitureClearance} setT={setT} setTool={setTool} setVisibleBuildElectrical={setVisibleBuildElectrical} setVisibleBuildLighting={setVisibleBuildLighting} setVisibleDims={setVisibleDims} setVisibleFloorRegions={setVisibleFloorRegions} setVisibleFlowPaths={setVisibleFlowPaths} setVisibleFurniture={setVisibleFurniture} setVisibleGuides={setVisibleGuides} setVisibleITMEP={setVisibleITMEP} setVisibleLabels={setVisibleLabels} setVisibleLayers={setVisibleLayers} setVisibleRevClouds={setVisibleRevClouds} setVisibleZones={setVisibleZones} showGrid={showGrid} slides={slides} tool={tool} uiColor={uiColor} updateSlide={updateSlide} visibleBuildElectrical={visibleBuildElectrical} visibleBuildLighting={visibleBuildLighting} visibleDims={visibleDims} visibleFloorRegions={visibleFloorRegions} visibleFlowPaths={visibleFlowPaths} visibleFurniture={visibleFurniture} visibleGuides={visibleGuides} visibleITMEP={visibleITMEP} visibleLabels={visibleLabels} visibleLayers={visibleLayers} visibleRevClouds={visibleRevClouds} visibleZones={visibleZones} wallKinds={wallKinds} walls={walls} windows={windows} wl={wl} zoneLibrary={zoneLibrary} zones={zones} />
 
         <ToolRail S={S} T={T} activeComponentType={activeComponentType} activeSpecLayer={activeSpecLayer} bgImage={bgImage} chromeT={chromeT} markerFinish={markerFinish} mode={mode} pxPerFoot={pxPerFoot} setActiveComponentType={setActiveComponentType} setT={setT} themeMode={themeMode} tool={tool} wallKind={wallKind} wallKinds={wallKinds} />
 
