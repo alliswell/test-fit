@@ -326,6 +326,19 @@ src/
                        Surfaced in TopBar's Load menu ("Restore earlier autosave", rows are
                        relativeTime + historySummary; data-testid load-menu / autosave-entry).
     labels.js          wrapLabelLines, labelBounds (label box layout)
+    saveFile.js        saveFile(name, data, type) — the ONE door for every file the app hands
+                       the user (project JSON, PNG, SVG, DXF; the 5 export callbacks in
+                       testfit.jsx). Plain browser: anchor download. Inside the claude.ai
+                       artifact viewer (window.claude.use exists) page-started downloads are
+                       inert, so it routes through the viewer's `downloads` capability (the
+                       artifact is published with capabilities {downloads:true}); the viewer
+                       allowlists extensions and refuses .dxf, so DXF goes out as
+                       `name.dxf.txt` and the toast says to rename (viewerSafeName, tested).
+                       The 3D `<Environment preset>` HDRI is fetched from drei's asset host,
+                       which that viewer's CSP blocks — EnvGuard (testfit3d.jsx) swallows the
+                       load error so detailed mode degrades to sun+ambient instead of killing
+                       the app via the top-level ErrorBoundary. Print / PDF (window.print)
+                       stay inert in the viewer; use the dev build for those.
     docs.js            pure Docs-stage helpers: SHEET_SIZES, sheetDims/Inches,
                        fitRectToViewport, fitStandardScale (true architectural scales),
                        defaultSlideName, formatSheetNo, per-slide layer visibility

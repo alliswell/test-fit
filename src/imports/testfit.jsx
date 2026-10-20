@@ -42,6 +42,7 @@ import PlanOpeningsLayer from "../components/plan/PlanOpeningsLayer";
 import PlanMarkersLayer from "../components/plan/PlanMarkersLayer";
 import { buildDxf } from "../utils/dxf";
 import { pushHistory, readHistory, relativeTime } from "../utils/autosaveHistory";
+import { saveFile } from "../utils/saveFile";
 import { SliderInput, LabelAnnotation, AlignBtn } from "../components/ui";
 import ElevationView from "../components/ElevationView";
 import TopBar from "../components/TopBar";
@@ -474,14 +475,10 @@ export default function TestfitTool() {
 
   const exportProject = useCallback(() => {
     const data = getProjectData();
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = (projectName || "testfit").replace(/[^a-zA-Z0-9-_ ]/g, "") + ".json";
-    a.click();
-    URL.revokeObjectURL(url);
-    toast("Project exported", { description: a.download });
+    const name = (projectName || "testfit").replace(/[^a-zA-Z0-9-_ ]/g, "") + ".json";
+    saveFile(name, JSON.stringify(data, null, 2), "application/json").then(r => {
+      if (r.status === "saved") toast("Project exported", { description: r.filename });
+    });
   }, [getProjectData, projectName]);
 
   // applyProjectData: the single hydrator. `m` must already be normalized by
@@ -632,11 +629,8 @@ export default function TestfitTool() {
       ctx.drawImage(img, 0, 0, W, H);
       URL.revokeObjectURL(url);
       canvas.toBlob(pngBlob => {
-        const a = document.createElement("a");
-        a.href = URL.createObjectURL(pngBlob);
-        a.download = (projectName || "testfit").replace(/[^a-zA-Z0-9-_ ]/g, "") + ".png";
-        a.click();
-        setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+        const name = (projectName || "testfit").replace(/[^a-zA-Z0-9-_ ]/g, "") + ".png";
+        saveFile(name, pngBlob, "image/png");
       }, "image/png");
     };
     img.onerror = () => URL.revokeObjectURL(url);
@@ -1183,35 +1177,34 @@ export default function TestfitTool() {
     bg.setAttribute("width", W); bg.setAttribute("height", H); bg.setAttribute("fill", canvasT.canvas);
     clone.insertBefore(bg, clone.firstChild);
     const svgStr = '<?xml version="1.0" encoding="UTF-8"?>\n' + new XMLSerializer().serializeToString(clone);
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(new Blob([svgStr], { type: "image/svg+xml;charset=utf-8" }));
-    a.download = (projectName || "testfit").replace(/[^a-zA-Z0-9-_ ]/g, "") + ".svg";
-    a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
-    toast("SVG exported", { description: a.download });
+    const name = (projectName || "testfit").replace(/[^a-zA-Z0-9-_ ]/g, "") + ".svg";
+    saveFile(name, svgStr, "image/svg+xml;charset=utf-8").then(r => {
+      if (r.status === "saved") toast("SVG exported", { description: r.filename });
+    });
   }, [projectName, canvasT]);
 
   // AutoCAD R12 DXF of the plan MODEL (feet, y-up): walls, openings, columns, zones,
   // floors, furniture, IT/MEP and annotations on conventional layers — utils/dxf.js.
   const exportDxf = useCallback(() => {
     const { dxf, counts } = buildDxf(captureModel(), { wallHalfT, zoneLibrary, resolveDim: resolveDimEndpoints });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(new Blob([dxf], { type: "application/dxf" }));
-    a.download = (projectName || "testfit").replace(/[^a-zA-Z0-9-_ ]/g, "") + ".dxf";
-    a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+    const name = (projectName || "testfit").replace(/[^a-zA-Z0-9-_ ]/g, "") + ".dxf";
     const n = Object.values(counts).reduce((sum, v) => sum + v, 0);
-    toast("DXF exported", { description: `${a.download} · ${n} entities` });
+    saveFile(name, dxf, "application/dxf").then(r => {
+      if (r.status !== "saved") return;
+      toast("DXF exported", { description: r.renamed ? `${r.filename} · ${n} entities · rename to .dxf` : `${r.filename} · ${n} entities` });
+    });
   }, [captureModel, wallHalfT, zoneLibrary, resolveDimEndpoints, projectName]);
   // The same DXF, clipped to the open Docs plan slide's crop — "export this sheet".
   const exportDxfSlide = useCallback(() => {
     const slide = activeDocsSlide;
     if (!slide?.rect || slide.view !== "plan") return;
     const { dxf, counts } = buildDxf(captureModel(), { wallHalfT, zoneLibrary, resolveDim: resolveDimEndpoints, clip: slide.rect });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(new Blob([dxf], { type: "application/dxf" }));
-    a.download = ((projectName || "testfit") + " - " + (slide.title || slide.name || "sheet")).replace(/[^a-zA-Z0-9-_ ]/g, "") + ".dxf";
-    a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+    const name = ((projectName || "testfit") + " - " + (slide.title || slide.name || "sheet")).replace(/[^a-zA-Z0-9-_ ]/g, "") + ".dxf";
     const n = Object.values(counts).reduce((sum, v) => sum + v, 0);
-    toast("Sheet DXF exported", { description: `${a.download} · ${n} entities` });
+    saveFile(name, dxf, "application/dxf").then(r => {
+      if (r.status !== "saved") return;
+      toast("Sheet DXF exported", { description: r.renamed ? `${r.filename} · ${n} entities · rename to .dxf` : `${r.filename} · ${n} entities` });
+    });
   }, [activeDocsSlide, captureModel, wallHalfT, zoneLibrary, resolveDimEndpoints, projectName]);
 
   // Smooth zoom centered on cursor
