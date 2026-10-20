@@ -2,7 +2,14 @@ import { test, expect } from "@playwright/test";
 
 // Autosave is debounced ~800 ms; poll it rather than sleeping.
 const readModel = (page) => page.evaluate(() => JSON.parse(localStorage.getItem("testfit-autosave") || "{}"));
-async function newProject(page) { page.once("dialog", (d) => d.accept()); await page.getByRole("button", { name: "New", exact: true }).click(); }
+async function newProject(page) {
+  // New is a two-step inline confirm when there is content (no native dialog).
+  const btn = page.getByTestId("new-project");
+  await btn.click();
+  if ((await btn.textContent())?.startsWith("New?")) await btn.click();
+}
+// Menus close by clicking their full-screen backdrop (the toggle button sits under it).
+async function closeMenu(page) { await page.mouse.click(8, 400); }
 async function planCenter(page) { const box = await page.getByTestId("plan-canvas").boundingBox(); return { cx: box.x + box.width / 2, cy: box.y + box.height / 2 }; }
 
 test("⌘D duplicates the selection in place and leaves the clipboard alone", async ({ page }) => {
@@ -59,4 +66,77 @@ test("autosave history: an earlier state can be restored from the Load menu", as
   await page.getByTestId("load-menu").click();
   await expect(page.getByTestId("autosave-entry")).toHaveCount(2);
   await expect(page.getByTestId("autosave-entry").first()).toContainText("just now");
+});
+
+test("projects: save, update, save-as-new, rename, open, delete", async ({ page }) => {
+  const seed = {
+    version: "testfit-v17", pxPerFoot: 20, projectName: "Seeded",
+    nodes: [{ id: "a", x: 200, y: 200 }, { id: "b", x: 500, y: 200 }, { id: "c", x: 500, y: 450 }],
+    walls: [{ id: "w1", n1: "a", n2: "b", kind: "existing" }, { id: "w2", n1: "b", n2: "c", kind: "new" }],
+    zones: [], furniture: [], markers: [], doors: [], windows: [], columns: [], dims: [], labels: [], revClouds: [], flowPaths: [], floorRegions: [], guides: [], snapshots: [], slides: [],
+  };
+  await page.addInitScript((s) => localStorage.setItem("testfit-autosave", JSON.stringify(s)), seed);
+  await page.goto("/");
+  await expect.poll(async () => (await readModel(page)).walls?.length).toBe(2);
+  const entries = page.getByTestId("project-entry");
+
+  // Unbound editor: Save creates an entry and the title takes the name.
+  await page.getByTestId("save-menu").click();
+  await expect(page.getByTestId("project-save-block")).toContainText("this browser");
+  await expect(page.getByTestId("project-save")).toHaveText("Save");
+  await page.getByTestId("project-name-input").fill("Club A");
+  await page.getByTestId("project-save").click();
+  await expect(page.getByText("Project saved")).toBeVisible();
+  await expect.poll(async () => (await readModel(page)).projectName).toBe("Club A");
+
+  // Bound now: the button reads Update, and "Save as new" forks a second entry (same name allowed).
+  await page.getByTestId("save-menu").click();
+  await expect(page.getByTestId("project-save")).toHaveText("Update");
+  await expect(page.getByTestId("project-save-block")).toContainText("Open: Club A");
+  await page.getByTestId("project-save").click();
+  await expect(page.getByText("Project updated")).toBeVisible();
+  await page.getByTestId("save-menu").click();
+  await page.getByTestId("project-save-as-new").click();
+  await expect(page.getByText("Project saved")).toHaveCount(2); // the first toast is still up
+  await page.getByTestId("load-menu").click();
+  await expect(entries).toHaveCount(2);
+  await expect(entries.first()).toContainText("open");      // newest first, and it is the open one
+  await expect(entries.nth(1)).not.toContainText("open");
+
+  // Rename the older copy inline (✎ → type → Enter).
+  await entries.nth(1).getByTestId("project-rename").click();
+  await page.getByTestId("project-rename-input").fill("Club A rev2");
+  await page.keyboard.press("Enter");
+  await expect(page.getByText("Project renamed")).toBeVisible();
+  await expect(entries.nth(1)).toContainText("Club A rev2");
+  await expect(entries.first()).toContainText("Club A");
+  await closeMenu(page);
+
+  // New unbinds: the Save menu offers a plain Save again.
+  const newBtn = page.getByTestId("new-project");
+  await newBtn.click();
+  await expect(newBtn).toHaveText(/^New\?/);
+  await newBtn.click();
+  await expect.poll(async () => (await readModel(page)).walls?.length).toBe(0);
+  await page.getByTestId("save-menu").click();
+  await expect(page.getByTestId("project-save")).toHaveText("Save");
+  await closeMenu(page);
+
+  // Open the renamed one: walls, name and the "open" marker follow.
+  await page.getByTestId("load-menu").click();
+  await entries.filter({ hasText: "Club A rev2" }).click();
+  await expect(page.getByText("Project opened")).toBeVisible();
+  await expect.poll(async () => (await readModel(page)).walls?.length).toBe(2);
+  await expect.poll(async () => (await readModel(page)).projectName).toBe("Club A rev2");
+  await page.getByTestId("load-menu").click();
+  await expect(entries.filter({ hasText: "Club A rev2" })).toContainText("open");
+
+  // Delete is two-step (✕ → "Delete?"), per row.
+  for (const remaining of [1, 0]) {
+    const del = page.getByTestId("project-delete").first();
+    await del.click();
+    await expect(del).toHaveText("Delete?");
+    await del.click();
+    await expect(entries).toHaveCount(remaining);
+  }
 });

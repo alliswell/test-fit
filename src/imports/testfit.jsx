@@ -26,6 +26,7 @@ import { useInteractionStore } from "../store/interactionStore";
 import { useHoverStore } from "../store/hoverStore";
 import HoverSubscriber from "../components/HoverSubscriber";
 import { useCanvasEvents } from "./useCanvasEvents";
+import { useProjectList } from "./useProjectList";
 // Extracted modules — see CLAUDE.md → "Code structure" for what belongs where.
 import { THEMES, cadCrosshair, tierOf, WALL_KINDS, WALL_KINDS_LIGHT, WALL_KINDS_PRINT, WALL_KINDS_MONO, WALL_MATERIALS, WALL_MATERIAL_HATCHES, buildMonoTheme, MONO_DEFAULT_SKIN } from "../constants/theme";
 import { SPEC_COMPONENTS, SPEC_LAYERS, DOOR_TYPES, WINDOW_TYPES, FLOW_PATH_COLORS, PROX_DRAG_TYPES, SNAP_R, LABEL_MAX_W, DEFAULT_PHASES, COMPONENT_FINISHES, FINISH_COLORS, FLOOR_MATERIALS, FLOOR_MATERIAL_HEX, FLOOR_MATERIAL_HATCHES, ACCESS_READER_COST, WALL_COST_PER_FT, DOOR_COST, WINDOW_COST, COLUMN_COST, isWallMounted } from "../constants/specs";
@@ -42,6 +43,7 @@ import PlanOpeningsLayer from "../components/plan/PlanOpeningsLayer";
 import PlanMarkersLayer from "../components/plan/PlanMarkersLayer";
 import { buildDxf } from "../utils/dxf";
 import { pushHistory, readHistory, relativeTime } from "../utils/autosaveHistory";
+import { saveFile } from "../utils/saveFile";
 import { SliderInput, LabelAnnotation, AlignBtn } from "../components/ui";
 import ElevationView from "../components/ElevationView";
 import TopBar from "../components/TopBar";
@@ -474,14 +476,10 @@ export default function TestfitTool() {
 
   const exportProject = useCallback(() => {
     const data = getProjectData();
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = (projectName || "testfit").replace(/[^a-zA-Z0-9-_ ]/g, "") + ".json";
-    a.click();
-    URL.revokeObjectURL(url);
-    toast("Project exported", { description: a.download });
+    const name = (projectName || "testfit").replace(/[^a-zA-Z0-9-_ ]/g, "") + ".json";
+    saveFile(name, JSON.stringify(data, null, 2), "application/json").then(r => {
+      if (r.status === "saved") toast("Project exported", { description: r.filename });
+    });
   }, [getProjectData, projectName]);
 
   // applyProjectData: the single hydrator. `m` must already be normalized by
@@ -555,6 +553,14 @@ export default function TestfitTool() {
     applyProjectData(migrateProjectData(entry.data), true);
     toast("Restored earlier autosave", { description: `from ${relativeTime(entry.ts)} · ⌘Z won't undo this — the state you left is now the newest entry` });
   }, [getProjectData, applyProjectData]);
+
+  // In-app project list (Save ▾ › Save to projects / Load ▾ › Projects; useProjectList.js).
+  // Opening one is a load like any other: history push, then the same hydrator as file import.
+  const openProjectData = useCallback((d) => {
+    pushHistory(getProjectData(), { force: true });
+    applyProjectData(migrateProjectData(d), true);
+  }, [getProjectData, applyProjectData]);
+  const projectList = useProjectList({ getProjectData, openData: openProjectData, onProjectNamed: setProjectName });
 
   // ── Snapshot operations ──────────────────────────────────────────────
   // Has the live model diverged from the active snapshot's stored data?
@@ -632,11 +638,8 @@ export default function TestfitTool() {
       ctx.drawImage(img, 0, 0, W, H);
       URL.revokeObjectURL(url);
       canvas.toBlob(pngBlob => {
-        const a = document.createElement("a");
-        a.href = URL.createObjectURL(pngBlob);
-        a.download = (projectName || "testfit").replace(/[^a-zA-Z0-9-_ ]/g, "") + ".png";
-        a.click();
-        setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+        const name = (projectName || "testfit").replace(/[^a-zA-Z0-9-_ ]/g, "") + ".png";
+        saveFile(name, pngBlob, "image/png");
       }, "image/png");
     };
     img.onerror = () => URL.revokeObjectURL(url);
@@ -673,10 +676,11 @@ export default function TestfitTool() {
         const m = migrateProjectData(d);
         if (!d.projectName) m.projectName = "Imported";
         applyProjectData(m, true);
-      } catch (e) { console.error("Import failed:", e); alert("Failed to import project: " + e.message); }
+        projectList.clearActive();
+      } catch (e) { console.error("Import failed:", e); toast.error("Couldn't import project", { description: e.message }); }
     };
     reader.readAsText(file);
-  }, [applyProjectData]);
+  }, [applyProjectData, projectList.clearActive]);
 
   // A new project is just an empty one loaded, so it goes through the SAME hydrator as file
   // import and autosave restore. It used to re-list every collection by hand, and that list
@@ -685,13 +689,14 @@ export default function TestfitTool() {
   // applyProjectData; only genuinely non-model state (view, tools, phases) is reset here.
   const newProject = useCallback(() => {
     applyProjectData({ ...migrateProjectData({}), projectName: "New Club" }, true);
+    projectList.clearActive();
     setZoneLibrary(ZONE_LIBRARY_DEFAULTS);
     localStorage.removeItem("testfit-zone-library");
     localStorage.removeItem(AUTOSAVE_KEY);
     setSelectedIds([]); setDrawChain(null); setDrawPolyZone(null); setCursorPos(null);
     setViewOff({ x: 0, y: 0 }); setZoom(1); setShowGrid(true);
     setPhases(DEFAULT_PHASES); setActivePhase("existing");
-  }, [applyProjectData]);
+  }, [applyProjectData, projectList.clearActive]);
 
   // ── Mono drawing tiers ──────────────────────────────────────────────────
   // Which walls sit on the outer envelope: in the mono PLAN profile those are T1
@@ -1183,35 +1188,34 @@ export default function TestfitTool() {
     bg.setAttribute("width", W); bg.setAttribute("height", H); bg.setAttribute("fill", canvasT.canvas);
     clone.insertBefore(bg, clone.firstChild);
     const svgStr = '<?xml version="1.0" encoding="UTF-8"?>\n' + new XMLSerializer().serializeToString(clone);
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(new Blob([svgStr], { type: "image/svg+xml;charset=utf-8" }));
-    a.download = (projectName || "testfit").replace(/[^a-zA-Z0-9-_ ]/g, "") + ".svg";
-    a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
-    toast("SVG exported", { description: a.download });
+    const name = (projectName || "testfit").replace(/[^a-zA-Z0-9-_ ]/g, "") + ".svg";
+    saveFile(name, svgStr, "image/svg+xml;charset=utf-8").then(r => {
+      if (r.status === "saved") toast("SVG exported", { description: r.filename });
+    });
   }, [projectName, canvasT]);
 
   // AutoCAD R12 DXF of the plan MODEL (feet, y-up): walls, openings, columns, zones,
   // floors, furniture, IT/MEP and annotations on conventional layers — utils/dxf.js.
   const exportDxf = useCallback(() => {
     const { dxf, counts } = buildDxf(captureModel(), { wallHalfT, zoneLibrary, resolveDim: resolveDimEndpoints });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(new Blob([dxf], { type: "application/dxf" }));
-    a.download = (projectName || "testfit").replace(/[^a-zA-Z0-9-_ ]/g, "") + ".dxf";
-    a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+    const name = (projectName || "testfit").replace(/[^a-zA-Z0-9-_ ]/g, "") + ".dxf";
     const n = Object.values(counts).reduce((sum, v) => sum + v, 0);
-    toast("DXF exported", { description: `${a.download} · ${n} entities` });
+    saveFile(name, dxf, "application/dxf").then(r => {
+      if (r.status !== "saved") return;
+      toast("DXF exported", { description: r.renamed ? `${r.filename} · ${n} entities · rename to .dxf` : `${r.filename} · ${n} entities` });
+    });
   }, [captureModel, wallHalfT, zoneLibrary, resolveDimEndpoints, projectName]);
   // The same DXF, clipped to the open Docs plan slide's crop — "export this sheet".
   const exportDxfSlide = useCallback(() => {
     const slide = activeDocsSlide;
     if (!slide?.rect || slide.view !== "plan") return;
     const { dxf, counts } = buildDxf(captureModel(), { wallHalfT, zoneLibrary, resolveDim: resolveDimEndpoints, clip: slide.rect });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(new Blob([dxf], { type: "application/dxf" }));
-    a.download = ((projectName || "testfit") + " - " + (slide.title || slide.name || "sheet")).replace(/[^a-zA-Z0-9-_ ]/g, "") + ".dxf";
-    a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+    const name = ((projectName || "testfit") + " - " + (slide.title || slide.name || "sheet")).replace(/[^a-zA-Z0-9-_ ]/g, "") + ".dxf";
     const n = Object.values(counts).reduce((sum, v) => sum + v, 0);
-    toast("Sheet DXF exported", { description: `${a.download} · ${n} entities` });
+    saveFile(name, dxf, "application/dxf").then(r => {
+      if (r.status !== "saved") return;
+      toast("Sheet DXF exported", { description: r.renamed ? `${r.filename} · ${n} entities · rename to .dxf` : `${r.filename} · ${n} entities` });
+    });
   }, [activeDocsSlide, captureModel, wallHalfT, zoneLibrary, resolveDimEndpoints, projectName]);
 
   // Smooth zoom centered on cursor
@@ -3514,7 +3518,7 @@ export default function TestfitTool() {
         fontFamily: font, fontSize: 11, backdropFilter: "blur(12px)" } }} />
       {showShortcuts && <ShortcutSheet T={T} S={S} font={font} display={display} onClose={() => setShowShortcuts(false)} />}
       {/* ── Top Mode Bar ──────────────────────────────────────────── */}
-      <TopBar $={$} MODES={MODES} S={S} T={T} activeSnapshotId={activeSnapshotId} canRedo={canRedo} canUndo={canUndo} cost={cost} deleteSnapshot={deleteSnapshot} display={display} exportPdf={exportPdf} exportPng={exportPng} exportSvg={exportSvg} exportDxf={exportDxf} exportProject={exportProject} exportDxfSlide={mode === "docs" && activeDocsSlide?.view === "plan" && activeDocsSlide.rect ? exportDxfSlide : null} activeSlideName={activeDocsSlide?.title || activeDocsSlide?.name || ""} readAutosaveHistory={readAutosaveHistory} restoreAutosave={restoreAutosave} font={font} importProject={importProject} liveDirty={liveDirty} loadRef={loadRef} markers={markers} mode={mode} modeMenuRect={modeMenuRect} newProject={newProject} newSnapMode={newSnapMode} redo={redo} renameSnapshot={renameSnapshot} renamingSnapId={renamingSnapId} saveMenuRect={saveMenuRect} setMode={setMode} setModeMenuRect={setModeMenuRect} setNewSnapMode={setNewSnapMode} setRenamingSnapId={setRenamingSnapId} setSaveMenuRect={setSaveMenuRect} setShowModeMenu={setShowModeMenu} setShowSaveMenu={setShowSaveMenu} setShowSettings={setShowSettings} setShowSnapMenu={setShowSnapMenu} setSidebarOpen={setSidebarOpen} setSnapDraftName={setSnapDraftName} setSnapMenuRect={setSnapMenuRect} setT={setT} setThemeMode={setThemeMode} monoDraw={monoDraw} setMonoDraw={setMonoDraw} monoSkin={monoSkin} setMonoSkin={setMonoSkin} monoTiers={monoT.tiers} showModeMenu={showModeMenu} showSaveMenu={showSaveMenu} showSnapMenu={showSnapMenu} sidebarOpen={sidebarOpen} snapDraftName={snapDraftName} snapMenuRect={snapMenuRect} snapshot={snapshot} snapshots={snapshots} switchSnapshot={switchSnapshot} takeSnapshot={takeSnapshot} themeMode={themeMode} undo={undo} updateSnapshot={updateSnapshot} walls={walls} zones={zones} furnitureCount={furniture.length} panes={panes} setLayout={setLayout} setSelType={setSelType} setSelectedId={setSelectedId} setSelectedIds={setSelectedIds} slidesCount={slides.length} />
+      <TopBar $={$} MODES={MODES} S={S} T={T} activeSnapshotId={activeSnapshotId} canRedo={canRedo} canUndo={canUndo} cost={cost} deleteSnapshot={deleteSnapshot} display={display} exportPdf={exportPdf} exportPng={exportPng} exportSvg={exportSvg} exportDxf={exportDxf} exportProject={exportProject} exportDxfSlide={mode === "docs" && activeDocsSlide?.view === "plan" && activeDocsSlide.rect ? exportDxfSlide : null} activeSlideName={activeDocsSlide?.title || activeDocsSlide?.name || ""} readAutosaveHistory={readAutosaveHistory} restoreAutosave={restoreAutosave} projects={projectList.projects} projectsKind={projectList.backendKind} projectsCanWrite={projectList.canWrite} projectsBusy={projectList.busy} saveToProjects={projectList.saveProject} openProject={projectList.openProject} deleteProject={projectList.deleteProject} renameProject={projectList.renameProject} activeProjectId={projectList.activeId} projectName={projectName} font={font} importProject={importProject} liveDirty={liveDirty} loadRef={loadRef} markers={markers} mode={mode} modeMenuRect={modeMenuRect} newProject={newProject} newSnapMode={newSnapMode} redo={redo} renameSnapshot={renameSnapshot} renamingSnapId={renamingSnapId} saveMenuRect={saveMenuRect} setMode={setMode} setModeMenuRect={setModeMenuRect} setNewSnapMode={setNewSnapMode} setRenamingSnapId={setRenamingSnapId} setSaveMenuRect={setSaveMenuRect} setShowModeMenu={setShowModeMenu} setShowSaveMenu={setShowSaveMenu} setShowSettings={setShowSettings} setShowSnapMenu={setShowSnapMenu} setSidebarOpen={setSidebarOpen} setSnapDraftName={setSnapDraftName} setSnapMenuRect={setSnapMenuRect} setT={setT} setThemeMode={setThemeMode} monoDraw={monoDraw} setMonoDraw={setMonoDraw} monoSkin={monoSkin} setMonoSkin={setMonoSkin} monoTiers={monoT.tiers} showModeMenu={showModeMenu} showSaveMenu={showSaveMenu} showSnapMenu={showSnapMenu} sidebarOpen={sidebarOpen} snapDraftName={snapDraftName} snapMenuRect={snapMenuRect} snapshot={snapshot} snapshots={snapshots} switchSnapshot={switchSnapshot} takeSnapshot={takeSnapshot} themeMode={themeMode} undo={undo} updateSnapshot={updateSnapshot} walls={walls} zones={zones} furnitureCount={furniture.length} panes={panes} setLayout={setLayout} setSelType={setSelType} setSelectedId={setSelectedId} setSelectedIds={setSelectedIds} slidesCount={slides.length} />
 
       <div style={S.main}>
         <Sidebar $={$} S={S} T={T} activeFurnitureType={activeFurnitureType} activeSlideId={activeSlideId} activeSpecLayer={activeSpecLayer} activeZoneType={activeZoneType} addSlide={addSlide} bgImage={bgImage} bgOpacity={bgOpacity} bgScale={bgScale} calibrationFeet={calibrationFeet} calibrationLine={calibrationLine} columns={columns} cost={cost} dims={dims} docSettings={docSettings} doors={doors} dropSlide={dropSlide} fRef={fRef} floorRegions={floorRegions} flowPaths={flowPaths} font={font} ft={ft} furniture={furniture} guides={guides} labels={labels} layerLocked={layerLocked} lockedLayers={lockedLayers} markers={markers} mode={mode} projectName={projectName} pxPerFoot={pxPerFoot} removeSlide={removeSlide} revClouds={revClouds} selectedId={selectedId} selectedIds={selectedIds} setActiveComponentType={setActiveComponentType} setActiveFurnitureType={setActiveFurnitureType} setActiveSlideId={setActiveSlideId} setActiveSpecLayer={setActiveSpecLayer} setActiveZoneType={setActiveZoneType} setBgImage={setBgImage} setBgOffset={setBgOffset} setBgOpacity={setBgOpacity} setBgScale={setBgScale} setCalibrationFeet={setCalibrationFeet} setCalibrationLine={setCalibrationLine} setLockedLayers={setLockedLayers} setProjectName={setProjectName} setSelType={setSelType} setSelectedId={setSelectedId} setSelectedIds={setSelectedIds} setShowGrid={setShowGrid} setT={setT} setTool={setTool} setVisibleBuildElectrical={setVisibleBuildElectrical} setVisibleBuildLighting={setVisibleBuildLighting} setVisibleDims={setVisibleDims} setVisibleFloorRegions={setVisibleFloorRegions} setVisibleFlowPaths={setVisibleFlowPaths} setVisibleFurniture={setVisibleFurniture} setVisibleGuides={setVisibleGuides} setVisibleITMEP={setVisibleITMEP} setVisibleLabels={setVisibleLabels} setVisibleLayers={setVisibleLayers} setVisibleRevClouds={setVisibleRevClouds} setVisibleZones={setVisibleZones} showGrid={showGrid} slides={slides} tool={tool} uiColor={uiColor} updateSlide={updateSlide} visibleBuildElectrical={visibleBuildElectrical} visibleBuildLighting={visibleBuildLighting} visibleDims={visibleDims} visibleFloorRegions={visibleFloorRegions} visibleFlowPaths={visibleFlowPaths} visibleFurniture={visibleFurniture} visibleGuides={visibleGuides} visibleITMEP={visibleITMEP} visibleLabels={visibleLabels} visibleLayers={visibleLayers} visibleRevClouds={visibleRevClouds} visibleZones={visibleZones} wallKinds={wallKinds} walls={walls} windows={windows} wl={wl} zoneLibrary={zoneLibrary} zones={zones} />

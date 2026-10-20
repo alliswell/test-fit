@@ -326,6 +326,59 @@ src/
                        Surfaced in TopBar's Load menu ("Restore earlier autosave", rows are
                        relativeTime + historySummary; data-testid load-menu / autosave-entry).
     labels.js          wrapLabelLines, labelBounds (label box layout)
+    saveFile.js        saveFile(name, data, type) — the ONE door for every file the app hands
+                       the user (project JSON, PNG, SVG, DXF; the 5 export callbacks in
+                       testfit.jsx). Plain browser: anchor download. Inside the claude.ai
+                       artifact viewer (window.claude.use exists) page-started downloads are
+                       inert, so it routes through the viewer's `downloads` capability (the
+                       artifact is published with capabilities {downloads:true}); the viewer
+                       allowlists extensions and refuses .dxf, so DXF goes out as
+                       `name.dxf.txt` and the toast says to rename (viewerSafeName, tested).
+                       The 3D `<Environment preset>` HDRI is fetched from drei's asset host,
+                       which that viewer's CSP blocks — EnvGuard (testfit3d.jsx) swallows the
+                       load error so detailed mode degrades to sun+ambient instead of killing
+                       the app via the top-level ErrorBoundary. Print / PDF (window.print)
+                       stay inert in the viewer; use the dev build for those.
+    projectList.js     the IN-APP PROJECT LIST (Save ▾ › "Save to projects" name box, Load ▾ ›
+                       "Projects" rows) so moving between projects never means a .json
+                       round-trip. One backend contract {list/get/put/remove} with three
+                       backends, chosen once by pickBackend(): artifactDbBackend when the
+                       page runs inside the claude.ai artifact viewer (`claude.use("db")` —
+                       ONE shared list for everyone who can open the artifact, every
+                       device; docs cap at 256 KiB so the JSON is split into
+                       `projects/<id>/parts/<i>` chunk docs under a `projects/<id>` meta
+                       doc {name, savedAt, summary, chunks} — parts written first, meta
+                       last, stale tail parts deleted on a smaller re-save),
+                       indexedDbBackend otherwise (dev build / no db: per browser), and
+                       memoryBackend for tests. IDENTITY: ids are RANDOM (newProjectId;
+                       the name is only a label, so two people saving "Midtown" get two
+                       entries). The entry the editor is working ON is the ACTIVE id
+                       (localStorage "testfit-active-project", per browser; validated
+                       against the list on mount): Save → Update that entry (the button
+                       says so and the block shows "Open: <name>"); "Save as new instead"
+                       mints a fresh id; Open binds; New and file import unbind
+                       (projectList.clearActive in testfit.jsx). Rename is inline in the
+                       Load row (✎ → input; Enter/blur commit, Esc cancels; a
+                       renameDoneRef stops Enter+blur committing twice) → backend.rename,
+                       which on the shared backend is a meta-doc update() that never
+                       touches the chunks; renaming the active entry retitles the editor
+                       via onProjectNamed. The open entry is marked "· open" in text, not
+                       colour. No dialogs anywhere — the artifact viewer swallows
+                       confirm()/prompt(). Payloads are slimmed like autosave history (slide
+                       captures dropped) and carry the name as projectName. Write
+                       access on the shared backend follows user.can("data.write")
+                       (backendCanWrite; null = keep the controls). projectList.test.js
+                       pins chunking/reassembly/tail cleanup/rename against a fake db.
+                       imports/useProjectList.js is the React side (backend pick on mount,
+                       list + active state, save/open/rename/delete with toasts);
+                       testfit.jsx feeds it getProjectData + an openData that pushes
+                       history then runs applyProjectData — the same hydrator as file
+                       import — + onProjectNamed=setProjectName. The artifact is published
+                       with capabilities {downloads, db, user}.
+                       TopBar's New and the row ✕ are TWO-STEP inline confirms
+                       ("New? Click again" / "Delete?") for the same no-dialogs reason —
+                       confirm() returning false had left New dead whenever there was
+                       content; the e2e newProject helpers click twice when armed.
     docs.js            pure Docs-stage helpers: SHEET_SIZES, sheetDims/Inches,
                        fitRectToViewport, fitStandardScale (true architectural scales),
                        defaultSlideName, formatSheetNo, per-slide layer visibility

@@ -1,4 +1,4 @@
-import { useState, useMemo, useRef, useEffect, useCallback } from "react";
+import { useState, useMemo, useRef, useEffect, useCallback, Component } from "react";
 import { traceOuterBoundary, computeWallFootprints, junctionCapPolys, cutawayHiddenWalls, nestedFloorHoles } from "./geometry";
 import { footprintToLocal, buildWallSolidGeometry, buildCapSolidGeometry, solidEdgesGeometry, buildWallEdgeSegments, transferableToGeometry } from "./wallGeo3d";
 import { buildWallSolidAsync, csgWorkerAvailable } from "./wallCsgClient";
@@ -30,6 +30,14 @@ const WALL_KINDS = {
 // shaded/side faces at ~65% of this color regardless of how light it is — emissive adds
 // a light-independent floor so those faces read pale too, while lit faces (diffuse +
 // emissive) stay brighter, preserving the per-face shading that gives the massing depth.
+// Render-null boundary for optional, network-fetched scene dressing (see <Environment>).
+class EnvGuard extends Component {
+  constructor(props) { super(props); this.state = { failed: false }; }
+  static getDerivedStateFromError() { return { failed: true }; }
+  componentDidCatch(error) { console.warn("TestFit 3D: environment map unavailable, continuing without it.", error?.message); }
+  render() { return this.state.failed ? null : this.props.children; }
+}
+
 const lightenHex = (hex, t) => {
   const n = parseInt(hex.slice(1), 16), r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
   const m = (v) => Math.round(v + (255 - v) * t);
@@ -2067,8 +2075,13 @@ export default function TestFit3D({
         <color attach="background" args={[bgColor]} />
 
         {style3d === "detailed" ? <>
-          {/* HDRI image-based lighting — provides ambient + reflections for PBR materials */}
-          <Environment preset="apartment" environmentIntensity={0.7} />
+          {/* HDRI image-based lighting — provides ambient + reflections for PBR materials.
+              The preset is FETCHED from drei's asset host; offline, or inside the claude.ai
+              artifact viewer (whose CSP blocks that host), the loader throws and r3f's
+              Canvas re-throws into the app's top-level ErrorBoundary — the whole app would
+              die for a missing reflection map. EnvGuard swallows it: detailed mode then
+              lights from the sun + ambient alone. */}
+          <EnvGuard><Environment preset="apartment" environmentIntensity={0.7} /></EnvGuard>
           {/* small ambient ensures Lambert-only meshes (markers) aren't pitch black */}
           <ambientLight intensity={0.25} />
           {/* warm late-morning sun — primary shadow caster */}

@@ -1,20 +1,42 @@
 // ─── Top bar (chrome) ────────────────────────────────────────────────────────
 // Props-only component extracted from testfit.jsx: wordmark, snapshot switcher,
 // stage dropdown, undo/redo, save/load/new, layout switcher, theme + settings.
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Tooltip, TooltipTrigger, TooltipContent } from "../app/components/ui/tooltip";
 import { ChevronDown, PanelLeft, PanelLeftClose, Plus, Redo2, RotateCcw, Settings, Undo2, X } from "lucide-react";
 import MonoSkinPanel from "./MonoSkinPanel";
 import { historySummary, relativeTime } from "../utils/autosaveHistory";
 
 export default function TopBar({
-  $, MODES, S, T, activeSnapshotId, canRedo, canUndo, cost, deleteSnapshot, display, exportPdf, exportPng, exportSvg, exportDxf, exportDxfSlide = null, activeSlideName = "", exportProject, font, readAutosaveHistory, restoreAutosave, importProject, liveDirty, loadRef, markers, mode, modeMenuRect, newProject, newSnapMode, redo, renameSnapshot, renamingSnapId, saveMenuRect, setMode, setModeMenuRect, setNewSnapMode, setRenamingSnapId, setSaveMenuRect, setShowModeMenu, setShowSaveMenu, setShowSettings, setShowSnapMenu, setSidebarOpen, setSnapDraftName, setSnapMenuRect, setT, setMonoDraw, monoDraw, monoSkin, setMonoSkin, monoTiers = [], setThemeMode, showModeMenu, showSaveMenu, showSnapMenu, sidebarOpen, slidesCount = 0, snapDraftName, snapMenuRect, snapshot, snapshots, switchSnapshot, takeSnapshot, themeMode, undo, updateSnapshot, walls, zones, furnitureCount = 0, panes, setLayout, setSelType, setSelectedId, setSelectedIds,
+  $, MODES, S, T, activeSnapshotId, canRedo, canUndo, cost, deleteSnapshot, display, exportPdf, exportPng, exportSvg, exportDxf, exportDxfSlide = null, activeSlideName = "", exportProject, font, readAutosaveHistory, restoreAutosave, importProject, projects = [], projectsKind = null, projectsCanWrite = true, projectsBusy = false, saveToProjects, openProject, deleteProject, renameProject, activeProjectId = null, projectName = "", liveDirty, loadRef, markers, mode, modeMenuRect, newProject, newSnapMode, redo, renameSnapshot, renamingSnapId, saveMenuRect, setMode, setModeMenuRect, setNewSnapMode, setRenamingSnapId, setSaveMenuRect, setShowModeMenu, setShowSaveMenu, setShowSettings, setShowSnapMenu, setSidebarOpen, setSnapDraftName, setSnapMenuRect, setT, setMonoDraw, monoDraw, monoSkin, setMonoSkin, monoTiers = [], setThemeMode, showModeMenu, showSaveMenu, showSnapMenu, sidebarOpen, slidesCount = 0, snapDraftName, snapMenuRect, snapshot, snapshots, switchSnapshot, takeSnapshot, themeMode, undo, updateSnapshot, walls, zones, furnitureCount = 0, panes, setLayout, setSelType, setSelectedId, setSelectedIds,
 }) {
   // Mono style options live in a split-button dropdown (main = toggle, chevron = skin panel).
   const [showMono, setShowMono] = useState(false);
   const [monoRect, setMonoRect] = useState(null);
   // Load menu: file import + the autosave history ring (read when the menu opens).
   const [showLoad, setShowLoad] = useState(false);
+  // In-app project list (utils/projectList.js via useProjectList): the Save menu's name box
+  // and the Load menu's Projects section. Delete and New are TWO-STEP inline confirms —
+  // the artifact viewer swallows native dialogs (confirm() returns false), which had left
+  // New dead whenever there was content on the canvas.
+  const [projDraft, setProjDraft] = useState("");
+  const [confirmDel, setConfirmDel] = useState(null);
+  const [newArmed, setNewArmed] = useState(false);
+  useEffect(() => { if (!newArmed) return; const t = setTimeout(() => setNewArmed(false), 3000); return () => clearTimeout(t); }, [newArmed]);
+  const [renamingId, setRenamingId] = useState(null);
+  const [renameDraft, setRenameDraft] = useState("");
+  const renameDoneRef = useRef(false); // Enter commits and unmounts the input; a trailing blur must not commit twice
+  const commitRename = (p) => {
+    if (renameDoneRef.current) return;
+    renameDoneRef.current = true;
+    const n = renameDraft.trim();
+    setRenamingId(null);
+    if (n && n !== p.name) renameProject?.(p.id, n);
+  };
+  const canSaveProject = !!projDraft.trim() && projectsCanWrite && !projectsBusy && !!projectsKind && !!saveToProjects;
+  const backendLabel = projectsKind === "shared" ? " · shared" : projectsKind === "local" ? " · this browser" : "";
+  // The entry the editor is working on (Save → Update it). Null = unsaved / unbound.
+  const activeProject = activeProjectId ? projects.find(p => p.id === activeProjectId) || null : null;
   const [loadRect, setLoadRect] = useState(null);
   const [history, setHistory] = useState([]);
   return (
@@ -215,12 +237,32 @@ export default function TopBar({
         </div>
         <div style={{ width: 1, height: 20, background: T.border, margin: "0 3px" }} />
         <div style={{ position: "relative" }}>
-          <button style={{ ...S.smBtn, display: "flex", alignItems: "center", gap: 4 }} onClick={e => { setSaveMenuRect(e.currentTarget.getBoundingClientRect()); setShowSaveMenu(v => !v); }}>
+          <button data-testid="save-menu" style={{ ...S.smBtn, display: "flex", alignItems: "center", gap: 4 }} onClick={e => { setSaveMenuRect(e.currentTarget.getBoundingClientRect()); setProjDraft(projectName || ""); setShowSaveMenu(v => !v); }}>
             Save<ChevronDown size={11} style={{ opacity: 0.7, transition: "transform 0.15s", transform: showSaveMenu ? "rotate(180deg)" : "none" }} />
           </button>
           {showSaveMenu && <>
             <div style={{ position: "fixed", inset: 0, zIndex: 999 }} onClick={() => setShowSaveMenu(false)} />
-            <div style={{ position: "fixed", top: (saveMenuRect?.bottom ?? 44) + 6, right: Math.max(8, window.innerWidth - (saveMenuRect?.right ?? 0)), background: T.panelBg, border: "1px solid " + T.border, borderRadius: 8, padding: 6, zIndex: 1000, minWidth: 160, boxShadow: T.panelShadow, backdropFilter: "blur(16px)" }}>
+            <div style={{ position: "fixed", top: (saveMenuRect?.bottom ?? 44) + 6, right: Math.max(8, window.innerWidth - (saveMenuRect?.right ?? 0)), background: T.panelBg, border: "1px solid " + T.border, borderRadius: 8, padding: 6, zIndex: 1000, minWidth: 236, boxShadow: T.panelShadow, backdropFilter: "blur(16px)" }}>
+              {saveToProjects && <div data-testid="project-save-block" style={{ padding: "2px 4px 8px", borderBottom: "1px solid " + T.border, marginBottom: 4 }}>
+                <div style={{ fontSize: 8, color: T.textDim, textTransform: "uppercase", letterSpacing: "0.08em", padding: "4px 6px 6px", fontWeight: 600 }}>Save to projects{backendLabel}</div>
+                <div style={{ display: "flex", gap: 4 }}>
+                  <input data-testid="project-name-input" value={projDraft} placeholder="Project name" onChange={e => setProjDraft(e.target.value)}
+                    onKeyDown={e => { if (e.key === "Enter" && canSaveProject) { setShowSaveMenu(false); saveToProjects(projDraft); } }}
+                    style={{ ...S.inp, flex: 1, padding: "5px 8px" }} />
+                  <button data-testid="project-save" disabled={!canSaveProject}
+                    onClick={() => { setShowSaveMenu(false); saveToProjects(projDraft); }}
+                    style={{ ...S.smBtn, opacity: canSaveProject ? 1 : 0.5, cursor: canSaveProject ? "pointer" : "default" }}>
+                    {activeProject ? "Update" : "Save"}
+                  </button>
+                </div>
+                {activeProject && <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, padding: "6px 6px 0", fontSize: 10 }}>
+                  <span style={{ color: T.textFaint, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", minWidth: 0 }}>Open: {activeProject.name}</span>
+                  <span data-testid="project-save-as-new" onClick={() => { if (!canSaveProject) return; setShowSaveMenu(false); saveToProjects(projDraft, { asNew: true }); }}
+                    style={{ color: canSaveProject ? T.textMuted : T.textFaint, textDecoration: "underline", cursor: canSaveProject ? "pointer" : "default", whiteSpace: "nowrap" }}>Save as new instead</span>
+                </div>}
+                {!projectsCanWrite && <div style={{ padding: "6px 6px 0", fontSize: 10, color: T.textFaint, fontStyle: "italic" }}>View-only here — you can open projects, not save them.</div>}
+                {!projectsKind && <div style={{ padding: "6px 6px 0", fontSize: 10, color: T.textFaint, fontStyle: "italic" }}>Connecting…</div>}
+              </div>}
               {[
                 { label: "Save Project (.json)", fn: exportProject },
                 { label: "Export PNG", fn: exportPng },
@@ -239,12 +281,48 @@ export default function TopBar({
         </div>
         <div style={{ position: "relative" }}>
           <button data-testid="load-menu" style={{ ...S.smBtn, display: "flex", alignItems: "center", gap: 4 }}
-            onClick={e => { setLoadRect(e.currentTarget.getBoundingClientRect()); setHistory(readAutosaveHistory ? readAutosaveHistory() : []); setShowLoad(v => !v); }}>
+            onClick={e => { setLoadRect(e.currentTarget.getBoundingClientRect()); setHistory(readAutosaveHistory ? readAutosaveHistory() : []); setConfirmDel(null); setShowLoad(v => !v); }}>
             Load<ChevronDown size={11} style={{ opacity: 0.7, transition: "transform 0.15s", transform: showLoad ? "rotate(180deg)" : "none" }} />
           </button>
           {showLoad && <>
             <div style={{ position: "fixed", inset: 0, zIndex: 999 }} onClick={() => setShowLoad(false)} />
             <div style={{ position: "fixed", top: (loadRect?.bottom ?? 44) + 6, left: loadRect?.left ?? 12, background: T.panelBg, border: "1px solid " + T.border, borderRadius: 8, padding: 6, zIndex: 1000, minWidth: 230, maxWidth: 320, boxShadow: T.panelShadow, backdropFilter: "blur(16px)" }}>
+              {openProject && <>
+                <div style={{ fontSize: 8, color: T.textDim, textTransform: "uppercase", letterSpacing: "0.08em", padding: "4px 10px 4px", fontWeight: 600 }}>Projects{backendLabel}</div>
+                {projects.length === 0 && <div style={{ padding: "2px 10px 8px", fontSize: 10, color: T.textFaint, fontStyle: "italic" }}>{projectsKind ? "None saved yet — Save ▾ › Save to projects." : "Connecting…"}</div>}
+                {projects.map(p => {
+                  const editing = renamingId === p.id;
+                  const isOpen = p.id === activeProjectId;
+                  return (
+                  <div key={p.id} data-testid="project-entry" title={p.summary} onClick={() => { if (projectsBusy || editing) return; setShowLoad(false); openProject(p.id); }}
+                    style={{ padding: "6px 10px", borderRadius: 6, cursor: editing ? "default" : "pointer", fontSize: 11, color: T.textMuted, fontFamily: "inherit", transition: "background 0.12s", display: "flex", alignItems: "center", gap: 8 }}
+                    onMouseEnter={e => e.currentTarget.style.background = T.border + "60"}
+                    onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
+                    {editing ? (
+                      <input data-testid="project-rename-input" autoFocus value={renameDraft} onChange={e => setRenameDraft(e.target.value)}
+                        onClick={e => e.stopPropagation()}
+                        onKeyDown={e => { if (e.key === "Enter") commitRename(p); else if (e.key === "Escape") { renameDoneRef.current = true; setRenamingId(null); } }}
+                        onBlur={() => commitRename(p)}
+                        style={{ ...S.inp, flex: 1, minWidth: 0, padding: "3px 6px" }} />
+                    ) : (
+                      <span style={{ color: T.textBright, fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", flex: 1, minWidth: 0 }}>
+                        {p.name}{isOpen && <span style={{ color: T.textDim, fontWeight: 400 }}> · open</span>}
+                      </span>
+                    )}
+                    <span style={{ fontSize: 10, color: T.textDim, whiteSpace: "nowrap" }}>{relativeTime(p.savedAt)}</span>
+                    {projectsCanWrite && !editing && <span data-testid="project-rename" title="Rename project"
+                      onClick={e => { e.stopPropagation(); setConfirmDel(null); renameDoneRef.current = false; setRenameDraft(p.name); setRenamingId(p.id); }}
+                      style={{ fontSize: 10, color: T.textFaint, whiteSpace: "nowrap", padding: "0 2px" }}>✎</span>}
+                    {projectsCanWrite && !editing && <span data-testid="project-delete" title={confirmDel === p.id ? "Click again to delete" : "Delete project"}
+                      onClick={e => { e.stopPropagation(); if (confirmDel === p.id) { setConfirmDel(null); deleteProject(p.id); } else setConfirmDel(p.id); }}
+                      style={{ fontSize: 10, color: confirmDel === p.id ? T.brand : T.textFaint, fontWeight: confirmDel === p.id ? 600 : 400, whiteSpace: "nowrap", padding: "0 2px" }}>
+                      {confirmDel === p.id ? "Delete?" : "✕"}
+                    </span>}
+                  </div>
+                  );
+                })}
+                <div style={{ borderTop: "1px solid " + T.border, marginTop: 4, paddingTop: 4 }} />
+              </>}
               <div onClick={() => { setShowLoad(false); loadRef.current?.click(); }}
                 style={{ padding: "7px 10px", borderRadius: 6, cursor: "pointer", fontSize: 11, color: T.textMuted, fontFamily: "inherit", transition: "background 0.12s" }}
                 onMouseEnter={e => e.currentTarget.style.background = T.border + "60"}
@@ -263,7 +341,11 @@ export default function TopBar({
             </div>
           </>}
         </div>
-        <button style={S.smBtn} onClick={() => { if (walls.length || zones.length || markers.length) { if (confirm("New project?")) newProject(); } else newProject(); }}>New</button>
+        <button data-testid="new-project" style={{ ...S.smBtn, ...(newArmed ? { color: T.brand, fontWeight: 600 } : null) }}
+          onClick={() => {
+            if ((walls.length || zones.length || markers.length || furnitureCount) && !newArmed) { setNewArmed(true); return; }
+            setNewArmed(false); newProject();
+          }}>{newArmed ? "New? Click again" : "New"}</button>
         <input ref={loadRef} type="file" accept=".json" style={{ display: "none" }} onChange={e => { const f = e.target.files?.[0]; if (f) importProject(f); e.target.value = ""; }} />
         <div style={{ width: 1, height: 20, background: T.border, margin: "0 3px" }} />
         {/* Layout switcher (single / split / quad) — always visible in the top bar */}
