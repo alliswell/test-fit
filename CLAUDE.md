@@ -339,6 +339,34 @@ src/
                        load error so detailed mode degrades to sun+ambient instead of killing
                        the app via the top-level ErrorBoundary. Print / PDF (window.print)
                        stay inert in the viewer; use the dev build for those.
+    projectList.js     the IN-APP PROJECT LIST (Save ▾ › "Save to projects" name box, Load ▾ ›
+                       "Projects" rows) so moving between projects never means a .json
+                       round-trip. One backend contract {list/get/put/remove} with three
+                       backends, chosen once by pickBackend(): artifactDbBackend when the
+                       page runs inside the claude.ai artifact viewer (`claude.use("db")` —
+                       ONE shared list for everyone who can open the artifact, every
+                       device; docs cap at 256 KiB so the JSON is split into
+                       `projects/<id>/parts/<i>` chunk docs under a `projects/<id>` meta
+                       doc {name, savedAt, summary, chunks} — parts written first, meta
+                       last, stale tail parts deleted on a smaller re-save),
+                       indexedDbBackend otherwise (dev build / no db: per browser), and
+                       memoryBackend for tests. A project's id is a SLUG OF ITS NAME, so
+                       saving under an existing name updates that entry (the button reads
+                       "Update") — no dialogs, because the artifact viewer swallows
+                       confirm()/prompt(). Payloads are slimmed like autosave history (slide
+                       captures dropped) and carry the list name as projectName. Write
+                       access on the shared backend follows user.can("data.write")
+                       (backendCanWrite; null = keep the controls). projectList.test.js
+                       pins chunking/reassembly/tail cleanup against a fake db.
+                       imports/useProjectList.js is the React side (backend pick on mount,
+                       list state, save/open/delete with toasts); testfit.jsx feeds it
+                       getProjectData + an openData that pushes history then runs
+                       applyProjectData — the same hydrator as file import. The artifact
+                       is published with capabilities {downloads, db, user}.
+                       TopBar's New and the row ✕ are TWO-STEP inline confirms
+                       ("New? Click again" / "Delete?") for the same no-dialogs reason —
+                       confirm() returning false had left New dead whenever there was
+                       content; the e2e newProject helpers click twice when armed.
     docs.js            pure Docs-stage helpers: SHEET_SIZES, sheetDims/Inches,
                        fitRectToViewport, fitStandardScale (true architectural scales),
                        defaultSlideName, formatSheetNo, per-slide layer visibility

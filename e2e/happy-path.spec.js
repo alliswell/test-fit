@@ -9,8 +9,10 @@ const readModel = (page) => page.evaluate(() => JSON.parse(localStorage.getItem(
 
 // Reset to an empty project (handles the "New project?" confirm if content exists).
 async function newProject(page) {
-  page.once("dialog", (d) => d.accept());
-  await page.getByRole("button", { name: "New", exact: true }).click();
+  // New is a two-step inline confirm when there is content (no native dialog).
+  const btn = page.getByTestId("new-project");
+  await btn.click();
+  if ((await btn.textContent())?.startsWith("New?")) await btn.click();
 }
 
 // Center of the plan canvas, in page coordinates.

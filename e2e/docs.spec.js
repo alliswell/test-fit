@@ -6,8 +6,10 @@ import { test, expect } from "@playwright/test";
 const readModel = (page) => page.evaluate(() => JSON.parse(localStorage.getItem("testfit-autosave") || "{}"));
 
 async function newProject(page) {
-  page.once("dialog", (d) => d.accept());
-  await page.getByRole("button", { name: "New", exact: true }).click();
+  // New is a two-step inline confirm when there is content (no native dialog).
+  const btn = page.getByTestId("new-project");
+  await btn.click();
+  if ((await btn.textContent())?.startsWith("New?")) await btn.click();
 }
 
 async function planCenter(page) {
