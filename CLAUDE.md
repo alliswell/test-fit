@@ -350,19 +350,31 @@ src/
                        doc {name, savedAt, summary, chunks} — parts written first, meta
                        last, stale tail parts deleted on a smaller re-save),
                        indexedDbBackend otherwise (dev build / no db: per browser), and
-                       memoryBackend for tests. A project's id is a SLUG OF ITS NAME, so
-                       saving under an existing name updates that entry (the button reads
-                       "Update") — no dialogs, because the artifact viewer swallows
+                       memoryBackend for tests. IDENTITY: ids are RANDOM (newProjectId;
+                       the name is only a label, so two people saving "Midtown" get two
+                       entries). The entry the editor is working ON is the ACTIVE id
+                       (localStorage "testfit-active-project", per browser; validated
+                       against the list on mount): Save → Update that entry (the button
+                       says so and the block shows "Open: <name>"); "Save as new instead"
+                       mints a fresh id; Open binds; New and file import unbind
+                       (projectList.clearActive in testfit.jsx). Rename is inline in the
+                       Load row (✎ → input; Enter/blur commit, Esc cancels; a
+                       renameDoneRef stops Enter+blur committing twice) → backend.rename,
+                       which on the shared backend is a meta-doc update() that never
+                       touches the chunks; renaming the active entry retitles the editor
+                       via onProjectNamed. The open entry is marked "· open" in text, not
+                       colour. No dialogs anywhere — the artifact viewer swallows
                        confirm()/prompt(). Payloads are slimmed like autosave history (slide
-                       captures dropped) and carry the list name as projectName. Write
+                       captures dropped) and carry the name as projectName. Write
                        access on the shared backend follows user.can("data.write")
                        (backendCanWrite; null = keep the controls). projectList.test.js
-                       pins chunking/reassembly/tail cleanup against a fake db.
+                       pins chunking/reassembly/tail cleanup/rename against a fake db.
                        imports/useProjectList.js is the React side (backend pick on mount,
-                       list state, save/open/delete with toasts); testfit.jsx feeds it
-                       getProjectData + an openData that pushes history then runs
-                       applyProjectData — the same hydrator as file import. The artifact
-                       is published with capabilities {downloads, db, user}.
+                       list + active state, save/open/rename/delete with toasts);
+                       testfit.jsx feeds it getProjectData + an openData that pushes
+                       history then runs applyProjectData — the same hydrator as file
+                       import — + onProjectNamed=setProjectName. The artifact is published
+                       with capabilities {downloads, db, user}.
                        TopBar's New and the row ✕ are TWO-STEP inline confirms
                        ("New? Click again" / "Delete?") for the same no-dialogs reason —
                        confirm() returning false had left New dead whenever there was

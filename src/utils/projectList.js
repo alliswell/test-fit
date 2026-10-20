@@ -1,10 +1,11 @@
 // ─── Project list ─────────────────────────────────────────────────────────────
 // Named projects saved IN the app, so moving between them never means exporting a
-// .json and loading it back. One tiny backend contract, two backends:
+// .json and loading it back. One tiny backend contract, three backends:
 //
-//   list()        → [{ id, name, savedAt, summary }]  newest first (no data — cheap)
-//   get(id)       → project data | null
-//   put(meta, data)
+//   list()            → [{ id, name, savedAt, summary }]  newest first (no data — cheap)
+//   get(id)           → project data | null
+//   put(meta, data)   → create or overwrite
+//   rename(id, name)  → name only (data untouched, savedAt untouched)
 //   remove(id)
 //
 //   artifactDbBackend — the claude.ai artifact's shared `db` capability: one list for
@@ -17,21 +18,27 @@
 //   memoryBackend     — tests.
 //
 // pickBackend() chooses: artifact db when `claude.use("db")` resolves, else IndexedDB.
-// A project's id is a slug of its name, so saving under an existing name UPDATES that
-// entry (no dialogs — the viewer sandbox swallows confirm()).
+//
+// IDENTITY: a project's id is RANDOM (newProjectId); the name is only a label, so two
+// people saving "Midtown" get two entries. Which entry the editor is working ON is the
+// ACTIVE id (readActiveId/writeActiveId, per browser): Save updates it, "Save as new"
+// mints a fresh id, Open binds to the opened one, New / file import unbind. No dialogs
+// anywhere — the artifact viewer swallows confirm()/prompt().
 import { historySummary, slimForHistory } from "./autosaveHistory";
 
 export const PROJECTS_COLLECTION = "projects";
 export const CHUNK_CHARS = 120_000; // ≈ 160 KiB after JSON escaping, well under 256 KiB
+export const ACTIVE_PROJECT_KEY = "testfit-active-project";
 
-export function projectId(name) {
-  const slug = String(name || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
-  return slug || "untitled";
+// Path-grammar-safe (letters, digits, _): sortable by birth, collision-proof in practice.
+export function newProjectId(now = Date.now(), rnd = Math.random) {
+  return "p_" + now.toString(36) + "_" + rnd().toString(36).slice(2, 8).padEnd(6, "0");
 }
 
-export function projectMeta(name, data, now = Date.now()) {
-  const clean = String(name || "").trim() || "Untitled";
-  return { id: projectId(clean), name: clean, savedAt: now, summary: historySummary(data) };
+export function cleanName(name) { return String(name || "").trim() || "Untitled"; }
+
+export function projectMeta(id, name, data, now = Date.now()) {
+  return { id, name: cleanName(name), savedAt: now, summary: historySummary(data) };
 }
 
 // Slide 3D captures are dropped (they re-capture on open) — same as autosave history.
@@ -43,12 +50,21 @@ export function splitChunks(str, size = CHUNK_CHARS) {
   return out.length ? out : [""];
 }
 
+const store = () => (typeof localStorage !== "undefined" ? localStorage : null);
+export function readActiveId(storage = store()) {
+  try { return storage?.getItem(ACTIVE_PROJECT_KEY) || null; } catch { return null; }
+}
+export function writeActiveId(id, storage = store()) {
+  try { if (id) storage?.setItem(ACTIVE_PROJECT_KEY, id); else storage?.removeItem(ACTIVE_PROJECT_KEY); } catch { /* storage blocked — the binding just doesn't survive a reload */ }
+}
+
 export function memoryBackend(map = new Map()) {
   return {
     kind: "memory",
     list: async () => [...map.values()].map(({ data, ...meta }) => meta).sort((a, b) => b.savedAt - a.savedAt),
     get: async (id) => (map.has(id) ? JSON.parse(JSON.stringify(map.get(id).data)) : null),
     put: async (meta, data) => { map.set(meta.id, { ...meta, data: JSON.parse(JSON.stringify(data)) }); },
+    rename: async (id, name) => { const r = map.get(id); if (!r) throw new Error("Project not found"); map.set(id, { ...r, name: cleanName(name) }); },
     remove: async (id) => { map.delete(id); },
   };
 }
@@ -75,6 +91,11 @@ export function indexedDbBackend(dbName = "testfit-projects") {
     list: async () => ((await run("readonly", s => s.getAll())) || []).map(({ data, ...meta }) => meta).sort((a, b) => b.savedAt - a.savedAt),
     get: async (id) => (await run("readonly", s => s.get(id)))?.data ?? null,
     put: (meta, data) => run("readwrite", s => s.put({ ...meta, data })),
+    rename: async (id, name) => {
+      let found = false;
+      await run("readwrite", s => { const r = s.get(id); r.onsuccess = () => { if (r.result) { found = true; s.put({ ...r.result, name: cleanName(name) }); } }; return r; });
+      if (!found) throw new Error("Project not found");
+    },
     remove: (id) => run("readwrite", s => s.delete(id)),
   };
 }
@@ -104,6 +125,8 @@ export function artifactDbBackend(db, { chunkChars = CHUNK_CHARS } = {}) {
       await metaDoc(meta.id).set({ name: meta.name, savedAt: meta.savedAt, summary: meta.summary, chunks: chunks.length });
       for (let i = chunks.length; i < prevN; i++) await partDoc(meta.id, i).delete(); // a smaller save leaves no stale tail
     },
+    // update() merges into an EXISTING doc (rejects otherwise) — the chunks are untouched.
+    rename: (id, name) => metaDoc(id).update({ name: cleanName(name) }),
     remove: async (id) => {
       const n = await chunkCount(id);
       await metaDoc(id).delete();

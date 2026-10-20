@@ -8,6 +8,8 @@ async function newProject(page) {
   await btn.click();
   if ((await btn.textContent())?.startsWith("New?")) await btn.click();
 }
+// Menus close by clicking their full-screen backdrop (the toggle button sits under it).
+async function closeMenu(page) { await page.mouse.click(8, 400); }
 async function planCenter(page) { const box = await page.getByTestId("plan-canvas").boundingBox(); return { cx: box.x + box.width / 2, cy: box.y + box.height / 2 }; }
 
 test("⌘D duplicates the selection in place and leaves the clipboard alone", async ({ page }) => {
@@ -66,7 +68,7 @@ test("autosave history: an earlier state can be restored from the Load menu", as
   await expect(page.getByTestId("autosave-entry").first()).toContainText("just now");
 });
 
-test("projects: save to the in-app list, start new, open it back, delete it", async ({ page }) => {
+test("projects: save, update, save-as-new, rename, open, delete", async ({ page }) => {
   const seed = {
     version: "testfit-v17", pxPerFoot: 20, projectName: "Seeded",
     nodes: [{ id: "a", x: 200, y: 200 }, { id: "b", x: 500, y: 200 }, { id: "c", x: 500, y: 450 }],
@@ -76,45 +78,65 @@ test("projects: save to the in-app list, start new, open it back, delete it", as
   await page.addInitScript((s) => localStorage.setItem("testfit-autosave", JSON.stringify(s)), seed);
   await page.goto("/");
   await expect.poll(async () => (await readModel(page)).walls?.length).toBe(2);
+  const entries = page.getByTestId("project-entry");
 
-  // Save ▾ › name it › Save. The dev build has no artifact db, so this is the IndexedDB backend.
+  // Unbound editor: Save creates an entry and the title takes the name.
   await page.getByTestId("save-menu").click();
   await expect(page.getByTestId("project-save-block")).toContainText("this browser");
+  await expect(page.getByTestId("project-save")).toHaveText("Save");
   await page.getByTestId("project-name-input").fill("Club A");
   await page.getByTestId("project-save").click();
   await expect(page.getByText("Project saved")).toBeVisible();
+  await expect.poll(async () => (await readModel(page)).projectName).toBe("Club A");
 
-  // New is a two-step confirm while there is content; the model empties.
+  // Bound now: the button reads Update, and "Save as new" forks a second entry (same name allowed).
+  await page.getByTestId("save-menu").click();
+  await expect(page.getByTestId("project-save")).toHaveText("Update");
+  await expect(page.getByTestId("project-save-block")).toContainText("Open: Club A");
+  await page.getByTestId("project-save").click();
+  await expect(page.getByText("Project updated")).toBeVisible();
+  await page.getByTestId("save-menu").click();
+  await page.getByTestId("project-save-as-new").click();
+  await expect(page.getByText("Project saved")).toHaveCount(2); // the first toast is still up
+  await page.getByTestId("load-menu").click();
+  await expect(entries).toHaveCount(2);
+  await expect(entries.first()).toContainText("open");      // newest first, and it is the open one
+  await expect(entries.nth(1)).not.toContainText("open");
+
+  // Rename the older copy inline (✎ → type → Enter).
+  await entries.nth(1).getByTestId("project-rename").click();
+  await page.getByTestId("project-rename-input").fill("Club A rev2");
+  await page.keyboard.press("Enter");
+  await expect(page.getByText("Project renamed")).toBeVisible();
+  await expect(entries.nth(1)).toContainText("Club A rev2");
+  await expect(entries.first()).toContainText("Club A");
+  await closeMenu(page);
+
+  // New unbinds: the Save menu offers a plain Save again.
   const newBtn = page.getByTestId("new-project");
   await newBtn.click();
   await expect(newBtn).toHaveText(/^New\?/);
   await newBtn.click();
   await expect.poll(async () => (await readModel(page)).walls?.length).toBe(0);
+  await page.getByTestId("save-menu").click();
+  await expect(page.getByTestId("project-save")).toHaveText("Save");
+  await closeMenu(page);
 
-  // Load ▾ › Projects › Club A brings the walls and the name back.
+  // Open the renamed one: walls, name and the "open" marker follow.
   await page.getByTestId("load-menu").click();
-  const entry = page.getByTestId("project-entry");
-  await expect(entry).toHaveCount(1);
-  await expect(entry).toContainText("Club A");
-  await entry.click();
+  await entries.filter({ hasText: "Club A rev2" }).click();
   await expect(page.getByText("Project opened")).toBeVisible();
   await expect.poll(async () => (await readModel(page)).walls?.length).toBe(2);
-  await expect.poll(async () => (await readModel(page)).projectName).toBe("Club A");
-
-  // Saving under the same name updates the entry rather than adding one.
-  await page.getByTestId("save-menu").click();
-  await expect(page.getByTestId("project-name-input")).toHaveValue("Club A");
-  await expect(page.getByTestId("project-save")).toHaveText("Update");
-  await page.getByTestId("project-save").click();
-  await expect(page.getByText("Project saved")).toBeVisible();
+  await expect.poll(async () => (await readModel(page)).projectName).toBe("Club A rev2");
   await page.getByTestId("load-menu").click();
-  await expect(page.getByTestId("project-entry")).toHaveCount(1);
+  await expect(entries.filter({ hasText: "Club A rev2" })).toContainText("open");
 
-  // Delete is two-step too (✕ → "Delete?").
-  const del = page.getByTestId("project-delete");
-  await del.click();
-  await expect(del).toHaveText("Delete?");
-  await del.click();
-  await expect(page.getByText("Project deleted")).toBeVisible();
-  await expect(page.getByTestId("project-entry")).toHaveCount(0);
+  // Delete is two-step (✕ → "Delete?"), per row.
+  for (const remaining of [1, 0]) {
+    const del = page.getByTestId("project-delete").first();
+    await del.click();
+    await expect(del).toHaveText("Delete?");
+    await del.click();
+    await expect(entries).toHaveCount(remaining);
+  }
 });
