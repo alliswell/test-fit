@@ -5,6 +5,9 @@
       <meta charset="UTF-8" />
       <meta name="viewport" content="width=device-width, initial-scale=1.0" />
       <title>Test Fit — Drafting Instrument</title>
+      <!-- No favicon shipped; an empty data: icon stops browsers requesting /favicon.ico
+           (a 404 there shows up as a console error and trips the e2e smoke test). -->
+      <link rel="icon" href="data:," />
       <!-- Only the faces the UI actually renders: Saira Condensed 600 (display headers,
            wordmark) and IBM Plex Mono 400/500/600 (everything else). IBM Plex Sans was
            only ever a fallback in the `display` stack and never loaded. The stylesheet is
