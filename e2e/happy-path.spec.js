@@ -47,17 +47,17 @@ test("shell renders: stage dropdown, tool rail, layout switcher, plan canvas", a
 test("layout switcher: single → quad exposes per-pane view selectors → back to single", async ({ page }) => {
   await page.goto("/");
   // single: only pane 0's own selector
-  await expect(page.locator("select")).toHaveCount(1);
+  await expect(page.locator("select:not([data-testid='plan-layer-preset'])")).toHaveCount(1);
   await page.getByRole("button", { name: "⊞", exact: true }).click();   // quad
   // 3 aux panes each get a view-picker <select> (pane 0 is the locked "Plan" chip)
-  await expect(page.locator("select")).toHaveCount(3);
+  await expect(page.locator("select:not([data-testid='plan-layer-preset'])")).toHaveCount(3);
   await page.getByRole("button", { name: "Single", exact: true }).click();   // back to single
-  await expect(page.locator("select")).toHaveCount(1);
+  await expect(page.locator("select:not([data-testid='plan-layer-preset'])")).toHaveCount(1);
 });
 
 test("single-pane view dropdown swaps Plan → 3D → Front elevation → Plan", async ({ page }) => {
   await page.goto("/");
-  const chip = page.locator("select").first();
+  const chip = page.locator("select:not([data-testid='plan-layer-preset'])").first();
   await chip.selectOption("3d");
   await expect(page.locator("canvas")).toBeVisible();          // WebGL 3D canvas mounted
   await chip.selectOption("front");
@@ -395,7 +395,7 @@ test("elevation annotation: a dimension is stored under elevAnnotations[front]",
 
   // split, set the aux pane to the Front elevation
   await page.getByRole("button", { name: "Split", exact: true }).click();
-  await page.locator("select").filter({ has: page.locator('option[value="front"]') }).first().selectOption("front");
+  await page.locator("select:not([data-testid='plan-layer-preset'])").filter({ has: page.locator('option[value="front"]') }).first().selectOption("front");
   const elev = page.locator("svg").filter({ hasText: "FRONT ELEVATION" });
   await expect(elev).toBeVisible();
   const ebox = await elev.boundingBox();
@@ -426,13 +426,13 @@ test("elevation: a door flagged New construction shows a NEW tag", async ({ page
   await page.keyboard.press("v");
 
   // Place a door and flag it new construction (it stays selected → inspector is showing).
-  await page.locator("button:has(svg.lucide-door-open)").click();
+  await page.getByRole("button", { name: "Door", exact: true }).click();
   await page.mouse.click(cx, cy);
   await page.getByTestId("new-construction").check();
 
   // Front elevation carries the NEW tag for the flagged opening.
   await page.getByRole("button", { name: "Split", exact: true }).click();
-  await page.locator("select").filter({ has: page.locator('option[value="front"]') }).first().selectOption("front");
+  await page.locator("select:not([data-testid='plan-layer-preset'])").filter({ has: page.locator('option[value="front"]') }).first().selectOption("front");
   const elev = page.locator("svg").filter({ hasText: "FRONT ELEVATION" });
   await expect(elev).toBeVisible();
   await expect(elev).toContainText("NEW");
@@ -453,7 +453,7 @@ test("isometric view: locked ortho corners, and saves as an iso slide", async ({
   await page.addInitScript((s) => localStorage.setItem("testfit-autosave", JSON.stringify(s)), seed);
   await page.goto("/");
   await page.getByRole("button", { name: "Split", exact: true }).click();
-  await page.locator("select").last().selectOption("iso");
+  await page.locator("select:not([data-testid='plan-layer-preset'])").last().selectOption("iso");
   await page.waitForTimeout(1500);
 
   // Rotate arrows swing 90° per press through ne→se→sw→nw; start is "se".
@@ -505,7 +505,7 @@ test("demo wall keeps its openings in 3D and tags them DEMO in elevation", async
   await page.waitForTimeout(300);
 
   await page.getByRole("button", { name: "Split", exact: true }).click();
-  await page.locator("select").filter({ has: page.locator('option[value="front"]') }).first().selectOption("front");
+  await page.locator("select:not([data-testid='plan-layer-preset'])").filter({ has: page.locator('option[value="front"]') }).first().selectOption("front");
   const elev = page.locator("svg").filter({ hasText: "FRONT ELEVATION" });
   await expect(elev).toBeVisible();
   // Wall + door + window on the demo wall each carry a DEMO tag.
@@ -529,7 +529,7 @@ test("elevation dims scope to the section cut: only the active cut's measurement
   await page.goto("/");
 
   await page.getByRole("button", { name: "Split", exact: true }).click();
-  await page.locator("select").filter({ has: page.locator('option[value="front"]') }).first().selectOption("front");
+  await page.locator("select:not([data-testid='plan-layer-preset'])").filter({ has: page.locator('option[value="front"]') }).first().selectOption("front");
   const elev = page.locator("svg").filter({ hasText: "FRONT ELEVATION" });
   await expect(elev).toBeVisible();
   await expect(elev).toContainText("5'-0\"");       // dim tied to the active cut (700)
@@ -558,7 +558,7 @@ test("elevation dim anchored to a wall + a marker follows the marker when it mov
 
   // Split to the Front elevation, where both the wall and the marker project.
   await page.getByRole("button", { name: "Split", exact: true }).click();
-  await page.locator("select").filter({ has: page.locator('option[value="front"]') }).first().selectOption("front");
+  await page.locator("select:not([data-testid='plan-layer-preset'])").filter({ has: page.locator('option[value="front"]') }).first().selectOption("front");
   const elev = page.locator("svg").filter({ hasText: "FRONT ELEVATION" });
   await expect(elev).toBeVisible();
   const wallEl = page.getByTestId("elev-wall-" + wallId);
@@ -592,9 +592,12 @@ test("elevation dim anchored to a wall + a marker follows the marker when it mov
   // Back to the elevation: the SAME dimension now reads a different, larger length — it
   // followed the marker instead of freezing at the position it was drawn at.
   await page.getByRole("button", { name: "Split", exact: true }).click();
-  await page.locator("select").filter({ has: page.locator('option[value="front"]') }).first().selectOption("front");
+  await page.locator("select:not([data-testid='plan-layer-preset'])").filter({ has: page.locator('option[value="front"]') }).first().selectOption("front");
   await expect(page.getByTestId("elev-dim-label-" + dim.id)).not.toHaveText(labelBefore);
-  await expect(page.getByTestId("elev-dim-label-" + dim.id)).toHaveText("11'-2\""); // 5' further → exact geometry
+  // 5' further → exact geometry: the same inches, five more feet (the starting length
+  // depends on where the 1' grid snapped the marker, which moves with the canvas width).
+  const [, ftB, inB] = labelBefore.match(/^(\d+)'-(\d+)"$/);
+  await expect(page.getByTestId("elev-dim-label-" + dim.id)).toHaveText(`${Number(ftB) + 5}'-${inB}"`);
 });
 
 test("dragging a dimension's endpoint directly detaches it from its anchor", async ({ page }) => {
@@ -614,7 +617,7 @@ test("dragging a dimension's endpoint directly detaches it from its anchor", asy
   await page.goto("/");
 
   await page.getByRole("button", { name: "Split", exact: true }).click();
-  await page.locator("select").filter({ has: page.locator('option[value="front"]') }).first().selectOption("front");
+  await page.locator("select:not([data-testid='plan-layer-preset'])").filter({ has: page.locator('option[value="front"]') }).first().selectOption("front");
   const elev = page.locator("svg").filter({ hasText: "FRONT ELEVATION" });
   await expect(elev).toBeVisible();
 
@@ -650,7 +653,7 @@ test("elevation labels: place + commit, abandoned editor leaves nothing, drag ma
 
   // split, set the aux pane to the Front elevation
   await page.getByRole("button", { name: "Split", exact: true }).click();
-  await page.locator("select").filter({ has: page.locator('option[value="front"]') }).first().selectOption("front");
+  await page.locator("select:not([data-testid='plan-layer-preset'])").filter({ has: page.locator('option[value="front"]') }).first().selectOption("front");
   const elev = page.locator("svg").filter({ hasText: "FRONT ELEVATION" });
   await expect(elev).toBeVisible();
   const ebox = await elev.boundingBox();
@@ -704,7 +707,7 @@ test("elevation revision cloud: click-to-draw closes at the first point and is s
 
   // split, set the aux pane to the Front elevation
   await page.getByRole("button", { name: "Split", exact: true }).click();
-  await page.locator("select").filter({ has: page.locator('option[value="front"]') }).first().selectOption("front");
+  await page.locator("select:not([data-testid='plan-layer-preset'])").filter({ has: page.locator('option[value="front"]') }).first().selectOption("front");
   const elev = page.locator("svg").filter({ hasText: "FRONT ELEVATION" });
   await expect(elev).toBeVisible();
   const ebox = await elev.boundingBox();
@@ -736,7 +739,7 @@ test("door types in elevation: Case Opening renders dashed and stays clickable",
   await page.mouse.click(cx + 120, cy);
   await page.mouse.dblclick(cx + 120, cy);
   await page.keyboard.press("Escape");
-  await page.locator("button:has(svg.lucide-door-open)").click();
+  await page.getByRole("button", { name: "Door", exact: true }).click();
   await page.mouse.click(cx, cy); // snaps to the wall, auto-selects the new door
 
   // option panel is open for the selected door → set its type
@@ -745,7 +748,7 @@ test("door types in elevation: Case Opening renders dashed and stays clickable",
 
   // split, set the aux pane to the Front elevation
   await page.getByRole("button", { name: "Split", exact: true }).click();
-  await page.locator("select").filter({ has: page.locator('option[value="front"]') }).first().selectOption("front");
+  await page.locator("select:not([data-testid='plan-layer-preset'])").filter({ has: page.locator('option[value="front"]') }).first().selectOption("front");
   const elev = page.locator("svg").filter({ hasText: "FRONT ELEVATION" });
   await expect(elev).toBeVisible();
 
@@ -808,7 +811,7 @@ test("IT/MEP door access: toggling Access Control sets door.accessControl", asyn
   await page.mouse.click(cx + 120, cy);
   await page.mouse.dblclick(cx + 120, cy);
   await page.keyboard.press("Escape");
-  await page.locator("button:has(svg.lucide-door-open)").click();
+  await page.getByRole("button", { name: "Door", exact: true }).click();
   await page.mouse.click(cx, cy); // auto-selects the new door
 
   // door inspector → enable Access Control (clicking the label toggles its checkbox)
@@ -1054,7 +1057,7 @@ test("selected zone overlays the clear-inside outline with exact per-edge dims",
 
   await page.keyboard.press("3"); // Zones stage
   // Select the zone via its sidebar row ("Entry" + "176 sf") — deterministic vs. canvas coords.
-  await page.locator("div").filter({ hasText: /^Entry176 sf$/ }).click();
+  await page.locator("button.ys-row").filter({ hasText: /^Entry176 sf$/ }).click();
   await expect(page.getByTestId("zone-clear-sf")).toContainText("161 sf");
   await expect(page.getByTestId("plan-canvas").getByText("15'-5\"").first()).toBeVisible();
   await expect(page.getByTestId("plan-canvas").getByText("10'-5\"").first()).toBeVisible();
@@ -1107,7 +1110,7 @@ test("Furnish this zone: drops the zone type's furniture set, arranged, idempote
   await page.addInitScript((s) => localStorage.setItem("testfit-autosave", JSON.stringify(s)), seed);
   await page.goto("/");
   await page.keyboard.press("3"); // Zones stage
-  await page.locator("div").filter({ hasText: /^Soft Seating/ }).first().click();
+  await page.getByRole("button", { name: "Soft Seating", exact: true }).click();
 
   await page.getByTestId("furnish-zone").click();
   // Soft Seating plan = sofa + 2 chairs + coffee + side table + 2 lamps = 7 pieces, tagged.
@@ -1437,8 +1440,8 @@ test("a locked furniture layer opts out of the zone carry", async ({ page }) => 
   await page.keyboard.press("3");
 
   // Lock the Furniture layer via the padlock in its layer row.
-  await page.getByTestId("plan-layer-row-furniture").getByTitle("Lock layer").click();
-  await expect(page.getByTestId("plan-layer-row-furniture").getByTitle(/Locked/)).toBeVisible();
+  await page.getByTestId("plan-layer-row-furniture").getByRole("button", { name: "Lock Furniture" }).click();
+  await expect(page.getByTestId("plan-layer-row-furniture").getByRole("button", { name: "Unlock Furniture" })).toBeVisible();
 
   const before = await readModel(page);
   await page.mouse.move(box.x + 360, box.y + 300);
@@ -1529,7 +1532,7 @@ test("smoke: every stage and view renders clean", async ({ page }) => {
   await page.keyboard.press("1");
 
   for (const v of ["3d", "iso", "front", "plan"]) {
-    await page.locator("select").first().selectOption(v);
+    await page.locator("select:not([data-testid='plan-layer-preset'])").first().selectOption(v);
     await page.waitForTimeout(700);
   }
   // Mono + Print skins over the plan
@@ -1555,8 +1558,8 @@ test("smoke: hidden IT/MEP components are no longer clickable", async ({ page })
 
   // Hide the IT/MEP layer, then click the same spot — nothing should select.
   await page.mouse.click(box.x + 500, box.y + 250);            // clear selection
-  await page.getByTestId("plan-layer-row-itmep").getByTitle("Hide layer").click();
-  await expect(page.getByTestId("plan-layer-row-itmep").getByTitle("Show layer")).toBeVisible();
+  await page.getByTestId("plan-layer-row-itmep").getByRole("button", { name: "Hide IT / MEP" }).click();
+  await expect(page.getByTestId("plan-layer-row-itmep").getByRole("button", { name: "Show IT / MEP" })).toBeVisible();
   await page.mouse.click(box.x + 640, box.y + 300);
   await expect(selected).toHaveCount(0);
 });
@@ -1741,7 +1744,7 @@ test("a locked Floors layer opts out of the resize carry", async ({ page }) => {
   await page.goto("/");
   const box = await page.getByTestId("plan-canvas").boundingBox();
   const before = await readModel(page);
-  await page.getByTestId("plan-layer-row-floorRegions").getByTitle("Lock layer").click();
+  await page.getByTestId("plan-layer-row-floorRegions").getByRole("button", { name: "Lock Floors" }).click();
 
   await page.mouse.move(box.x + 400, box.y + 300);
   await page.mouse.down();
@@ -2426,7 +2429,7 @@ test("dragging to the top-left still clears the pane's own view-selector chip", 
   // The pane-view chip ("Plan ▾") sits at the pane's own top-left — the minimap must not
   // render underneath it, or dragging back there would leave it permanently stuck (its
   // own drag handle would be unreachable, covered by a higher-z-index control).
-  const chip = page.locator("select").first();
+  const chip = page.locator("select:not([data-testid='plan-layer-preset'])").first();
   const chipBox = await chip.boundingBox();
   const mapBox = await page.getByTestId("minimap").boundingBox();
   expect(mapBox.y).toBeGreaterThan(chipBox.y + chipBox.height);
@@ -2563,7 +2566,7 @@ test("in Detailed 3D the floor texture stays on the building — the ground is t
     floorRegions: [],
   })));
   await page.goto("/");
-  await page.locator("select").first().selectOption("iso");
+  await page.locator("select:not([data-testid='plan-layer-preset'])").first().selectOption("iso");
   await page.waitForTimeout(2500);
   await page.getByRole("button", { name: "Detailed", exact: true }).click();
   await page.waitForTimeout(2500);

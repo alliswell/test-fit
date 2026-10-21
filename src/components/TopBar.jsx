@@ -91,14 +91,14 @@ export default function TopBar({
             </button>
             {showSnapMenu && <>
               <div className="ys-backdrop" onClick={closeSnapMenu} />
-              <div className="ys-menu" role="menu" style={{ ...menuPos(snapMenuRect), minWidth: 260 }}>
+              <div className="ys-menu" style={{ ...menuPos(snapMenuRect), minWidth: 260 }}>
                 <div className="ys-menu__head"><span>Snapshots</span><span className="ys-data">{snapshots.length}</span></div>
                 {snapshots.length === 0 && <div className="ys-menu__note">None yet — save one below.</div>}
                 {snapshots.map(s => {
                   const isActive = s.id === activeSnapshotId;
                   const armedSwitch = confirmSwitch === s.id;
                   const armedDel = confirmSnapDel === s.id;
-                  return <div key={s.id} className="ys-menu__item" aria-current={isActive ? "true" : undefined} role="menuitem">
+                  return <div key={s.id} className="ys-menu__item" aria-current={isActive ? "true" : undefined}>
                     <span className={"ys-num" + (isActive ? "" : " ys-num--outline")} aria-hidden="true">{snapshots.indexOf(s) + 1}</span>
                     {renamingSnapId === s.id ? (
                       <input autoFocus defaultValue={s.name} className="ys-input" style={{ flex: 1, minHeight: 32 }}
@@ -162,11 +162,11 @@ export default function TopBar({
             </button>
             {showModeMenu && <>
               <div className="ys-backdrop" onClick={() => setShowModeMenu(false)} />
-              <div className="ys-menu" role="menu" style={{ ...menuPos(modeMenuRect), minWidth: 300 }}>
+              <div className="ys-menu" style={{ ...menuPos(modeMenuRect), minWidth: 300 }}>
                 <div className="ys-menu__head"><span>Workflow stage</span><span className="ys-data">1–6</span></div>
                 {Object.entries(MODES).map(([k, m]) => {
                   const isActive = k === mode;
-                  return <button type="button" key={k} className="ys-menu__item" aria-label={m.name} aria-current={isActive ? "true" : undefined} role="menuitem"
+                  return <button type="button" key={k} className="ys-menu__item" aria-label={m.name} aria-current={isActive ? "true" : undefined}
                     onClick={() => { setMode(k); setT("select"); setSelectedId(null); setSelType(null); setSelectedIds([]); setShowModeMenu(false); }}>
                     <span className={"ys-num" + (isActive ? "" : " ys-num--outline")} aria-hidden="true">{m.num}</span>
                     <span className="ys-menu__main">
@@ -228,10 +228,10 @@ export default function TopBar({
           </button>
           {showSaveMenu && <>
             <div className="ys-backdrop" onClick={() => setShowSaveMenu(false)} />
-            <div className="ys-menu" role="menu" style={{ ...menuPos(saveMenuRect, true), minWidth: 280 }}>
-              {saveToProjects && <>
+            <div className="ys-menu" style={{ ...menuPos(saveMenuRect, true), minWidth: 280 }}>
+              {saveToProjects && <div data-testid="project-save-block">
                 <div className="ys-menu__head"><span>Save to projects</span><span className="ys-data">{backendLabel.replace(" · ", "")}</span></div>
-                <div className="ys-menu__pad" data-testid="project-save-block">
+                <div className="ys-menu__pad">
                   <div style={{ display: "flex", gap: 8 }}>
                     <input data-testid="project-name-input" className="ys-input" value={projDraft} placeholder="Project name" aria-label="Project name" onChange={e => setProjDraft(e.target.value)}
                       onKeyDown={e => { if (e.key === "Enter" && canSaveProject) { setShowSaveMenu(false); saveToProjects(projDraft); } }} />
@@ -248,7 +248,7 @@ export default function TopBar({
                   {!projectsCanWrite && <div className="ys-small ys-muted">View-only here — you can open projects, not save them.</div>}
                   {!projectsKind && <div className="ys-small ys-muted">Connecting…</div>}
                 </div>
-              </>}
+              </div>}
               <div className="ys-menu__head"><span>Export</span></div>
               {[
                 { label: "Save project (.json)", fn: exportProject },
@@ -258,7 +258,7 @@ export default function TopBar({
                 ...(exportDxfSlide ? [{ label: `Export DXF · this sheet${activeSlideName ? ` (${activeSlideName})` : ""}`, fn: exportDxfSlide }] : []),
                 { label: "Export PDF", fn: exportPdf },
               ].map(({ label, fn }) => (
-                <button type="button" key={label} className="ys-menu__item" role="menuitem" onClick={() => { setShowSaveMenu(false); fn(); }}>{label}</button>
+                <button type="button" key={label} className="ys-menu__item" onClick={() => { setShowSaveMenu(false); fn(); }}>{label}</button>
               ))}
             </div>
           </>}
@@ -270,7 +270,7 @@ export default function TopBar({
           </button>
           {showLoad && <>
             <div className="ys-backdrop" onClick={() => setShowLoad(false)} />
-            <div className="ys-menu" role="menu" style={{ ...menuPos(loadRect, true), minWidth: 300 }}>
+            <div className="ys-menu" style={{ ...menuPos(loadRect, true), minWidth: 300 }}>
               {openProject && <>
                 <div className="ys-menu__head"><span>Projects</span><span className="ys-data">{backendLabel.replace(" · ", "") || "—"}</span></div>
                 {projects.length === 0 && <div className="ys-menu__note">{projectsKind ? "None saved yet — Save ▾ › Save to projects." : "Connecting…"}</div>}
@@ -278,7 +278,7 @@ export default function TopBar({
                   const editing = renamingId === p.id;
                   const isOpen = p.id === activeProjectId;
                   return (
-                  <div key={p.id} data-testid="project-entry" title={p.summary} role="menuitem" tabIndex={editing ? -1 : 0}
+                  <div key={p.id} data-testid="project-entry" title={p.summary} tabIndex={editing ? -1 : 0}
                     className={"ys-menu__item" + (editing ? " ys-menu__item--static" : "")} aria-current={isOpen ? "true" : undefined}
                     onClick={() => { if (projectsBusy || editing) return; setShowLoad(false); openProject(p.id); }}
                     onKeyDown={e => { if (!editing && (e.key === "Enter" || e.key === " ") && e.target === e.currentTarget) { e.preventDefault(); setShowLoad(false); openProject(p.id); } }}>
@@ -305,11 +305,11 @@ export default function TopBar({
                 })}
               </>}
               <div className="ys-menu__head"><span>File</span></div>
-              <button type="button" className="ys-menu__item" role="menuitem" onClick={() => { setShowLoad(false); loadRef.current?.click(); }}>Load project (.json)…</button>
+              <button type="button" className="ys-menu__item" onClick={() => { setShowLoad(false); loadRef.current?.click(); }}>Load project (.json)…</button>
               <div className="ys-menu__head"><span>Restore earlier autosave</span><span className="ys-data">{history.length}</span></div>
               {history.length === 0 && <div className="ys-menu__note">None yet — a copy is kept every ~2 minutes of editing.</div>}
               {history.map(h => (
-                <button type="button" key={h.ts} data-testid="autosave-entry" className="ys-menu__item" role="menuitem" onClick={() => { setShowLoad(false); restoreAutosave?.(h); }}>
+                <button type="button" key={h.ts} data-testid="autosave-entry" className="ys-menu__item" onClick={() => { setShowLoad(false); restoreAutosave?.(h); }}>
                   <span className="ys-menu__main">
                     <span className="ys-menu__title">{relativeTime(h.ts)}</span>
                     <span className="ys-menu__sub">{historySummary(h.data)}</span>

@@ -187,7 +187,7 @@ function Sidebar({
                 {zones.map(z => (
                   <Row key={z.id} compact current={selectedId === z.id}
                     chip={<Swatch color={zoneLibrary[z.type]?.color} />} title={z.label}
-                    meta={zoneLibrary[z.type]?.name}
+                    meta={zoneLibrary[z.type]?.name !== z.label ? zoneLibrary[z.type]?.name : undefined}
                     end={z.points ? Math.round(polyArea(z.points) / (pxPerFoot * pxPerFoot)) + " sf" : dimsOf(z.w / pxPerFoot, z.h / pxPerFoot)}
                     onClick={() => { setSelectedId(z.id); setSelType("zone"); setT("select"); }} />
                 ))}
