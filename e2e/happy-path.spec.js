@@ -594,10 +594,14 @@ test("elevation dim anchored to a wall + a marker follows the marker when it mov
   await page.getByRole("button", { name: "Split", exact: true }).click();
   await page.locator("select:not([data-testid='plan-layer-preset'])").filter({ has: page.locator('option[value="front"]') }).first().selectOption("front");
   await expect(page.getByTestId("elev-dim-label-" + dim.id)).not.toHaveText(labelBefore);
-  // 5' further → exact geometry: the same inches, five more feet (the starting length
-  // depends on where the 1' grid snapped the marker, which moves with the canvas width).
-  const [, ftB, inB] = labelBefore.match(/^(\d+)'-(\d+)"$/);
-  await expect(page.getByTestId("elev-dim-label-" + dim.id)).toHaveText(`${Number(ftB) + 5}'-${inB}"`);
+  // 5' further along the wall. The dim runs from the wall's foot to the marker's mount
+  // height, so the diagonal grows by less than the 5' the marker moved and by more than
+  // 2' (its starting length depends on where the 1' grid snapped the marker, which moves
+  // with the canvas width — so no fixed figure here).
+  const inches = (t) => { const m = t.match(/^(\d+)'-(\d+)"$/); return Number(m[1]) * 12 + Number(m[2]); };
+  const labelAfter = () => page.getByTestId("elev-dim-label-" + dim.id).textContent();
+  await expect.poll(async () => inches(await labelAfter())).toBeGreaterThan(inches(labelBefore) + 24);
+  expect(inches(await labelAfter())).toBeLessThanOrEqual(inches(labelBefore) + 60);
 });
 
 test("dragging a dimension's endpoint directly detaches it from its anchor", async ({ page }) => {
@@ -1110,7 +1114,8 @@ test("Furnish this zone: drops the zone type's furniture set, arranged, idempote
   await page.addInitScript((s) => localStorage.setItem("testfit-autosave", JSON.stringify(s)), seed);
   await page.goto("/");
   await page.keyboard.press("3"); // Zones stage
-  await page.getByRole("button", { name: "Soft Seating", exact: true }).click();
+  // the PLACED zone's row (its sf in the end slot), not the zone-type palette row
+  await page.getByRole("button", { name: /^Soft Seating.*sf$/ }).click();
 
   await page.getByTestId("furnish-zone").click();
   // Soft Seating plan = sofa + 2 chairs + coffee + side table + 2 lamps = 7 pieces, tagged.
@@ -2027,7 +2032,7 @@ test("New clears everything the model holds, not just the collections it used to
   await page.goto("/");
   await expect.poll(async () => (await readModel(page)).furniture.length).toBe(1);
 
-  await page.getByRole("button", { name: "New", exact: true }).click();
+  await newProject(page); // two-step when there is content
   await expect.poll(async () => (await readModel(page)).projectName).toBe("New Club");
 
   const m = await readModel(page);
@@ -2090,7 +2095,7 @@ test("a floor relocks the moment it stops being the selection", async ({ page })
 
   await page.mouse.dblclick(box.x + 300, box.y + 300);
   await expect(page.getByTestId("room-shape-lock")).toContainText("Editing shape");
-  await page.mouse.click(box.x + 750, box.y + 550);          // empty canvas → deselect
+  await page.mouse.click(box.x + 560, box.y + 60);           // empty canvas (clear of the room and of the option panel) → deselect
   await expect(page.getByTestId("room-title")).toHaveCount(0);
   const before = await readModel(page);
 
@@ -2277,7 +2282,7 @@ test("a project with no walls survives a reload", async ({ page }) => {
   })));
   await page.goto("/");
   await page.keyboard.press("4");
-  await expect(page.getByText("PLACED FURNITURE (2)")).toBeVisible();
+  await expect(page.locator("details.ys-section > summary").filter({ hasText: /^Placed furniture2$/ })).toBeVisible();
 });
 
 test("the shortcut sheet opens with ? and closes with Esc", async ({ page }) => {

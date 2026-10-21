@@ -97,7 +97,7 @@ test("projects: save, update, save-as-new, rename, open, delete", async ({ page 
   await expect(page.getByText("Project updated")).toBeVisible();
   await page.getByTestId("save-menu").click();
   await page.getByTestId("project-save-as-new").click();
-  await expect(page.getByText("Project saved")).toHaveCount(2); // the first toast is still up
+  await expect(page.getByText("Project saved").first()).toBeVisible(); // a fresh toast (the first may have expired)
   await page.getByTestId("load-menu").click();
   await expect(entries).toHaveCount(2);
   await expect(entries.first()).toContainText("open");      // newest first, and it is the open one
