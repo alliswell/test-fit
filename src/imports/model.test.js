@@ -211,6 +211,8 @@ describe("migrateProjectData — the persistence seam", () => {
     expect(m.floorMaterial).toBe("Wood");
     expect(m.pxPerFoot).toBe(20);
     expect(m.showDims).toBe(true);
+    expect(m.furnitureClearance).toBe(3);                                   // v18: Furnish clearance apron (36")
+    expect(migrateProjectData({ furnitureClearance: 3.67 }).furnitureClearance).toBe(3.67);
     expect(m.panes).toEqual([{ view: "plan" }]);
     expect(m.elevAnnotations).toEqual({});
     expect(m.lockedLayers).toEqual({});

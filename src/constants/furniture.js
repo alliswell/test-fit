@@ -55,6 +55,10 @@ export function tableChairs(W, D, wFt, dFt, { round = false, every = 4 } = {}) {
   return out;
 }
 
+// `wallHug: true` — dragged or placed within ~10" of a wall, the piece snaps back-flush to
+// the wall face and turns to face the room (geometry.js wallHugSnap; Alt = snap off bypasses
+// it like the grid). The BACK is the local −y edge (top of the draw frame — a sofa's back
+// rail is drawn there). Tables and chairs deliberately don't hug: they live mid-room.
 export const FURNITURE_CATALOG = {
   // ── Seating ────────────────────────────────────────────────────────────────
   task_chair: {
@@ -74,7 +78,7 @@ export const FURNITURE_CATALOG = {
     ],
   },
   sofa: {
-    type: "sofa", name: "Sofa", cat: "seating", w: 7, d: 3, round: false,
+    type: "sofa", name: "Sofa", cat: "seating", w: 7, d: 3, round: false, wallHug: true,
     draw: (W, D) => {
       const arm = Math.min(W * 0.1, D * 0.28);
       const seats = Math.max(2, Math.round((W - 2 * arm) / (D * 0.85)));
@@ -128,7 +132,7 @@ export const FURNITURE_CATALOG = {
 
   // ── Desks ────────────────────────────────────────────────────────────────
   desk: {
-    type: "desk", name: "Desk", cat: "desks", w: 5, d: 2.5, round: false,
+    type: "desk", name: "Desk", cat: "desks", w: 5, d: 2.5, round: false, wallHug: true,
     draw: (W, D) => [
       inset(W, D, 0, Math.min(W, D) * 0.04),
       { t: "line", x1: -W / 2, y1: D / 2 - D * 0.28, x2: W / 2, y2: D / 2 - D * 0.28 },
@@ -147,11 +151,11 @@ export const FURNITURE_CATALOG = {
 
   // ── Storage ──────────────────────────────────────────────────────────────
   bookshelf: {
-    type: "bookshelf", name: "Bookshelf", cat: "storage", w: 3, d: 1, round: false,
+    type: "bookshelf", name: "Bookshelf", cat: "storage", w: 3, d: 1, round: false, wallHug: true,
     draw: (W, D) => [inset(W, D, 0, 1), { t: "line", x1: -W / 2, y1: 0, x2: W / 2, y2: 0 }],
   },
   credenza: {
-    type: "credenza", name: "Credenza", cat: "storage", w: 5, d: 1.5, round: false,
+    type: "credenza", name: "Credenza", cat: "storage", w: 5, d: 1.5, round: false, wallHug: true,
     draw: (W, D) => {
       const prims = [inset(W, D, 0, 2)];
       for (let i = 1; i < 3; i++) prims.push({ t: "line", x1: -W / 2 + (W / 3) * i, y1: -D / 2, x2: -W / 2 + (W / 3) * i, y2: D / 2 });
@@ -159,7 +163,7 @@ export const FURNITURE_CATALOG = {
     },
   },
   file_cabinet: {
-    type: "file_cabinet", name: "File Cabinet", cat: "storage", w: 1.5, d: 2, round: false,
+    type: "file_cabinet", name: "File Cabinet", cat: "storage", w: 1.5, d: 2, round: false, wallHug: true,
     draw: (W, D) => [inset(W, D, 0, 2), { t: "line", x1: -W / 2, y1: -D / 6, x2: W / 2, y2: -D / 6 }, { t: "line", x1: -W / 2, y1: D / 6, x2: W / 2, y2: D / 6 }],
   },
 

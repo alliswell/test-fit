@@ -792,3 +792,55 @@ describe("wallSolidRuns", () => {
     expect(wallSolidRuns({ x1: 5, y1: 5, x2: 5, y2: 5 }, [{ x: 5, y: 5, width: 36 }], 20).segs).toEqual([{ t0: 0, t1: 1 }]);
   });
 });
+
+import { furnitureCorners, quadsOverlap, furnitureOverlapIds, furnitureClearanceIds, furnitureWallHits, wallHugSnap } from "./geometry";
+
+describe("Furnish checks — overlap, clearance apron, wall hits, wall hug", () => {
+  const ppf = 20;
+  const sofa = (x, y, angle = 0, id = "s") => ({ id, type: "sofa", x, y, angle, w: 7, d: 3 });
+
+  it("rotated footprints overlap by separating axis; flush edges do not", () => {
+    const a = sofa(0, 0);
+    expect(quadsOverlap(furnitureCorners(a, ppf), furnitureCorners(sofa(140, 0, 0, "flush"), ppf))).toBe(false); // 7' = 140px, edges touch
+    expect(furnitureOverlapIds(a, [a, sofa(130, 0, 0, "c")], ppf)).toEqual(["c"]);
+    expect(furnitureOverlapIds(a, [sofa(80, 40, Math.PI / 2, "r")], ppf)).toEqual(["r"]); // turned 90°, straddles a corner
+    expect(furnitureOverlapIds(a, [sofa(0, 200, 0, "far")], ppf)).toEqual([]);
+  });
+
+  it("the clearance apron catches neighbours inside clearanceFt and never the piece itself", () => {
+    const a = sofa(0, 0);
+    const exact = sofa(0, 120, 0, "exact");   // faces 3' apart (30 + 60 + 30)
+    const close = sofa(0, 110, 0, "close");   // 2.5' apart
+    expect(furnitureClearanceIds(a, 3, [a, exact], ppf)).toEqual([]);
+    expect(furnitureClearanceIds(a, 3.5, [a, exact], ppf)).toEqual(["exact"]);
+    expect(furnitureClearanceIds(a, 3, [a, close], ppf)).toEqual(["close"]);
+    expect(furnitureClearanceIds(a, 0, [a, close], ppf)).toEqual([]);
+  });
+
+  it("flags a piece whose footprint crosses a wall centerline", () => {
+    const nodes = [{ id: "a", x: 0, y: 0 }, { id: "b", x: 400, y: 0 }];
+    const walls = [{ id: "w1", n1: "a", n2: "b" }];
+    expect(furnitureWallHits(sofa(200, 10), walls, nodes, ppf)).toEqual(["w1"]); // straddles y = 0
+    expect(furnitureWallHits(sofa(200, 60), walls, nodes, ppf)).toEqual([]);     // clear of it
+    expect(furnitureWallHits(sofa(600, 10), walls, nodes, ppf)).toEqual([]);     // past the wall's end
+  });
+
+  it("wall hug: back flush to the near face, facing the room, slid on the grid, kept on the wall", () => {
+    const nodes = [{ id: "a", x: 0, y: 0 }, { id: "b", x: 200, y: 0 }];
+    const walls = [{ id: "w1", n1: "a", n2: "b" }];
+    const opts = { halfTOf: () => 5, snapAlong: 0 };
+    const s = sofa(0, 0);
+    const below = wallHugSnap({ x: 100, y: 40 }, s, walls, nodes, ppf, opts);
+    expect(below.x).toBe(100); expect(below.y).toBe(35); expect(below.angle).toBeCloseTo(0); expect(below.wallId).toBe("w1");
+    const above = wallHugSnap({ x: 100, y: -40 }, s, walls, nodes, ppf, opts);
+    expect(above.y).toBe(-35); expect(Math.abs(above.angle)).toBeCloseTo(Math.PI);
+    expect(wallHugSnap({ x: 100, y: 60 }, s, walls, nodes, ppf, opts)).toBeNull();            // 25px gap > 10"
+    expect(wallHugSnap({ x: 190, y: 40 }, s, walls, nodes, ppf, opts).x).toBe(130);          // clamped: the 7' sofa stays on the 10' wall
+    expect(wallHugSnap({ x: 103, y: 40 }, s, walls, nodes, ppf, { ...opts, snapAlong: 20 }).x).toBe(100);
+    expect(wallHugSnap({ x: 100, y: 40 }, { ...s, w: 12 }, walls, nodes, ppf, opts)).toBeNull(); // a 12' sofa can't fit a 10' wall
+    // a vertical wall: the piece turns to face away from it
+    const vNodes = [{ id: "a", x: 0, y: 0 }, { id: "b", x: 0, y: 300 }];
+    const right = wallHugSnap({ x: 40, y: 150 }, s, walls, vNodes, ppf, opts);
+    expect(right.x).toBe(35); expect(right.y).toBe(150); expect(Math.abs(right.angle)).toBeCloseTo(Math.PI / 2);
+  });
+});

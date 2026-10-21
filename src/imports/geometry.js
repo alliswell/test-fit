@@ -689,3 +689,115 @@ export function wallSolidRuns(c, openings, pxPerFoot) {
   if (tS < 1) segs.push({ t0: tS, t1: 1 });
   return { cuts: merged, segs };
 }
+
+// ─── Furnish-stage checks (ported from the ops-space-configurator prototype) ───────────
+// Rotated-footprint overlap (separating axis), a clearance apron around the selected
+// piece, wall crossings, and wall-hug snapping. All in plan px; a piece is
+// { x, y, angle (rad), w, d (ft) } in the SAME local frame Furniture2D and the Furnish
+// handles use: local +x = (cos a, sin a) is the width axis, local +y = (−sin a, cos a)
+// the depth axis, and the BACK of a piece is its local −y edge (the edge the rotate
+// handle sits above — a sofa's back rail is drawn there).
+export function furnitureCorners(f, pxPerFoot, padPx = 0) {
+  const a = f.angle || 0, c = Math.cos(a), s = Math.sin(a);
+  const hw = (f.w * pxPerFoot) / 2 + padPx, hd = (f.d * pxPerFoot) / 2 + padPx;
+  return [[-hw, -hd], [hw, -hd], [hw, hd], [-hw, hd]].map(([lx, ly]) => ({ x: f.x + lx * c - ly * s, y: f.y + lx * s + ly * c }));
+}
+
+// Separating-axis test for two convex polygons ({x,y}[]). Exactly-touching edges are NOT
+// an overlap (eps), so pieces placed flush against each other read as clean.
+export function quadsOverlap(a, b, eps = 0.01) {
+  for (const poly of [a, b]) {
+    for (let i = 0; i < poly.length; i++) {
+      const p1 = poly[i], p2 = poly[(i + 1) % poly.length];
+      const ax = -(p2.y - p1.y), ay = p2.x - p1.x;
+      let minA = Infinity, maxA = -Infinity, minB = Infinity, maxB = -Infinity;
+      for (const p of a) { const v = p.x * ax + p.y * ay; if (v < minA) minA = v; if (v > maxA) maxA = v; }
+      for (const p of b) { const v = p.x * ax + p.y * ay; if (v < minB) minB = v; if (v > maxB) maxB = v; }
+      const tol = eps * (Math.hypot(ax, ay) || 1);
+      if (maxA <= minB + tol || maxB <= minA + tol) return false;
+    }
+  }
+  return true;
+}
+
+const _bbox = (pts) => {
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const p of pts) { if (p.x < x0) x0 = p.x; if (p.x > x1) x1 = p.x; if (p.y < y0) y0 = p.y; if (p.y > y1) y1 = p.y; }
+  return { x0, y0, x1, y1 };
+};
+const _bboxTouch = (a, b) => !(a.x1 < b.x0 || b.x1 < a.x0 || a.y1 < b.y0 || b.y1 < a.y0);
+
+// Ids of `others` whose footprint overlaps f's (f itself is skipped by id).
+export function furnitureOverlapIds(f, others, pxPerFoot) {
+  const fc = furnitureCorners(f, pxPerFoot), fb = _bbox(fc), out = [];
+  for (const o of others) {
+    if (o.id === f.id) continue;
+    const oc = furnitureCorners(o, pxPerFoot);
+    if (_bboxTouch(fb, _bbox(oc)) && quadsOverlap(fc, oc)) out.push(o.id);
+  }
+  return out;
+}
+
+// Ids of `others` inside f's clearance apron (the footprint grown by clearanceFt on every
+// side). Checked against furniture only — never walls — so a wall-hugged piece doesn't
+// read as permanently violated.
+export function furnitureClearanceIds(f, clearanceFt, others, pxPerFoot) {
+  if (!(clearanceFt > 0)) return [];
+  return furnitureOverlapIds({ ...f, w: f.w + 2 * clearanceFt, d: f.d + 2 * clearanceFt }, others, pxPerFoot);
+}
+
+const _segsCross = (p1, p2, p3, p4) => {
+  const d = (p2.x - p1.x) * (p4.y - p3.y) - (p2.y - p1.y) * (p4.x - p3.x);
+  if (Math.abs(d) < 1e-9) return false;
+  const t = ((p3.x - p1.x) * (p4.y - p3.y) - (p3.y - p1.y) * (p4.x - p3.x)) / d;
+  const u = ((p3.x - p1.x) * (p2.y - p1.y) - (p3.y - p1.y) * (p2.x - p1.x)) / d;
+  return t > 0.001 && t < 0.999 && u > 0.001 && u < 0.999;
+};
+
+// Ids of walls whose centerline crosses f's footprint — a piece standing through a wall.
+export function furnitureWallHits(f, walls, nodes, pxPerFoot) {
+  const byId = new Map(nodes.map(n => [n.id, n]));
+  const fc = furnitureCorners(f, pxPerFoot), fb = _bbox(fc), out = [];
+  for (const w of walls) {
+    const a = byId.get(w.n1), b = byId.get(w.n2);
+    if (!a || !b || !_bboxTouch(fb, _bbox([a, b]))) continue;
+    for (let i = 0; i < 4; i++) {
+      if (_segsCross(fc[i], fc[(i + 1) % 4], a, b)) { out.push(w.id); break; }
+    }
+  }
+  return out;
+}
+
+// Wall-hug snap: when f's back is within gapFt of a wall's face, the pose that puts it
+// flush — back against the wall, facing into the room on the side the cursor is on, slid
+// along the wall on the grid (snapAlong px; 0 = free) and kept within the wall's length.
+// `pt` is the UNSNAPPED cursor/target centre. Null when no wall qualifies.
+export function wallHugSnap(pt, f, walls, nodes, pxPerFoot, { halfTOf = () => 0, gapFt = 10 / 12, snapAlong = 0 } = {}) {
+  const byId = new Map(nodes.map(n => [n.id, n]));
+  const hw = (f.w * pxPerFoot) / 2, hd = (f.d * pxPerFoot) / 2, gapPx = gapFt * pxPerFoot;
+  let best = null;
+  for (const w of walls) {
+    const a = byId.get(w.n1), b = byId.get(w.n2);
+    if (!a || !b) continue;
+    const len = Math.hypot(b.x - a.x, b.y - a.y);
+    if (len < hw * 2) continue;                                       // the piece doesn't fit along this wall
+    const ux = (b.x - a.x) / len, uy = (b.y - a.y) / len;
+    const side = ((pt.x - a.x) * -uy + (pt.y - a.y) * ux) >= 0 ? 1 : -1; // which side of the wall the cursor is on
+    const nx = -uy * side, ny = ux * side;                              // normal from the wall toward the piece
+    const dist = (pt.x - a.x) * nx + (pt.y - a.y) * ny;                 // centre's distance off the centerline
+    const halfT = halfTOf(w) || 0;
+    const gap = dist - halfT - hd;                                      // back face → wall face
+    if (dist < 0 || gap > gapPx) continue;
+    let t = (pt.x - a.x) * ux + (pt.y - a.y) * uy;
+    if (t < -hw || t > len + hw) continue;
+    if (snapAlong > 0) t = Math.round(t / snapAlong) * snapAlong;
+    t = Math.max(hw, Math.min(len - hw, t));
+    const score = Math.abs(gap);
+    if (best && score >= best.score) continue;
+    // local +y (the piece's front) must point along (nx, ny), away from the wall
+    best = { score, x: a.x + ux * t + nx * (halfT + hd), y: a.y + uy * t + ny * (halfT + hd), angle: Math.atan2(-nx, ny), wallId: w.id };
+  }
+  if (!best) return null;
+  const { score, ...pose } = best; // eslint-disable-line no-unused-vars
+  return pose;
+}

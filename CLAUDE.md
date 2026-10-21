@@ -803,6 +803,29 @@ e2e/docs.spec.js       Playwright Docs-stage tests (save view → slide, live re
   alt-drag zone COPY (a copy starts on top of the original, so carrying would rip the
   original's furniture out; it has no `startFurn`, which short-circuits the carry).
 
+- **Furnish checks (ported from the ops-space-configurator prototype).** Four pure functions
+  in geometry.js, pinned by geometry.test.js: `furnitureCorners` (rotated footprint, same
+  local frame as Furniture2D and the handles: +x width, +y depth, BACK = local −y),
+  `quadsOverlap` (separating axis; flush edges are NOT overlap), `furnitureOverlapIds` /
+  `furnitureClearanceIds` (the apron = footprint grown by clearanceFt, checked against
+  FURNITURE ONLY so a wall-hugged piece never reads as permanently violated),
+  `furnitureWallHits` (a footprint edge crossing a wall centerline = "through wall") and
+  `wallHugSnap` (within 10" of a wall face the piece goes back-flush, turned to face the
+  room on the cursor's side, slid along the wall on the grid, kept within the wall's
+  length). Wiring: catalog entries tagged `wallHug: true` (sofa, desk, bookshelf, credenza,
+  file cabinet — tables and chairs deliberately not) hug on placement, on the placement
+  GHOST and on drag (useCanvasEvents; hug wins over grid + smart guides; Alt = snap off
+  bypasses it like the grid; `wallHalfT` is passed in via ctx and listed in the deps). The
+  drag handler writes hoverStore.furnSnap and a <HoverSubscriber> island draws the
+  "snapped to wall" label, so the per-mousemove cue never re-renders the editor. Rendering:
+  `furnitureFlags` memo (Furnish only, bbox-prefiltered) → components/plan/
+  FurnitureChecks.jsx: FurnitureFlag (dashed outline + "overlaps n · through wall" TAG —
+  text, never colour alone; colour is the demo-wall red) over any flagged piece, and
+  FurnitureApron (clearance zone + "36″ clearance · n inside") under the editable piece.
+  `furnitureClearance` (feet, default 3) is a MODEL field (v18 → migrate default,
+  captureModel, applyProjectData) with a Sidebar control in the Furnish section. NOT ported:
+  chair-to-table docking — Test Fit's tables carry their own chairs, so counts, not
+  arrangement, is the answer here. e2e: features.spec.js "furnish checks".
 - **Selection is mode-scoped**: you can only select items that belong to the current
   mode's tool set. hitTest branches are already mode-gated (build/zone/itmep/furnish),
   but floorRegions + flowPaths ALSO carry per-element `<g onClick>` handlers (a second,
@@ -856,4 +879,4 @@ e2e/docs.spec.js       Playwright Docs-stage tests (save view → slide, live re
   files were removed; only `ui/tooltip.tsx` remains.
 - Persistence: autosaved to `localStorage["testfit-autosave"]`, debounced ~800ms;
   `migrateProjectData` normalizes older blobs. Bump `PROJECT_VERSION` on schema changes
-  and extend the migrate test.
+  and extend the migrate test (v18 added `furnitureClearance`).

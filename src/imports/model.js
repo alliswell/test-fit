@@ -106,7 +106,7 @@ export const parseDimInput = (str, ppf) => {
 // shape; migrateProjectData() normalizes any older/partial blob (file import,
 // localStorage autosave, snapshot data) up to the current version. The seam that file
 // import, autosave, and a future database all flow through.
-export const PROJECT_VERSION = "testfit-v17";
+export const PROJECT_VERSION = "testfit-v18";
 export const AUTOSAVE_KEY = "testfit-autosave"; // localStorage key for crash-safe session restore
 const _arr = (v) => Array.isArray(v) ? v : [];
 const _obj = (v) => (v && typeof v === "object") ? v : {};
@@ -281,6 +281,7 @@ export function migrateProjectData(d) {
     bgOffset: (d.bgOffset && typeof d.bgOffset === "object") ? d.bgOffset : { x: 0, y: 0 },
     pxPerFoot: typeof d.pxPerFoot === "number" ? d.pxPerFoot : 20,
     showDims: d.showDims !== undefined ? !!d.showDims : true,
+    furnitureClearance: typeof d.furnitureClearance === "number" ? d.furnitureClearance : 3, // Furnish (v18): clearance apron, feet (36")
     zoneLibrary: (d.zoneLibrary && typeof d.zoneLibrary === "object") ? d.zoneLibrary : null,
     snapshots, activeSnapshotId: d.activeSnapshotId ?? null,
     panes: (Array.isArray(d.panes) && d.panes.length) ? d.panes : [{ view: "plan" }],

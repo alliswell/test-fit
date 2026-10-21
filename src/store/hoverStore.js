@@ -23,12 +23,14 @@ export const useHoverStore = create((set) => ({
   proxHover: null,     // { type, id, x, y, dist, sub } nearest hoverable within PROX_R
   smartGuides: [],     // [{ axis, pos, points }] alignment guides while dragging
   hoverNid: null,      // hovered wall node id
+  furnSnap: null,      // Furnish drag: { kind: "wall", x, y } while a dragged piece hugs a wall (label anchor = footprint top)
 
   setCursorPos: vou(set, "cursorPos"),
   setGhostPos: vou(set, "ghostPos"),
   setProxHover: vou(set, "proxHover"),
   setSmartGuides: vou(set, "smartGuides"),
   setHoverNid: vou(set, "hoverNid"),
+  setFurnSnap: vou(set, "furnSnap"),
 }));
 
 // Empty-array sentinel so "no guides" compares equal between writes.
