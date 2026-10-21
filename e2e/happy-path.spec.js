@@ -48,7 +48,7 @@ test("layout switcher: single → quad exposes per-pane view selectors → back 
   await page.goto("/");
   // single: only pane 0's own selector
   await expect(page.locator("select:not([data-testid='plan-layer-preset'])")).toHaveCount(1);
-  await page.getByRole("button", { name: "⊞", exact: true }).click();   // quad
+  await page.getByRole("button", { name: "Quad", exact: true }).click();   // quad
   // 3 aux panes each get a view-picker <select> (pane 0 is the locked "Plan" chip)
   await expect(page.locator("select:not([data-testid='plan-layer-preset'])")).toHaveCount(3);
   await page.getByRole("button", { name: "Single", exact: true }).click();   // back to single

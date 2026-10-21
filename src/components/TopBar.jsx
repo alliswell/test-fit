@@ -155,7 +155,7 @@ export default function TopBar({
           return <div style={{ position: "relative" }}>
             <button type="button" className="ys-btn"
               onClick={e => { setModeMenuRect(e.currentTarget.getBoundingClientRect()); setShowModeMenu(v => !v); }}
-              title="Workflow stage (1–6)" aria-haspopup="menu" aria-expanded={showModeMenu}>
+              title="Workflow stage (1–6)" aria-label={`Stage ${cur.num} of 6: ${cur.name}`} aria-haspopup="menu" aria-expanded={showModeMenu}>
               <span className="ys-num" aria-hidden="true">{cur.num}</span>
               <span>{cur.name}</span>
               <ChevronIcon open={showModeMenu} />
