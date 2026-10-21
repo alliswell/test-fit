@@ -126,7 +126,7 @@ export default function Minimap({
   const headBtn = {
     background: "transparent", border: "none", color: T.textMuted, cursor: "pointer",
     fontFamily: font, fontSize: 9, letterSpacing: "0.14em", textTransform: "uppercase",
-    fontWeight: 600, padding: "5px 9px", display: "flex", alignItems: "center", gap: 6,
+    fontWeight: 500, padding: "5px 9px", display: "flex", alignItems: "center", gap: 6,
   };
 
   if (collapsed) {

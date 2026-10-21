@@ -20,13 +20,14 @@ function ToolOptions({
         {inspectorToggle}
         {mode === "build" && isWallTool(tool) && (() => { const wk = wallKinds[wallKind]; return <>
           {/* Header */}
-          <div style={{ fontSize: 12, color: wk.color, marginBottom: 10, fontWeight: 600 }}>{wk.label} Wall</div>
+          <div style={{ fontSize: 15, lineHeight: "20px", color: T.text, marginBottom: 12, fontWeight: 500 }}>{wk.label} Wall</div>
 
           {/* Type */}
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginBottom: 10 }}>
-            {Object.entries(wallKinds).map(([k, v]) => <button key={k} onClick={() => setWallKind(k)}
-              style={{ padding: "6px 8px", background: wallKind === k ? v.color + "40" : "transparent", color: wallKind === k ? T.textBright : v.color, border: "1.5px solid " + v.color + "50", borderRadius: 5, fontSize: 9, cursor: "pointer", fontFamily: "inherit", fontWeight: 500, transition: "all 0.12s ease" }}>
-              {v.label}
+            {/* the kind's plan colour rides a square swatch; the chosen kind is a pressed (ink) button */}
+            {Object.entries(wallKinds).map(([k, v]) => <button key={k} type="button" className="ys-btn" aria-pressed={wallKind === k} onClick={() => setWallKind(k)}
+              style={{ justifyContent: "flex-start", padding: "0 10px" }}>
+              <span style={S.dot(v.color)} />{v.label}
             </button>)}
           </div>
 
@@ -64,7 +65,7 @@ function ToolOptions({
           <div style={{ fontSize: 10, color: "#5A5448", fontStyle: "italic" }}>Click to place · Shift+click to keep placing</div>
         </>; })()}
         {mode === "build" && tool === "door" && <>
-          <div style={{ fontSize: 12, color: T.uiDoor, marginBottom: 10, fontWeight: 600 }}>{doorType} Door · {doorWidth}"</div>
+          <div style={{ fontSize: 15, lineHeight: "20px", color: T.text, marginBottom: 12, fontWeight: 500 }}>{doorType} Door · {doorWidth}"</div>
           <div style={{ marginBottom: 8 }}><div style={S.lbl}>Type</div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
               {DOOR_TYPES.map(t => <button key={t} style={{ padding: "6px 8px", background: doorType === t ? T.border + "60" : "transparent", color: doorType === t ? T.textBright : T.textMuted, border: "1.5px solid " + T.border, borderRadius: 5, fontSize: 9, cursor: "pointer", fontFamily: "inherit", fontWeight: 500, transition: "all 0.12s ease" }}
@@ -79,7 +80,7 @@ function ToolOptions({
           <div style={{ fontSize: 10, color: "#5A5448", fontStyle: "italic" }}>Click to place · Shift+click to keep placing</div>
         </>}
         {mode === "build" && tool === "window" && (() => { const isCut = windowType === "Cut Opening"; const accent = isCut ? "#A09068" : "#60A0C8"; return <>
-          <div style={{ fontSize: 12, color: accent, marginBottom: 10, fontWeight: 600 }}>{windowType} · {windowWidth}"</div>
+          <div style={{ fontSize: 15, lineHeight: "20px", color: T.text, marginBottom: 12, fontWeight: 500 }}>{windowType} · {windowWidth}"</div>
           <div style={{ marginBottom: 8 }}><div style={S.lbl}>Type</div>
             <div style={{ display: "flex", gap: 6 }}>
               {WINDOW_TYPES.map(t => <button key={t} style={{ padding: "6px 10px", background: windowType === t ? T.border + "60" : "transparent", color: windowType === t ? T.textBright : T.textMuted, border: "1.5px solid " + T.border, borderRadius: 5, fontSize: 9, cursor: "pointer", fontFamily: "inherit", flex: 1, fontWeight: 500, transition: "all 0.12s ease" }}
@@ -92,7 +93,7 @@ function ToolOptions({
           <div style={{ fontSize: 10, color: "#5A5448", fontStyle: "italic" }}>Click to place · Shift+click to keep placing</div>
         </>; })()}
         {mode === "build" && tool === "column" && <>
-          <div style={{ fontSize: 12, color: "#9A9488", marginBottom: 10, fontWeight: 600 }}>Column · {columnSize}"</div>
+          <div style={{ fontSize: 15, lineHeight: "20px", color: T.text, marginBottom: 12, fontWeight: 500 }}>Column · {columnSize}"</div>
           <div style={{ marginBottom: 8 }}>
             <div style={S.lbl}>Shape</div>
             <div style={{ display: "flex", gap: 6 }}>
@@ -125,7 +126,7 @@ function ToolOptions({
           ];
 
           return <>
-            <div style={{ fontSize: 12, color: sectionColor, marginBottom: 10, fontWeight: 600 }}>Electrical · {active?.name}</div>
+            <div style={{ fontSize: 15, lineHeight: "20px", color: T.text, marginBottom: 12, fontWeight: 500 }}>Electrical · {active?.name}</div>
 
             {/* New vs As-Built toggle */}
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12, padding: "6px 8px", background: T.panelBg, borderRadius: 6, border: "1px solid " + T.border }}>
@@ -137,7 +138,7 @@ function ToolOptions({
             </div>
 
             {/* Outlets section */}
-            <div style={{ fontSize: 9, color: T.textMuted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 5, fontWeight: 600 }}>Outlets</div>
+            <div style={{ fontSize: 11, lineHeight: "14px", fontFamily: "'Geist Mono',ui-monospace,'SF Mono',Menlo,monospace", color: T.textMuted, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 8, fontWeight: 400 }}>Outlets</div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 5, marginBottom: 14 }}>
               {OUTLET_OPTS.map(({ key: oKey, label, color }) => {
                 const isSel = outletType === oKey;
@@ -164,7 +165,7 @@ function ToolOptions({
             </div>
 
             {/* Switches section */}
-            <div style={{ fontSize: 9, color: T.textMuted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 5, fontWeight: 600 }}>Switches</div>
+            <div style={{ fontSize: 11, lineHeight: "14px", fontFamily: "'Geist Mono',ui-monospace,'SF Mono',Menlo,monospace", color: T.textMuted, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 8, fontWeight: 400 }}>Switches</div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 5, marginBottom: 14 }}>
               {SWITCH_OPTS.map(({ key: oKey, label, color }) => {
                 const isSel = outletType === oKey;
@@ -180,7 +181,7 @@ function ToolOptions({
             </div>
 
             {/* Panel Board section */}
-            <div style={{ fontSize: 9, color: T.textMuted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 5, fontWeight: 600 }}>Panel</div>
+            <div style={{ fontSize: 11, lineHeight: "14px", fontFamily: "'Geist Mono',ui-monospace,'SF Mono',Menlo,monospace", color: T.textMuted, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 8, fontWeight: 400 }}>Panel</div>
             <div style={{ marginBottom: 14 }}>
               {(() => {
                 const isSel = outletType === "panel_board";
@@ -196,7 +197,7 @@ function ToolOptions({
             </div>
 
             {/* T-Stat / Controls section */}
-            <div style={{ fontSize: 9, color: T.textMuted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 5, fontWeight: 600 }}>Controls</div>
+            <div style={{ fontSize: 11, lineHeight: "14px", fontFamily: "'Geist Mono',ui-monospace,'SF Mono',Menlo,monospace", color: T.textMuted, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 8, fontWeight: 400 }}>Controls</div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 5, marginBottom: 14 }}>
               {[{ key: "tstat", label: "T-Stat", color: "#E8C0A0" }].map(({ key: oKey, label, color }) => {
                 const isSel = outletType === oKey;
@@ -226,7 +227,7 @@ function ToolOptions({
             { key: "light_sconce",   label: "Sconce",    color: T.uiLighting, sym: "sconce" },
           ];
           return <>
-            <div style={{ fontSize: 12, color: lightColor, marginBottom: 10, fontWeight: 600 }}>Lighting · {active?.name}</div>
+            <div style={{ fontSize: 15, lineHeight: "20px", color: T.text, marginBottom: 12, fontWeight: 500 }}>Lighting · {active?.name}</div>
             {/* New vs As-Built toggle */}
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12, padding: "6px 8px", background: T.panelBg, borderRadius: 6, border: "1px solid " + T.border }}>
               <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", flex: 1 }}>
@@ -235,7 +236,7 @@ function ToolOptions({
                 <span style={{ fontSize: 10, color: T.textMuted }}>New / Planned</span>
               </label>
             </div>
-            <div style={{ fontSize: 9, color: T.textMuted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 5, fontWeight: 600 }}>Fixtures</div>
+            <div style={{ fontSize: 11, lineHeight: "14px", fontFamily: "'Geist Mono',ui-monospace,'SF Mono',Menlo,monospace", color: T.textMuted, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 8, fontWeight: 400 }}>Fixtures</div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 5, marginBottom: 14 }}>
               {LIGHT_OPTS.map(({ key: lKey, label, color, sym }) => {
                 const isSel = lightingType === lKey;
@@ -269,7 +270,7 @@ function ToolOptions({
               })}
             </div>
             {/* H-Track */}
-            <div style={{ fontSize: 9, color: T.textMuted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 5, fontWeight: 600 }}>H-Track</div>
+            <div style={{ fontSize: 11, lineHeight: "14px", fontFamily: "'Geist Mono',ui-monospace,'SF Mono',Menlo,monospace", color: T.textMuted, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 8, fontWeight: 400 }}>H-Track</div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 5, marginBottom: 14 }}>
               {[
                 { key: "htrack_4", label: "4' Track", color: T.uiLighting },
@@ -294,7 +295,7 @@ function ToolOptions({
           </>;
         })()}
         {mode === "zone" && tool === "zone" && (() => { const zt = zoneLibrary[activeZoneType]; return <>
-          <div style={{ fontSize: 12, color: zt.color, marginBottom: 10, fontWeight: 600 }}>{zt.name}</div>
+          <div style={{ fontSize: 15, lineHeight: "20px", color: T.text, marginBottom: 12, fontWeight: 500 }}>{zt.name}</div>
           <div style={{ marginBottom: 8 }}><div style={S.lbl}>Type</div>
             <select style={{ ...S.inp, padding: "6px 10px", fontSize: 10 }} value={activeZoneType}
               onChange={e => setActiveZoneType(e.target.value)}>
@@ -318,7 +319,7 @@ function ToolOptions({
                 <MarkerSymbol marker={{ x: 14, y: 14, layer: activeSpecLayer, componentType: activeComponentType, finish: compData?.finish ? markerFinish : undefined, angle: -Math.PI / 2 }} selected={false} T={chromeT} themeMode={themeMode} tool={tool} mode={mode} pxPerFoot={pxPerFoot} />
               </svg>
               <div>
-                <div style={{ fontSize: 12, color: layerData?.color || "#9A9488", fontWeight: 600 }}>{compData?.name || "Component"}</div>
+                <div style={{ fontSize: 12, color: layerData?.color || "#9A9488", fontWeight: 500 }}>{compData?.name || "Component"}</div>
                 {compData?.product && <div style={{ fontSize: 9, color: T.textFaint }}>≈ {compData.product}</div>}
               </div>
             </div>
@@ -333,7 +334,7 @@ function ToolOptions({
               <div style={S.lbl}>Finish</div>
               <div style={{ display: "flex", gap: 6 }}>
                 {compData.finish.map(f => <button key={f} onClick={() => setMarkerFinish(f)}
-                  style={{ flex: 1, padding: "6px 0", borderRadius: 5, cursor: "pointer", fontFamily: "inherit", fontSize: 10, fontWeight: 600, textTransform: "capitalize", border: "1.5px solid " + (markerFinish === f ? T.brand : T.border), background: markerFinish === f ? FINISH_COLORS[f].fill : "transparent", color: markerFinish === f ? FINISH_COLORS[f].line : T.textMuted, display: "flex", alignItems: "center", justifyContent: "center", gap: 5 }}>
+                  style={{ flex: 1, padding: "6px 0", borderRadius: 5, cursor: "pointer", fontFamily: "inherit", fontSize: 10, fontWeight: 500, textTransform: "capitalize", border: "1.5px solid " + (markerFinish === f ? T.brand : T.border), background: markerFinish === f ? FINISH_COLORS[f].fill : "transparent", color: markerFinish === f ? FINISH_COLORS[f].line : T.textMuted, display: "flex", alignItems: "center", justifyContent: "center", gap: 5 }}>
                   <span style={{ width: 9, height: 9, borderRadius: "50%", background: FINISH_COLORS[f].fill, border: "1px solid " + FINISH_COLORS[f].line }} />{f}
                 </button>)}
               </div>

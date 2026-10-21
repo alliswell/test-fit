@@ -13,7 +13,7 @@ export default function MonoSkinPanel({ skin, onChange, T, tiers = [], S }) {
   const delta = Math.abs(ramp[0] - skin.bg.l);
   const lowContrast = delta < MONO_MIN_CONTRAST;
   const set = (patch) => onChange({ ...skin, ...patch });
-  const lbl = { fontSize: 9, color: T.textMuted, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600, marginBottom: 5 };
+  const lbl = { fontSize: 9, color: T.textMuted, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 500, marginBottom: 5 };
   const row = { display: "flex", justifyContent: "space-between", fontSize: 9.5, color: T.textDim, marginBottom: 2 };
 
   const Slider = ({ label, value, min, max, suffix, onInput }) => (
@@ -33,7 +33,7 @@ export default function MonoSkinPanel({ skin, onChange, T, tiers = [], S }) {
           const on = p.baseHue === skin.baseHue && p.bg.l === skin.bg.l && p.pol === skin.pol;
           return (
             <button key={p.id} data-testid={"mono-preset-" + p.id} onClick={() => onChange({ ...p })}
-              style={{ padding: "3px 7px", fontSize: 9, fontFamily: "inherit", fontWeight: 600, borderRadius: 4, cursor: "pointer",
+              style={{ padding: "3px 7px", fontSize: 9, fontFamily: "inherit", fontWeight: 500, borderRadius: 4, cursor: "pointer",
                 border: "1px solid " + (on ? tiers[0]?.color : T.border),
                 background: on ? tiers[0]?.color + "18" : "transparent",
                 color: on ? T.textBright : T.textMuted }}>{p.name}</button>

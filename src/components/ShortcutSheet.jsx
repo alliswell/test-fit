@@ -4,7 +4,7 @@ import { SHORTCUT_GROUPS } from "../constants/shortcuts";
 // constants/shortcuts.js so the reference can't drift from the handler the way the README did.
 export default function ShortcutSheet({ T, S, font, display, onClose }) {
   const kbd = {
-    fontFamily: font, fontSize: 10, fontWeight: 600, lineHeight: 1,
+    fontFamily: font, fontSize: 10, fontWeight: 500, lineHeight: 1,
     padding: "3px 6px", borderRadius: 4, background: T.bg3,
     border: "1px solid " + T.border, color: T.textBright, whiteSpace: "nowrap",
   };
@@ -18,14 +18,14 @@ export default function ShortcutSheet({ T, S, font, display, onClose }) {
           boxShadow: T.panelShadow, backdropFilter: "blur(16px)", maxWidth: 860, width: "100%",
           maxHeight: "84vh", overflowY: "auto", padding: "18px 20px 22px" }}>
         <div style={{ display: "flex", alignItems: "center", marginBottom: 14 }}>
-          <div style={{ fontFamily: display, fontSize: 15, fontWeight: 600, letterSpacing: "0.04em",
+          <div style={{ fontFamily: display, fontSize: 15, fontWeight: 500, letterSpacing: "0.04em",
             color: T.textBright, textTransform: "uppercase", flex: 1 }}>Keyboard shortcuts</div>
           <button data-testid="shortcut-sheet-close" onClick={onClose} style={{ ...S.smBtn }}>Close</button>
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: "4px 26px" }}>
           {SHORTCUT_GROUPS.map((g) => (
             <div key={g.title} style={{ breakInside: "avoid", marginBottom: 12 }}>
-              <div style={{ fontFamily: display, fontSize: 9, letterSpacing: "0.18em", fontWeight: 600,
+              <div style={{ fontFamily: display, fontSize: 9, letterSpacing: "0.18em", fontWeight: 500,
                 textTransform: "uppercase", color: T.brand, margin: "8px 0 6px" }}>{g.title}</div>
               {g.items.map((it, i) => (
                 <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "3px 0" }}>

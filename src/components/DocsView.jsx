@@ -33,7 +33,7 @@ function TitleBlock({ slide, idx, total, T, font, display, projectName, editable
         <div style={{ fontSize: 8.5, color: T.textMuted, textTransform: "uppercase", letterSpacing: "0.08em" }}>{viewTitle(slide.view)}</div>
       </div>
       <div style={{ flex: 1, borderRight: "1px solid " + T.text + "44", padding: "7px 12px", display: "flex", flexDirection: "column", justifyContent: "center", gap: 2, minWidth: 0 }}>
-        <div style={{ fontSize: 10.5, fontWeight: 600, color: T.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{projectName}</div>
+        <div style={{ fontSize: 10.5, fontWeight: 500, color: T.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{projectName}</div>
         <div style={{ fontSize: 8.5, color: T.textMuted }}>{new Date().toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" })}</div>
       </div>
       <div style={{ width: 150, borderRight: "1px solid " + T.text + "44", padding: "7px 12px", display: "flex", flexDirection: "column", justifyContent: "center", gap: 2 }}>
@@ -122,7 +122,7 @@ export function DeckStrip({ slides, activeSlideId, T, font, onSelectSlide, onUpd
   const viewGlyph = { plan: "P", front: "F", back: "B", left: "L", right: "R", "3d": "3D", budget: "$", ffe: "FE", title: "§" };
   const childrenOf = {}, byId = {};
   slides.forEach(s => { byId[s.id] = s; if (s.parentId) (childrenOf[s.parentId] ||= []).push(s); });
-  const secH = { fontSize: 9, color: T.textDim, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600, margin: "0 0 6px" };
+  const secH = { fontSize: 9, color: T.textDim, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 500, margin: "0 0 6px" };
 
   return (
     <div data-testid="deck-strip">
@@ -130,7 +130,7 @@ export function DeckStrip({ slides, activeSlideId, T, font, onSelectSlide, onUpd
       {onAddTemplate && (
         <div style={{ position: "relative", marginBottom: 8 }}>
           <button data-testid="add-template" onClick={() => setTemplateMenuOpen(v => !v)}
-            style={{ width: "100%", padding: "6px 0", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, borderRadius: 6, border: "1px dashed " + (templateMenuOpen ? T.brand : T.border), background: templateMenuOpen ? T.brand + "10" : "transparent", color: templateMenuOpen ? T.textBright : T.textMuted, fontFamily: font, fontSize: 10, fontWeight: 600, cursor: "pointer" }}>
+            style={{ width: "100%", padding: "6px 0", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, borderRadius: 6, border: "1px dashed " + (templateMenuOpen ? T.brand : T.border), background: templateMenuOpen ? T.brand + "10" : "transparent", color: templateMenuOpen ? T.textBright : T.textMuted, fontFamily: font, fontSize: 10, fontWeight: 500, cursor: "pointer" }}>
             <Plus size={11} /> Template
           </button>
           {templateMenuOpen && <>
@@ -146,7 +146,7 @@ export function DeckStrip({ slides, activeSlideId, T, font, onSelectSlide, onUpd
                   style={{ padding: "6px 9px", borderRadius: 5, cursor: "pointer" }}
                   onMouseEnter={e => e.currentTarget.style.background = T.border + "44"}
                   onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
-                  <div style={{ fontSize: 10.5, fontWeight: 600, color: T.textBright }}>{t.label}</div>
+                  <div style={{ fontSize: 10.5, fontWeight: 500, color: T.textBright }}>{t.label}</div>
                   <div style={{ fontSize: 9, color: T.textMuted, marginTop: 1 }}>{t.hint}</div>
                 </div>
               ))}
@@ -193,9 +193,9 @@ export function DeckStrip({ slides, activeSlideId, T, font, onSelectSlide, onUpd
             <span style={{ fontSize: 9, color: T.textDim, width: 16, flexShrink: 0 }}>{String(i + 1).padStart(2, "0")}</span>
             {s.view === "3d" && s.image
               ? <img src={s.image} alt="" style={{ width: 34, height: 24, objectFit: "cover", borderRadius: 3, border: "1px solid " + T.border, flexShrink: 0 }} />
-              : <span style={{ width: 34, height: 24, borderRadius: 3, border: "1px solid " + T.border, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, fontWeight: 700, color: T.textMuted, flexShrink: 0 }}>{viewGlyph[s.view]}</span>}
+              : <span style={{ width: 34, height: 24, borderRadius: 3, border: "1px solid " + T.border, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, fontWeight: 500, color: T.textMuted, flexShrink: 0 }}>{viewGlyph[s.view]}</span>}
             <span style={{ flex: 1, minWidth: 0, fontSize: 10.5, fontWeight: active ? 600 : 500, color: active ? T.textBright : T.textMuted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.name}</span>
-            {hasKids && isCollapsed && <span title={kids.length + " nested slide" + (kids.length === 1 ? "" : "s")} style={{ fontSize: 8.5, fontWeight: 600, color: T.textDim, background: T.border + "88", borderRadius: 8, padding: "1px 6px", flexShrink: 0 }}>{kids.length}</span>}
+            {hasKids && isCollapsed && <span title={kids.length + " nested slide" + (kids.length === 1 ? "" : "s")} style={{ fontSize: 8.5, fontWeight: 500, color: T.textDim, background: T.border + "88", borderRadius: 8, padding: "1px 6px", flexShrink: 0 }}>{kids.length}</span>}
             <button title="Delete slide" onClick={(e) => { e.stopPropagation(); if (confirm("Delete slide \"" + s.name + "\"?")) onDeleteSlide(s.id); }} style={{ background: "none", border: "none", cursor: "pointer", color: T.textDim, padding: 1, flexShrink: 0 }}><Trash2 size={11} /></button>
           </div>
         );
@@ -393,8 +393,8 @@ export default function DocsView({
   const editNote = notes.find(n => n.id === editNoteId);
   const selIdx = slide ? slides.indexOf(slide) : -1;
   const inp = { background: T.bg0, border: "1px solid " + T.border, borderRadius: 5, color: T.text, fontFamily: font, fontSize: 11, padding: "5px 7px", width: "100%", outline: "none", boxSizing: "border-box" };
-  const secH = { fontSize: 9, color: T.textDim, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600, margin: "14px 0 6px" };
-  const segBtn = (active) => ({ flex: 1, padding: "5px 0", fontSize: 10, fontFamily: font, fontWeight: 600, cursor: "pointer", borderRadius: 5, border: "1px solid " + (active ? T.brand : T.border), background: active ? T.brand + "22" : "transparent", color: active ? T.textBright : T.textMuted });
+  const secH = { fontSize: 9, color: T.textDim, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 500, margin: "14px 0 6px" };
+  const segBtn = (active) => ({ flex: 1, padding: "5px 0", fontSize: 10, fontFamily: font, fontWeight: 500, cursor: "pointer", borderRadius: 5, border: "1px solid " + (active ? T.brand : T.border), background: active ? T.brand + "22" : "transparent", color: active ? T.textBright : T.textMuted });
 
   return (
     <div style={{ flex: 1, display: "flex", overflow: "hidden", background: T.bg0 }} data-testid="docs-view">
@@ -515,7 +515,7 @@ export default function DocsView({
               </div>
             )}
             <button data-testid="edit-model" onClick={() => onEditModel(slide)}
-              style={{ marginTop: 12, width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "7px 0", borderRadius: 6, border: "1px solid " + T.brand + "77", background: T.brand + "18", color: T.textBright, fontFamily: font, fontSize: 11, fontWeight: 600, cursor: "pointer" }}>
+              style={{ marginTop: 12, width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "7px 0", borderRadius: 6, border: "1px solid " + T.brand + "77", background: T.brand + "18", color: T.textBright, fontFamily: font, fontSize: 11, fontWeight: 500, cursor: "pointer" }}>
               <PencilRuler size={12} /> Edit model
             </button>
             <div style={{ fontSize: 9, color: T.textMuted, marginTop: 6, lineHeight: 1.5 }}>
@@ -531,7 +531,7 @@ export default function DocsView({
               <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 8 }}>
                 {[{ id: "live", label: "Live", vis: null }, ...SLIDE_VIS_PRESETS].map(p => (
                   <button key={p.id} data-testid={"layer-preset-" + p.id} onClick={() => setVis(p.vis)}
-                    style={{ padding: "3px 8px", fontSize: 9.5, fontFamily: font, fontWeight: 600, borderRadius: 5, cursor: "pointer", border: "1px solid " + (active === p.id ? T.brand : T.border), background: active === p.id ? T.brand + "22" : "transparent", color: active === p.id ? T.textBright : T.textMuted }}>{p.label}</button>
+                    style={{ padding: "3px 8px", fontSize: 9.5, fontFamily: font, fontWeight: 500, borderRadius: 5, cursor: "pointer", border: "1px solid " + (active === p.id ? T.brand : T.border), background: active === p.id ? T.brand + "22" : "transparent", color: active === p.id ? T.textBright : T.textMuted }}>{p.label}</button>
                 ))}
               </div>
               {slide.vis === null && <div style={{ fontSize: 9, color: T.textMuted, marginBottom: 6, lineHeight: 1.5 }}>Following the editor's layers — pick a preset or toggle a layer to pin this slide.</div>}
@@ -557,7 +557,7 @@ export default function DocsView({
               <button style={{ ...segBtn(false), maxWidth: 28 }} onClick={() => upd({ fontSize: Math.max(9, (n.fontSize || 13) - 1) })}>−</button>
               <span style={{ fontSize: 10, color: T.textMuted, minWidth: 36, textAlign: "center", fontFamily: font }}>{n.fontSize || 13}px</span>
               <button style={{ ...segBtn(false), maxWidth: 28 }} onClick={() => upd({ fontSize: Math.min(28, (n.fontSize || 13) + 1) })}>+</button>
-              <button style={{ ...segBtn(!!n.bold), maxWidth: 30, fontWeight: 700 }} onClick={() => upd({ bold: !n.bold })}>B</button>
+              <button style={{ ...segBtn(!!n.bold), maxWidth: 30, fontWeight: 500 }} onClick={() => upd({ bold: !n.bold })}>B</button>
               <button style={{ ...segBtn(!!n.italic), maxWidth: 30, fontStyle: "italic" }} onClick={() => upd({ italic: !n.italic })}>I</button>
             </div>
             <div style={{ display: "flex", gap: 6, marginTop: 8, alignItems: "center" }}>
@@ -582,7 +582,7 @@ export default function DocsView({
           <button style={segBtn(docSettings.orientation === "portrait")} onClick={() => onUpdateSettings({ orientation: "portrait" })}>Portrait</button>
         </div>
         <button data-testid="print-deck" onClick={onPrint} disabled={!slides.length}
-          style={{ marginTop: 16, width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "8px 0", borderRadius: 6, border: "1px solid " + T.border, background: T.bg2, color: slides.length ? T.textBright : T.textDim, fontFamily: font, fontSize: 11, fontWeight: 600, cursor: slides.length ? "pointer" : "default" }}>
+          style={{ marginTop: 16, width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "8px 0", borderRadius: 6, border: "1px solid " + T.border, background: T.bg2, color: slides.length ? T.textBright : T.textDim, fontFamily: font, fontSize: 11, fontWeight: 500, cursor: slides.length ? "pointer" : "default" }}>
           <Printer size={12} /> Print / PDF
         </button>
         <div style={{ fontSize: 9, color: T.textMuted, marginTop: 6, lineHeight: 1.5 }}>

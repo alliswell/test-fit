@@ -39,7 +39,7 @@ export function SliderInput({ value, min, max, step = 1, onChange, accent = "#9A
 
 // Plan-canvas label/callout annotation (leader line + wrapped text box).
 export function LabelAnnotation({ lbl, sel, tool, bg }) {
-  const labelFont = "'Inter', 'SF Pro', system-ui, sans-serif";
+  const labelFont = "'Host Grotesk', 'Helvetica Neue', Arial, sans-serif";
   const fontW = lbl.bold ? 700 : 400;
   const fontStyle = lbl.italic ? "italic" : "normal";
   const { w: approxW, h: approxH, lines, lineH } = labelBounds(lbl);

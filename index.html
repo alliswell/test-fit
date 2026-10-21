@@ -1,26 +1,23 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Test Fit</title>
+    <!-- No favicon shipped; an empty data: icon stops browsers requesting /favicon.ico
+         (a 404 there shows up as a console error and trips the e2e smoke test). -->
+    <link rel="icon" href="data:," />
+    <!-- Yardstick type: Host Grotesk (300 for `numeral`, 400/500 for everything a person
+         reads) and Geist Mono (400/500 for what you look up or line up — IDs, dimensions,
+         counts). The stylesheet is preloaded so font discovery doesn't wait on first paint. -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Host+Grotesk:wght@300;400;500&family=Geist+Mono:wght@400;500&display=swap" />
+    <link href="https://fonts.googleapis.com/css2?family=Host+Grotesk:wght@300;400;500&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  </head>
 
-  <!DOCTYPE html>
-  <html lang="en">
-    <head>
-      <meta charset="UTF-8" />
-      <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-      <title>Test Fit — Drafting Instrument</title>
-      <!-- No favicon shipped; an empty data: icon stops browsers requesting /favicon.ico
-           (a 404 there shows up as a console error and trips the e2e smoke test). -->
-      <link rel="icon" href="data:," />
-      <!-- Only the faces the UI actually renders: Saira Condensed 600 (display headers,
-           wordmark) and IBM Plex Mono 400/500/600 (everything else). IBM Plex Sans was
-           only ever a fallback in the `display` stack and never loaded. The stylesheet is
-           preloaded so font discovery doesn't wait on first paint. -->
-      <link rel="preconnect" href="https://fonts.googleapis.com" />
-      <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-      <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Saira+Condensed:wght@600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" />
-      <link href="https://fonts.googleapis.com/css2?family=Saira+Condensed:wght@600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
-    </head>
-
-    <body>
-      <div id="root"></div>
-      <script type="module" src="/src/main.tsx"></script>
-    </body>
-  </html>
-  
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

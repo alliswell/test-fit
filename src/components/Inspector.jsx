@@ -21,12 +21,12 @@ function Inspector({
       {/* Detail panel */}
       {inspSel && inspectorOpen && <div style={S.det}>
         {inspectorToggle}
-        {selectedIds.length <= 1 && selNode && <><div style={{ fontSize: 11, color: T.textBright, marginBottom: 6, fontWeight: 600 }}>Node · {wallsAt(selNode.id).length} walls</div><button style={S.del} onClick={delSel}>Delete Node + Walls</button></>}
+        {selectedIds.length <= 1 && selNode && <><div style={{ fontSize: 15, lineHeight: "20px", color: T.text, marginBottom: 12, fontWeight: 500 }}>Node · {wallsAt(selNode.id).length} walls</div><button style={S.del} onClick={delSel}>Delete Node + Walls</button></>}
         {selectedIds.length <= 1 && selWall && (() => { const wk = wallKinds[selWall.kind || "existing"]; return <>
-          <div style={{ fontSize: 12, color: wk.color, marginBottom: 10, fontWeight: 600 }}>{wk.label} Wall · {ft(wl(selWall))}</div>
+          <div style={{ fontSize: 15, lineHeight: "20px", color: T.text, marginBottom: 12, fontWeight: 500 }}>{wk.label} Wall · {ft(wl(selWall))}</div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginBottom: 10 }}>
-            {Object.entries(wallKinds).map(([k, v]) => <button key={k} style={{ padding: "6px 8px", background: (selWall.kind || "existing") === k ? v.color + "40" : "transparent", color: (selWall.kind || "existing") === k ? T.textBright : v.color, border: "1.5px solid " + v.color + "50", borderRadius: 5, fontSize: 9, cursor: "pointer", fontFamily: "inherit", fontWeight: 500, transition: "all 0.12s ease" }}
-              onClick={() => updWall({ kind: k })}>{v.label}</button>)}
+            {Object.entries(wallKinds).map(([k, v]) => <button key={k} type="button" className="ys-btn" aria-pressed={(selWall.kind || "existing") === k} style={{ justifyContent: "flex-start", padding: "0 10px" }}
+              onClick={() => updWall({ kind: k })}><span style={S.dot(v.color)} />{v.label}</button>)}
           </div>
           <div style={{ marginBottom: 8 }}><div style={S.lbl}>Material</div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 4 }}>
@@ -64,7 +64,7 @@ function Inspector({
           <div style={{ marginBottom: 8 }}><div style={S.lbl}>Notes</div><textarea style={{ ...S.inp, height: 72, resize: "vertical" }} value={selWall.notes || ""} onChange={e => updWall({ notes: e.target.value })} placeholder="Load-bearing, plumbing chase..." /></div>
         </>; })()}
         {selectedIds.length <= 1 && selDoor && <>
-          <div style={{ fontSize: 12, color: T.uiDoor, marginBottom: 10, fontWeight: 600 }}>{selDoor.doorType || "Wood"} Door · {selDoor.width}"</div>
+          <div style={{ fontSize: 15, lineHeight: "20px", color: T.text, marginBottom: 12, fontWeight: 500 }}>{selDoor.doorType || "Wood"} Door · {selDoor.width}"</div>
           <div style={{ marginBottom: 8 }}><div style={S.lbl}>Type</div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
               {DOOR_TYPES.map(t => <button key={t} style={{ padding: "6px 8px", background: (selDoor.doorType || "Wood") === t ? T.border + "60" : "transparent", color: (selDoor.doorType || "Wood") === t ? T.textBright : T.textMuted, border: "1.5px solid " + T.border, borderRadius: 5, fontSize: 9, cursor: "pointer", fontFamily: "inherit", fontWeight: 500, transition: "all 0.12s ease" }}
@@ -90,7 +90,7 @@ function Inspector({
           <button style={S.del} onClick={delSel}>Delete</button>
         </>}
         {selectedIds.length <= 1 && selWindow && (() => { const isCut = selWindow.type === "Cut Opening"; const accent = isCut ? "#A09068" : "#60A0C8"; return <>
-          <div style={{ fontSize: 12, color: accent, marginBottom: 10, fontWeight: 600 }}>{selWindow.type || "Window"} · {selWindow.width}"</div>
+          <div style={{ fontSize: 15, lineHeight: "20px", color: T.text, marginBottom: 12, fontWeight: 500 }}>{selWindow.type || "Window"} · {selWindow.width}"</div>
           <div style={{ marginBottom: 8 }}><div style={S.lbl}>Type</div>
             <div style={{ display: "flex", gap: 6 }}>
               {WINDOW_TYPES.map(t => <button key={t} style={{ padding: "6px 10px", background: (selWindow.type || "Window") === t ? T.border + "60" : "transparent", color: (selWindow.type || "Window") === t ? T.textBright : T.textMuted, border: "1.5px solid " + T.border, borderRadius: 5, fontSize: 9, cursor: "pointer", fontFamily: "inherit", flex: 1, fontWeight: 500, transition: "all 0.12s ease" }}
@@ -113,7 +113,7 @@ function Inspector({
           const stepFont = (d) => updLabel({ fontSize: Math.min(72, Math.max(8, selLabel.fontSize + d)) });
           const btnActive = (on) => ({ flex: 1, padding: "5px 0", background: on ? T.accent + "25" : "transparent", border: "1px solid " + (on ? T.accent : T.border), borderRadius: 4, color: on ? T.textBright : T.textMuted, cursor: "pointer", fontFamily: "inherit" });
           return <>
-            <div style={{ fontSize: 12, color: T.textBright, marginBottom: 10, fontWeight: 600 }}>
+            <div style={{ fontSize: 15, lineHeight: "20px", color: T.text, marginBottom: 12, fontWeight: 500 }}>
               {selLabel.lx != null ? "Callout" : "Label"}
             </div>
             {/* Edit text */}
@@ -134,7 +134,7 @@ function Inspector({
                 <button style={{ padding: "5px 10px", background: "transparent", border: "none", color: T.textMuted, cursor: "pointer", fontSize: 14, lineHeight: 1, fontFamily: "inherit" }}
                   onClick={() => stepFont(1)}>+</button>
               </div>
-              <button style={{ ...btnActive(selLabel.bold), flex: "0 0 32px", fontWeight: 700, fontSize: 13 }} onClick={() => updLabel({ bold: !selLabel.bold })}>B</button>
+              <button style={{ ...btnActive(selLabel.bold), flex: "0 0 32px", fontWeight: 500, fontSize: 13 }} onClick={() => updLabel({ bold: !selLabel.bold })}>B</button>
               <button style={{ ...btnActive(selLabel.italic), flex: "0 0 32px", fontStyle: "italic", fontSize: 13 }} onClick={() => updLabel({ italic: !selLabel.italic })}>I</button>
             </div>
             {/* Color swatches */}
@@ -175,7 +175,7 @@ function Inspector({
           const stepFont = (d) => updElevLabel({ fontSize: Math.min(72, Math.max(8, fs + d)) });
           const btnActive = (on) => ({ flex: 1, padding: "5px 0", background: on ? T.accent + "25" : "transparent", border: "1px solid " + (on ? T.accent : T.border), borderRadius: 4, color: on ? T.textBright : T.textMuted, cursor: "pointer", fontFamily: "inherit" });
           return <>
-            <div style={{ fontSize: 12, color: T.textBright, marginBottom: 10, fontWeight: 600 }}>
+            <div style={{ fontSize: 15, lineHeight: "20px", color: T.text, marginBottom: 12, fontWeight: 500 }}>
               Elevation {selElevLabel.lx != null ? "Callout" : "Label"}
             </div>
             <div style={{ fontSize: 9, color: T.textDim, marginBottom: 10 }}>Double-click the label in its elevation to edit the text.</div>
@@ -187,7 +187,7 @@ function Inspector({
                 <button style={{ padding: "5px 10px", background: "transparent", border: "none", color: T.textMuted, cursor: "pointer", fontSize: 14, lineHeight: 1, fontFamily: "inherit" }}
                   onClick={() => stepFont(1)}>+</button>
               </div>
-              <button style={{ ...btnActive(selElevLabel.bold), flex: "0 0 32px", fontWeight: 700, fontSize: 13 }} onClick={() => updElevLabel({ bold: !selElevLabel.bold })}>B</button>
+              <button style={{ ...btnActive(selElevLabel.bold), flex: "0 0 32px", fontWeight: 500, fontSize: 13 }} onClick={() => updElevLabel({ bold: !selElevLabel.bold })}>B</button>
               <button style={{ ...btnActive(selElevLabel.italic), flex: "0 0 32px", fontStyle: "italic", fontSize: 13 }} onClick={() => updElevLabel({ italic: !selElevLabel.italic })}>I</button>
             </div>
             <div style={{ marginBottom: 10 }}>
@@ -214,7 +214,7 @@ function Inspector({
           const RC_COLORS = [{ hex: "#E05252", name: "Red" }, { hex: "#E0A030", name: "Amber" },
             { hex: "#4A8FE8", name: "Blue" }, { hex: "#50A070", name: "Green" }];
           return <>
-            <div style={{ fontSize: 12, color: selRevCloud.color, marginBottom: 10, fontWeight: 600 }}>Revision Cloud</div>
+            <div style={{ fontSize: 15, lineHeight: "20px", color: T.text, marginBottom: 12, fontWeight: 500 }}>Revision Cloud</div>
             <div style={{ marginBottom: 8 }}>
               <div style={S.lbl}>Label</div>
               <input style={S.inp} value={selRevCloud.label} onChange={e => updRevCloud({ label: e.target.value })} placeholder="Rev A…" />
@@ -243,7 +243,7 @@ function Inspector({
           const RC_COLORS = [{ hex: "#E05252", name: "Red" }, { hex: "#E0A030", name: "Amber" },
             { hex: "#4A8FE8", name: "Blue" }, { hex: "#50A070", name: "Green" }];
           return <>
-            <div style={{ fontSize: 12, color: selElevRevCloud.color, marginBottom: 10, fontWeight: 600 }}>Elevation Revision Cloud</div>
+            <div style={{ fontSize: 15, lineHeight: "20px", color: T.text, marginBottom: 12, fontWeight: 500 }}>Elevation Revision Cloud</div>
             <div style={{ marginBottom: 8 }}>
               <div style={S.lbl}>Label</div>
               <input style={S.inp} value={selElevRevCloud.label} onChange={e => updElevRevCloud({ label: e.target.value })} placeholder="Rev A…" />
@@ -268,7 +268,7 @@ function Inspector({
           </>;
         })()}
         {selectedIds.length <= 1 && selFlowPath && <>
-          <div style={{ fontSize: 12, color: selFlowPath.color, marginBottom: 10, fontWeight: 600 }}>Flow Path</div>
+          <div style={{ fontSize: 15, lineHeight: "20px", color: T.text, marginBottom: 12, fontWeight: 500 }}>Flow Path</div>
           <div style={{ marginBottom: 8 }}>
             <div style={S.lbl}>Clearance Preset</div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 4, marginBottom: 6 }}>
@@ -322,32 +322,33 @@ function Inspector({
           const frClearSf = clearInsideSf(selFloorRegion.points, frCarved);
           const zHex = zoneForFloor ? zoneLibrary[zoneForFloor.type]?.color : null;
           return <>
-            <div data-testid="room-title" style={{ fontSize: 12, color: T.textBright, marginBottom: 10, fontWeight: 600 }}>
+            <div data-testid="room-title" style={{ fontSize: 15, lineHeight: "20px", color: T.text, marginBottom: 12, fontWeight: 500 }}>
               Room · {frSf.toLocaleString()} sf
             </div>
             {/* The floor is inert until double-clicked. Say so, and offer a click-path
                 to the same state — the gesture alone isn't discoverable. */}
-            <button data-testid="room-shape-lock"
+            {/* The shape-lock chip states which mode the floor is in, in words (no emoji, no
+                colour-only cue): a pressed (ink-ringed) control while the shape is editable. */}
+            <button data-testid="room-shape-lock" aria-pressed={floorEditId === selFloorRegion.id}
               onClick={() => setFloorEditId(floorEditId === selFloorRegion.id ? null : selFloorRegion.id)}
-              style={{ width: "100%", display: "flex", alignItems: "center", gap: 6, marginBottom: 10, padding: "6px 9px",
-                background: floorEditId === selFloorRegion.id ? T.accent + "20" : T.bg2,
-                border: "1px solid " + (floorEditId === selFloorRegion.id ? T.accent : T.border), borderRadius: 5,
-                cursor: "pointer", fontFamily: "inherit", fontSize: 10, textAlign: "left",
-                color: floorEditId === selFloorRegion.id ? T.textBright : T.textMuted }}>
-              <span style={{ fontSize: 11 }}>{floorEditId === selFloorRegion.id ? "◇" : "🔒"}</span>
-              {floorEditId === selFloorRegion.id
+              style={{ width: "100%", display: "flex", alignItems: "center", gap: 10, marginBottom: 12, padding: "8px 12px", minHeight: 40,
+                background: floorEditId === selFloorRegion.id ? T.bg2 : T.panelBg,
+                border: "1px solid " + T.border, boxShadow: floorEditId === selFloorRegion.id ? "inset 0 0 0 2px " + T.text : "none",
+                cursor: "pointer", fontFamily: "inherit", fontSize: 13, textAlign: "left", color: T.text }}>
+              <span style={{ fontSize: 12, fontWeight: 500, letterSpacing: "0.14em", textTransform: "uppercase", flex: "none" }}>{floorEditId === selFloorRegion.id ? "Editing" : "Locked"}</span>
+              <span style={{ color: T.textMuted }}>{floorEditId === selFloorRegion.id
                 ? "Editing shape — click elsewhere to lock"
-                : "Locked in place — double-click the floor to move or reshape"}
+                : "Locked in place — double-click the floor to move or reshape"}</span>
             </button>
             <div style={{ marginBottom: 10, padding: "6px 9px", background: T.bg2, borderRadius: 5 }}>
               <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between" }}>
                 <span style={{ fontSize: 10, color: T.textMuted }}>Area (to wall centerline)</span>
-                <span style={{ fontSize: 13, fontWeight: 600, color: T.textBright }}>{frSf.toLocaleString()} sf</span>
+                <span style={{ fontSize: 13, fontWeight: 500, color: T.textBright }}>{frSf.toLocaleString()} sf</span>
               </div>
               {frClearSf != null && frClearSf !== frSf && (
                 <div data-testid="floor-clear-sf" style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginTop: 3 }}>
                   <span style={{ fontSize: 10, color: T.textMuted }}>Clear inside walls</span>
-                  <span style={{ fontSize: 12, fontWeight: 600, color: T.text }}>{frClearSf.toLocaleString()} sf</span>
+                  <span style={{ fontSize: 12, fontWeight: 500, color: T.text }}>{frClearSf.toLocaleString()} sf</span>
                 </div>
               )}
             </div>
@@ -394,7 +395,7 @@ function Inspector({
         {selectedIds.length <= 1 && selType === "floor" && (() => {
           const FR_COLORS = { "Wood": "#C8A878", "Concrete": "#AEABA4", "Vinyl": "#BFA889", "Carpet": "#786758" };
           return <>
-            <div style={{ fontSize: 12, color: T.textBright, marginBottom: 10, fontWeight: 600 }}>Floor · {floorMaterial}</div>
+            <div style={{ fontSize: 15, lineHeight: "20px", color: T.text, marginBottom: 12, fontWeight: 500 }}>Floor · {floorMaterial}</div>
             <div style={{ marginBottom: 10 }}>
               <div style={S.lbl}>Material</div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
@@ -411,7 +412,7 @@ function Inspector({
           </>;
         })()}
         {selectedIds.length <= 1 && selColumn && <>
-          <div style={{ fontSize: 12, color: "#9A9488", marginBottom: 10, fontWeight: 600 }}>Column · {selColumn.size}"</div>
+          <div style={{ fontSize: 15, lineHeight: "20px", color: T.text, marginBottom: 12, fontWeight: 500 }}>Column · {selColumn.size}"</div>
           <div style={{ marginBottom: 8 }}>
             <div style={S.lbl}>Shape</div>
             <div style={{ display: "flex", gap: 6 }}>
@@ -429,7 +430,7 @@ function Inspector({
           const spec = FURNITURE_CATALOG[selFurniture.type];
           const deg = Math.round((selFurniture.angle || 0) * 180 / Math.PI);
           return <>
-            <div style={{ fontSize: 12, color: "#C07840", marginBottom: 10, fontWeight: 600 }}>{spec?.name || selFurniture.type}</div>
+            <div style={{ fontSize: 15, lineHeight: "20px", color: T.text, marginBottom: 12, fontWeight: 500 }}>{spec?.name || selFurniture.type}</div>
             <div style={{ marginBottom: 8 }}><div style={S.lbl}>Width (ft)</div><SliderInput value={selFurniture.w} min={1} max={20} step={0.5} unit="'" onChange={v => updFurniture({ w: v })} accent="#C07840" textColor={T.textBright} bgColor={T.bg2} borderColor={T.border} /></div>
             <div style={{ marginBottom: 8 }}><div style={S.lbl}>Depth (ft)</div><SliderInput value={selFurniture.d} min={1} max={20} step={0.5} unit="'" onChange={v => updFurniture({ d: v })} accent="#C07840" textColor={T.textBright} bgColor={T.bg2} borderColor={T.border} /></div>
             <div style={{ marginBottom: 8 }}><div style={S.lbl}>Rotation</div><SliderInput value={deg} min={0} max={345} step={15} unit="°" onChange={v => updFurniture({ angle: v * Math.PI / 180 })} accent="#C07840" textColor={T.textBright} bgColor={T.bg2} borderColor={T.border} /></div>
@@ -451,11 +452,11 @@ function Inspector({
           const zoneClearSf = clearInsideSf(pts.length ? pts
             : [{ x: selZone.x, y: selZone.y }, { x: selZone.x + selZone.w, y: selZone.y }, { x: selZone.x + selZone.w, y: selZone.y + selZone.h }, { x: selZone.x, y: selZone.y + selZone.h }]);
           return <>
-          <div style={{ fontSize: 12, marginBottom: 10, fontWeight: 600, color: lib.color }}>{lib.name} · {sf} sf</div>
+          <div style={{ fontSize: 15, lineHeight: "20px", color: T.text, marginBottom: 12, fontWeight: 500 }}>{lib.name} · {sf} sf</div>
           {zoneClearSf != null && zoneClearSf !== sf && (
             <div data-testid="zone-clear-sf" style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginTop: -6, marginBottom: 10, padding: "5px 9px", background: T.bg2, borderRadius: 5 }}>
               <span style={{ fontSize: 10, color: T.textMuted }}>Clear inside walls</span>
-              <span style={{ fontSize: 12, fontWeight: 600, color: T.text }}>{zoneClearSf.toLocaleString()} sf</span>
+              <span style={{ fontSize: 12, fontWeight: 500, color: T.text }}>{zoneClearSf.toLocaleString()} sf</span>
             </div>
           )}
           <div style={{ marginBottom: 8 }}><div style={S.lbl}>Type</div>
@@ -501,7 +502,7 @@ function Inspector({
                   <span style={{ color: T.text, whiteSpace: "nowrap", paddingLeft: 8 }}>{$(item.qty * item.unitCost)}</span>
                 </div>
               ))}
-              <div style={{ fontSize: 10, color: T.accentDim ?? "#8A8478", marginTop: 5, textAlign: "right", fontWeight: 600 }}>Est. {$(estCost)}</div>
+              <div style={{ fontSize: 10, color: T.accentDim ?? "#8A8478", marginTop: 5, textAlign: "right", fontWeight: 500 }}>Est. {$(estCost)}</div>
             </div>
           </div>}
           {(() => {
@@ -510,7 +511,7 @@ function Inspector({
             if (!n) return <div style={{ fontSize: 10, color: T.textFaint, fontStyle: "italic", margin: "6px 0 10px" }}>No furniture preset for this zone type.</div>;
             return <div style={{ marginBottom: 10 }}>
               <button data-testid="furnish-zone" onClick={() => furnishZone(selZone)}
-                style={{ width: "100%", padding: "9px 12px", borderRadius: 6, cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 600, border: "1.5px solid #C0784088", background: "#C0784022", color: T.textBright, display: "flex", alignItems: "center", justifyContent: "center", gap: 7 }}>
+                style={{ width: "100%", padding: "9px 12px", borderRadius: 6, cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 500, border: "1.5px solid #C0784088", background: "#C0784022", color: T.textBright, display: "flex", alignItems: "center", justifyContent: "center", gap: 7 }}>
                 <span style={S.dot("#C07840")} />Furnish this zone
               </button>
               <div style={{ fontSize: 9, color: T.textMuted, marginTop: 4, textAlign: "center" }}>Drops {n} pieces · arrange them in Furnish (4)</div>
@@ -531,7 +532,7 @@ function Inspector({
                 <MarkerSymbol marker={{ ...selMarker, side: undefined, x: 14, y: 14 }} selected={false} T={chromeT} themeMode={themeMode} tool={tool} mode={mode} pxPerFoot={pxPerFoot} />
               </svg>
               <div>
-                <div style={{ fontSize: 12, fontWeight: 600, color: layerData?.color || "#9A9488" }}>{compData?.name || "Component"}{selMarker.finish ? ` (${selMarker.finish[0].toUpperCase() + selMarker.finish.slice(1)})` : ""}</div>
+                <div style={{ fontSize: 12, fontWeight: 500, color: layerData?.color || "#9A9488" }}>{compData?.name || "Component"}{selMarker.finish ? ` (${selMarker.finish[0].toUpperCase() + selMarker.finish.slice(1)})` : ""}</div>
                 {compData?.product && <div style={{ fontSize: 9, color: T.textFaint }}>≈ {compData.product}</div>}
               </div>
             </div>
@@ -540,7 +541,7 @@ function Inspector({
               <div style={S.lbl}>Finish</div>
               <div style={{ display: "flex", gap: 6 }}>
                 {compData.finish.map(f => <button key={f} onClick={() => updMarker({ finish: f })}
-                  style={{ flex: 1, padding: "6px 0", borderRadius: 5, cursor: "pointer", fontFamily: "inherit", fontSize: 10, fontWeight: 600, textTransform: "capitalize", border: "1.5px solid " + (selMarker.finish === f ? T.brand : T.border), background: selMarker.finish === f ? FINISH_COLORS[f].fill : "transparent", color: selMarker.finish === f ? FINISH_COLORS[f].line : T.textMuted, display: "flex", alignItems: "center", justifyContent: "center", gap: 5 }}>
+                  style={{ flex: 1, padding: "6px 0", borderRadius: 5, cursor: "pointer", fontFamily: "inherit", fontSize: 10, fontWeight: 500, textTransform: "capitalize", border: "1.5px solid " + (selMarker.finish === f ? T.brand : T.border), background: selMarker.finish === f ? FINISH_COLORS[f].fill : "transparent", color: selMarker.finish === f ? FINISH_COLORS[f].line : T.textMuted, display: "flex", alignItems: "center", justifyContent: "center", gap: 5 }}>
                   <span style={{ width: 9, height: 9, borderRadius: "50%", background: FINISH_COLORS[f].fill, border: "1px solid " + FINISH_COLORS[f].line }} />{f}
                 </button>)}
               </div>
@@ -608,7 +609,7 @@ function Inspector({
           const kind = cv(items, "kind") || "existing";
           const wk = wallKinds[kind];
           return <>
-            <div style={{ fontSize: 12, color: wk?.color || "#9A9488", marginBottom: 10, fontWeight: 600 }}>{items.length} Walls Selected</div>
+            <div style={{ fontSize: 15, lineHeight: "20px", color: T.text, marginBottom: 12, fontWeight: 500 }}>{items.length} Walls Selected</div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginBottom: 10 }}>
               {Object.entries(wallKinds).map(([k, v]) => <button key={k} style={{ padding: "6px 8px", background: kind === k ? v.color + "40" : "transparent", color: kind === k ? T.textBright : v.color, border: "1.5px solid " + v.color + "50", borderRadius: 5, fontSize: 9, cursor: "pointer", fontFamily: "inherit", fontWeight: 500, transition: "all 0.12s ease" }}
                 onClick={() => updWall({ kind: k })}>{v.label}</button>)}
@@ -644,7 +645,7 @@ function Inspector({
           const items = multiSelItems;
           const w = cv(items, "width");
           return <>
-            <div style={{ fontSize: 12, color: T.uiDoor, marginBottom: 10, fontWeight: 600 }}>{items.length} Doors Selected</div>
+            <div style={{ fontSize: 15, lineHeight: "20px", color: T.text, marginBottom: 12, fontWeight: 500 }}>{items.length} Doors Selected</div>
             <div style={{ marginBottom: 10 }}><SliderInput value={w} min={24} max={96} onChange={dw => updDoor({ width: dw })} accent={T.uiDoor} textColor={T.textBright} bgColor={T.bg2} borderColor={T.border} disabled={w === undefined} /></div>
             <div style={{ display: "flex", gap: 6, marginBottom: 6 }}>
               <button style={{ ...S.inp, cursor: "pointer", textAlign: "center", color: T.uiDoor, fontSize: 10, flex: 1, fontWeight: 500 }} onClick={() => updDoor({ flipped: !items[0]?.flipped })}>In/Out (F)</button>
@@ -657,7 +658,7 @@ function Inspector({
           const items = multiSelItems;
           const w = cv(items, "width");
           return <>
-            <div style={{ fontSize: 12, color: "#60A0C8", marginBottom: 10, fontWeight: 600 }}>{items.length} Windows Selected</div>
+            <div style={{ fontSize: 15, lineHeight: "20px", color: T.text, marginBottom: 12, fontWeight: 500 }}>{items.length} Windows Selected</div>
             <div style={{ marginBottom: 10 }}><SliderInput value={w} min={12} max={96} onChange={ww => updWindow({ width: ww })} accent="#60A0C8" textColor={T.textBright} bgColor={T.bg2} borderColor={T.border} disabled={w === undefined} /></div>
             <button style={S.del} onClick={delSel}>Delete {items.length} Windows</button>
           </>;
@@ -667,7 +668,7 @@ function Inspector({
           const shape = cv(items, "shape");
           const size = cv(items, "size");
           return <>
-            <div style={{ fontSize: 12, color: "#9A9488", marginBottom: 10, fontWeight: 600 }}>{items.length} Columns Selected</div>
+            <div style={{ fontSize: 15, lineHeight: "20px", color: T.text, marginBottom: 12, fontWeight: 500 }}>{items.length} Columns Selected</div>
             <div style={{ marginBottom: 8 }}>
               <div style={S.lbl}>Shape</div>
               <div style={{ display: "flex", gap: 6 }}>
@@ -685,7 +686,7 @@ function Inspector({
           const items = multiSelItems;
           const type = cv(items, "type");
           return <>
-            <div style={{ fontSize: 12, color: type ? zoneLibrary[type]?.color : "#9A9488", marginBottom: 10, fontWeight: 600 }}>{items.length} Zones Selected</div>
+            <div style={{ fontSize: 15, lineHeight: "20px", color: T.text, marginBottom: 12, fontWeight: 500 }}>{items.length} Zones Selected</div>
             <div style={{ marginBottom: 8 }}><div style={S.lbl}>Type</div>
               <select style={{ ...S.inp, padding: "6px 10px", fontSize: 10 }} value={type ?? ""}
                 onChange={e => { const nt = e.target.value; const lib = zoneLibrary[nt]; updZone({ type: nt, label: lib.name }); }}>
@@ -704,13 +705,13 @@ function Inspector({
         {selectedIds.length > 1 && multiSelType === "marker" && (() => {
           const items = multiSelItems;
           return <>
-            <div style={{ fontSize: 12, color: "#9A9488", marginBottom: 10, fontWeight: 600 }}>{items.length} Components Selected</div>
+            <div style={{ fontSize: 15, lineHeight: "20px", color: T.text, marginBottom: 12, fontWeight: 500 }}>{items.length} Components Selected</div>
             <div style={{ marginBottom: 8 }}><div style={S.lbl}>Notes</div><textarea style={{ ...S.inp, height: 40, resize: "vertical" }} value={cv(items, "notes") ?? ""} onChange={e => updMarker({ notes: e.target.value })} placeholder={cv(items, "notes") === undefined ? "Mixed" : ""} /></div>
             <button style={S.del} onClick={delSel}>Delete {items.length} Components</button>
           </>;
         })()}
         {selectedIds.length > 1 && multiSelType === "mixed" && <>
-          <div style={{ fontSize: 12, color: "#9A9488", marginBottom: 10, fontWeight: 600 }}>{selectedIds.length} Items Selected (Mixed Types)</div>
+          <div style={{ fontSize: 15, lineHeight: "20px", color: T.text, marginBottom: 12, fontWeight: 500 }}>{selectedIds.length} Items Selected (Mixed Types)</div>
           <button style={S.del} onClick={delSel}>Delete {selectedIds.length} Items</button>
         </>}
       </div>}

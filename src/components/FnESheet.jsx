@@ -16,12 +16,12 @@ export default function FnESheet({ width, height, cost, T, font, display, $ }) {
   }));
   const rollupRows = Object.values(rollup).sort((a, b) => (b.qty * b.unitCost) - (a.qty * a.unitCost));
 
-  const th = { textAlign: "left", fontSize: 8.5, color: T.textDim, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600, padding: "3px 8px", borderBottom: "1px solid " + T.text + "55" };
+  const th = { textAlign: "left", fontSize: 8.5, color: T.textDim, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 500, padding: "3px 8px", borderBottom: "1px solid " + T.text + "55" };
   const td = { fontSize: 10.5, color: T.text, padding: "3.5px 8px", borderBottom: "1px solid " + T.border + "66" };
   const num = { ...td, textAlign: "right", fontVariantNumeric: "tabular-nums" };
   const secH = { fontFamily: display, fontSize: 15, letterSpacing: "0.04em", color: T.textBright, margin: "0 0 4px", textTransform: "uppercase" };
   const tile = { flex: 1, border: "1px solid " + T.text + "44", padding: "10px 14px", display: "flex", flexDirection: "column", gap: 2 };
-  const tileLbl = { fontSize: 8.5, color: T.textDim, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600 };
+  const tileLbl = { fontSize: 8.5, color: T.textDim, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 500 };
 
   return (
     <div data-testid="ffe-sheet" style={{ width, height, fontFamily: font, color: T.text, display: "flex", flexDirection: "column", gap: 14, overflow: "hidden", boxSizing: "border-box", padding: "6px 4px" }}>
@@ -51,21 +51,21 @@ export default function FnESheet({ width, height, cost, T, font, display, $ }) {
               <tbody>
                 {zones.map(z => [
                   <tr key={z.id + "-h"}><td colSpan={4} style={{ ...td, borderBottom: "none", paddingTop: 9, paddingBottom: 1 }}>
-                    <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", color: T.textMuted }}>{z.label} · {z.sf.toLocaleString()} sf</span>
+                    <span style={{ fontSize: 9, fontWeight: 500, letterSpacing: "0.06em", textTransform: "uppercase", color: T.textMuted }}>{z.label} · {z.sf.toLocaleString()} sf</span>
                   </td></tr>,
                   ...z.items.map((it, i) => (
                     <tr key={z.id + "-" + i}>
                       <td style={td}>{it.name}</td>
                       <td style={num}>{it.qty}</td>
                       <td style={num}>{$(it.unitCost)}</td>
-                      <td style={{ ...num, fontWeight: 600 }}>{$(it.qty * it.unitCost)}</td>
+                      <td style={{ ...num, fontWeight: 500 }}>{$(it.qty * it.unitCost)}</td>
                     </tr>
                   )),
-                  <tr key={z.id + "-s"}><td style={{ ...td, fontWeight: 600, color: T.textMuted }} colSpan={3}>{z.label} subtotal</td>
-                    <td style={{ ...num, fontWeight: 700 }}>{$(z.total)}</td></tr>,
+                  <tr key={z.id + "-s"}><td style={{ ...td, fontWeight: 500, color: T.textMuted }} colSpan={3}>{z.label} subtotal</td>
+                    <td style={{ ...num, fontWeight: 500 }}>{$(z.total)}</td></tr>,
                 ])}
-                <tr><td style={{ ...td, borderBottom: "none", fontWeight: 700 }} colSpan={3}>FF&amp;E total</td>
-                  <td style={{ ...num, borderBottom: "none", fontWeight: 700 }}>{$(grand)}</td></tr>
+                <tr><td style={{ ...td, borderBottom: "none", fontWeight: 500 }} colSpan={3}>FF&amp;E total</td>
+                  <td style={{ ...num, borderBottom: "none", fontWeight: 500 }}>{$(grand)}</td></tr>
               </tbody>
             </table>
           </div>
@@ -77,7 +77,7 @@ export default function FnESheet({ width, height, cost, T, font, display, $ }) {
               <thead><tr><th style={th}>Item</th><th style={{ ...th, textAlign: "right" }}>Qty</th><th style={{ ...th, textAlign: "right" }}>Total</th></tr></thead>
               <tbody>
                 {rollupRows.map((r, i) => (
-                  <tr key={i}><td style={td}>{r.name}</td><td style={num}>{r.qty}</td><td style={{ ...num, fontWeight: 600 }}>{$(r.qty * r.unitCost)}</td></tr>
+                  <tr key={i}><td style={td}>{r.name}</td><td style={num}>{r.qty}</td><td style={{ ...num, fontWeight: 500 }}>{$(r.qty * r.unitCost)}</td></tr>
                 ))}
               </tbody>
             </table>

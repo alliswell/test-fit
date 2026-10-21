@@ -1,65 +1,81 @@
 // ─── Theme palettes & wall appearance constants ──────────────────────────────
 // Pure design tokens — no React, no state. The active theme object `T` is
 // selected per-render in the main component (THEMES[themeMode]).
-
-// Two themes with distinct identities, not a flat invert:
-//   dark  = BLUEPRINT — deep cyanotype navy, luminous cyan accent (brand).
-//   light = VELLUM    — warm trace-paper, ink-black type, drafting-vermilion accent (brand).
-// `brand`/`brandDim`/`brandSoft` carry the signature accent; `accent` stays a neutral
-// interactive gray (it doubles as inactive icon/label color in many places).
+//
+// The CHROME follows Yardstick (the Club Design Suite design system): one `paper`
+// ground, `ink` for text/borders/glyphs/linework, `ink-muted` for secondary text,
+// `rule-soft` for in-block row dividers (decorative only), `tint` for wells and hover,
+// and ONE blue, `selected`, which means "the thing you are working on" and nothing
+// else. Hierarchy comes from size, weight (400/500 only) and grid position — never
+// from extra grays, which is why textMuted/textDim/textFaint all resolve to ink-muted.
+// The legacy keys are kept so every consumer keeps working; the mapping is:
+//   bg0/bg1 → paper · bg2 → tint · bg3 → rule-soft · border → ink
+//   text/textBright/accent → ink · textMuted/textDim/textFaint/accentDim → ink-muted
+//   brand/selBorder → selected · brandDim → proposed (blueprint navy) · panelShadow → none
+//   delBg/delText → problem fill + cream text (the Yardstick "problem" state)
+// Three themes: light (paper) · dark (paper and ink swapped, selected lightened) ·
+// print (white paper, black ink). State fills (YS_STATE) keep their values in all three.
+// The plan's layer colours (walls by kind, zones, IT/MEP layers) are data, not chrome,
+// and are untouched; the canvas paper, grid and selection follow the theme.
+export const YS_FONT_SANS = "'Host Grotesk','Helvetica Neue',Arial,sans-serif";
+export const YS_FONT_MONO = "'Geist Mono',ui-monospace,'SF Mono',Menlo,monospace";
+// Yardstick state fills — identical in every theme ("State fills keep their values in
+// both themes"). Each is always paired with a mark (hatch / check / !), never alone.
+export const YS_STATE = {
+  proposed: "#13294b", pending: "#d5a144", done: "#97a466", problem: "#a24a24",
+  cream: "#f3ecd9", onLightAccent: "#211d18",
+};
 export const THEMES = {
   dark: {
-    bg0: "#0B1320", bg1: "#0E1828", bg2: "#101D30", bg3: "#16263C", border: "#26384F",
-    text: "#AEC2D8", textBright: "#EAF3FC", textMuted: "#6E84A0", textDim: "#536886", textFaint: "#3A4D68",
-    accent: "#7C8FA8", accentDim: "#56698A",
-    brand: "#3FC8E8", brandDim: "#2C90AE", brandSoft: "#3FC8E81E",
-    canvas: "#0C1422", gridMajor: "#3FC8E814", gridMinor: "#3FC8E80A", gridSub: "#2A405C",
-    nodeStroke: "#0C1422", nodeFill: "#EAF3FC",
-    selBg: "#3FC8E81E", selBorder: "#3FC8E8",
-    panelBg: "#0E1828F4", panelShadow: "0 10px 30px rgba(0,0,0,0.5)",
-    toolbarBg: "#0E1828EE", toolbarShadow: "0 10px 30px rgba(0,0,0,0.5)",
-    delBg: "#5A1D24", delText: "#FFB6BE",
-    dimText: "#EAF3FC55", wallNode: "#EAF3FC", furniture: "#8FB0C8",
-    crosshairColor: "%233FC8E8",
+    bg0: "#1d1a16", bg1: "#1d1a16", bg2: "#26221d", bg3: "#3b352d", border: "#efe7d6",
+    text: "#efe7d6", textBright: "#efe7d6", textMuted: "#a0968a", textDim: "#a0968a", textFaint: "#a0968a",
+    accent: "#efe7d6", accentDim: "#a0968a",
+    brand: "#86a8e0", brandDim: "#86a8e0", brandSoft: "#86a8e01E",
+    canvas: "#1d1a16", gridMajor: "#3b352d", gridMinor: "#3b352d80", gridSub: "#3b352d",
+    nodeStroke: "#1d1a16", nodeFill: "#efe7d6",
+    selBg: "#86a8e016", selBorder: "#86a8e0",
+    panelBg: "#1d1a16", panelShadow: "none",
+    toolbarBg: "#1d1a16", toolbarShadow: "none",
+    delBg: "#a24a24", delText: "#f3ecd9",
+    dimText: "#efe7d6B3", wallNode: "#efe7d6", furniture: "#a0968a",
+    crosshairColor: "%23efe7d6",
     // UI accent colors (sidebar/panel text — distinct from canvas marker colors)
     uiLighting: "#E8D070", uiElec: "#50C878", uiDoor: "#C8A060",
     uiSwitch: "#C8A060", uiBudget: "#E8C840", uiPanel: "#E05050",
     uiConduit: "#E0A050", uiPrewire: "#C87840",
   },
   light: {
-    bg0: "#E6DECF", bg1: "#EFE8DA", bg2: "#E1D9C8", bg3: "#D6CCB8", border: "#C2B7A0",
-    text: "#2E2820", textBright: "#15110A", textMuted: "#6C6453", textDim: "#928974", textFaint: "#B3AA95",
-    accent: "#564E42", accentDim: "#8A8170",
-    brand: "#BC3B26", brandDim: "#8E3322", brandSoft: "#BC3B2618",
-    canvas: "#ECE4D5", gridMajor: "#B0A78F22", gridMinor: "#92897412", gridSub: "#B6AC95",
-    nodeStroke: "#ECE4D5", nodeFill: "#15110A",
-    selBg: "#BC3B2616", selBorder: "#BC3B26",
-    panelBg: "#EFE8DAF6", panelShadow: "0 10px 28px rgba(60,42,20,0.14)",
-    toolbarBg: "#EFE8DAF2", toolbarShadow: "0 10px 28px rgba(60,42,20,0.14)",
-    delBg: "#DCB3AD", delText: "#7A1A12",
-    dimText: "#15110A55", wallNode: "#15110A", furniture: "#7A6A52",
-    crosshairColor: "%2315110A",
-    // UI accent colors — darkened for legibility on warm light background
+    bg0: "#fbf9f4", bg1: "#fbf9f4", bg2: "#f1ece1", bg3: "#d9d1c1", border: "#211d18",
+    text: "#211d18", textBright: "#211d18", textMuted: "#6b6255", textDim: "#6b6255", textFaint: "#6b6255",
+    accent: "#211d18", accentDim: "#6b6255",
+    brand: "#2b5a9e", brandDim: "#13294b", brandSoft: "#2b5a9e1E",
+    canvas: "#fbf9f4", gridMajor: "#d9d1c1", gridMinor: "#d9d1c180", gridSub: "#d9d1c1",
+    nodeStroke: "#fbf9f4", nodeFill: "#211d18",
+    selBg: "#2b5a9e16", selBorder: "#2b5a9e",
+    panelBg: "#fbf9f4", panelShadow: "none",
+    toolbarBg: "#fbf9f4", toolbarShadow: "none",
+    delBg: "#a24a24", delText: "#f3ecd9",
+    dimText: "#211d18B3", wallNode: "#211d18", furniture: "#6b6255",
+    crosshairColor: "%23211d18",
+    // UI accent colors — darkened for legibility on paper
     uiLighting: "#7A6010", uiElec: "#1A6E3A", uiDoor: "#7A5518",
     uiSwitch: "#7A5518", uiBudget: "#8A6A10", uiPanel: "#B02020",
     uiConduit: "#8A5A10", uiPrewire: "#7A4818",
   },
-  // PRINT — pure white paper, black ink, neutral grays. A utilitarian output look:
-  // maximum contrast, minimum ink (no warm tone, no colored fills, no heavy shadows).
-  // The blue `brand` is a screen-only selection affordance — printed content (walls,
-  // dims, type) is black/gray, so a deselected sheet prints monochrome.
+  // PRINT — pure white paper, black ink, neutral grays. Printed content (walls, dims,
+  // type) is black/gray; `selected` blue is a screen-only affordance.
   print: {
-    bg0: "#F2F2F2", bg1: "#FFFFFF", bg2: "#ECECEC", bg3: "#E2E2E2", border: "#C9C9C9",
-    text: "#1A1A1A", textBright: "#000000", textMuted: "#565656", textDim: "#7C7C7C", textFaint: "#ABABAB",
-    accent: "#3F3F3F", accentDim: "#8A8A8A",
-    brand: "#2E6FB7", brandDim: "#245A96", brandSoft: "#2E6FB714",
-    canvas: "#FFFFFF", gridMajor: "#0000000E", gridMinor: "#00000006", gridSub: "#D8D8D8",
-    nodeStroke: "#FFFFFF", nodeFill: "#000000",
-    selBg: "#2E6FB714", selBorder: "#2E6FB7",
-    panelBg: "#FFFFFFF6", panelShadow: "0 10px 28px rgba(0,0,0,0.12)",
-    toolbarBg: "#FFFFFFF2", toolbarShadow: "0 10px 28px rgba(0,0,0,0.12)",
-    delBg: "#F0D4D4", delText: "#9A1F1F",
-    dimText: "#00000099", wallNode: "#000000", furniture: "#333333",
+    bg0: "#ffffff", bg1: "#ffffff", bg2: "#f0f0f0", bg3: "#d0d0d0", border: "#000000",
+    text: "#000000", textBright: "#000000", textMuted: "#565656", textDim: "#565656", textFaint: "#565656",
+    accent: "#000000", accentDim: "#565656",
+    brand: "#2b5a9e", brandDim: "#13294b", brandSoft: "#2b5a9e14",
+    canvas: "#ffffff", gridMajor: "#d0d0d0", gridMinor: "#d0d0d080", gridSub: "#d0d0d0",
+    nodeStroke: "#ffffff", nodeFill: "#000000",
+    selBg: "#2b5a9e14", selBorder: "#2b5a9e",
+    panelBg: "#ffffff", panelShadow: "none",
+    toolbarBg: "#ffffff", toolbarShadow: "none",
+    delBg: "#a24a24", delText: "#f3ecd9",
+    dimText: "#000000B3", wallNode: "#000000", furniture: "#333333",
     crosshairColor: "%23000000",
     // UI accent colors — dark grayscale, so schematic layers stay legible without ink-heavy hues
     uiLighting: "#4A4A4A", uiElec: "#2A2A2A", uiDoor: "#4A4A4A",
@@ -67,6 +83,17 @@ export const THEMES = {
     uiConduit: "#4A4A4A", uiPrewire: "#5A5A5A",
   }
 };
+
+// The Yardstick CSS custom properties for a theme — written onto :root by testfit.jsx so
+// the stylesheet (src/styles/yardstick.css) and PORTALED surfaces (tooltips, toasts), which
+// render outside the app root, all read the same tokens.
+export const ysVars = (T) => ({
+  "--paper": T.bg1, "--ink": T.text, "--ink-muted": T.textMuted, "--rule-soft": T.bg3, "--tint": T.bg2,
+  "--selected": T.selBorder, "--on-selected": T.bg1, "--focus": T.text,
+  "--proposed": YS_STATE.proposed, "--pending": YS_STATE.pending, "--done": YS_STATE.done,
+  "--problem": YS_STATE.problem, "--cream": YS_STATE.cream, "--on-light-accent": YS_STATE.onLightAccent,
+  "--font-sans": YS_FONT_SANS, "--font-mono": YS_FONT_MONO,
+});
 
 // CAD-style crosshair cursor (data URI)
 export const cadCrosshair = (color) => `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32'%3E%3Cline x1='16' y1='0' x2='16' y2='14' stroke='${color}' stroke-width='1'/%3E%3Cline x1='16' y1='18' x2='16' y2='32' stroke='${color}' stroke-width='1'/%3E%3Cline x1='0' y1='16' x2='14' y2='16' stroke='${color}' stroke-width='1'/%3E%3Cline x1='18' y1='16' x2='32' y2='16' stroke='${color}' stroke-width='1'/%3E%3C/svg%3E") 16 16, crosshair`;

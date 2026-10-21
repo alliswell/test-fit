@@ -60,7 +60,7 @@ test("elevation slide: save a Front pane view → readonly elevation renders on 
   await drawWall(page, cx - 120, cy, cx + 120, cy);
 
   // Split layout → pane 1 → Front elevation → save its view.
-  await page.getByRole("button", { name: "◫", exact: true }).click();
+  await page.getByRole("button", { name: "Split", exact: true }).click();
   await page.locator("select").first().selectOption("front");
   await expect(page.getByText("FRONT ELEVATION")).toBeVisible();
   await page.getByTestId("save-to-docs-1").click();
@@ -156,7 +156,7 @@ test("3D slide camera is locked until Edit view; Save/Reset controls appear", as
   const { cx, cy } = await planCenter(page);
   await drawWall(page, cx - 120, cy, cx + 120, cy);
 
-  await page.getByRole("button", { name: "◫", exact: true }).click();
+  await page.getByRole("button", { name: "Split", exact: true }).click();
   await page.locator("select").first().selectOption("3d");
   await page.waitForTimeout(2000); // lazy 3D chunk
   await page.getByTestId("save-to-docs-1").click();

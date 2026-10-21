@@ -37,7 +37,7 @@ test("shell renders: stage dropdown, tool rail, layout switcher, plan canvas", a
   await page.keyboard.press("1"); // back to Build via the unchanged shortcut
   await expect(stageTrigger).toContainText("Build");
   // layout switcher glyph buttons live in the top bar
-  for (const g of ["▢", "◫", "⊞"]) {
+  for (const g of ["Single", "Split", "Quad"]) {
     await expect(page.getByRole("button", { name: g, exact: true })).toBeVisible();
   }
   await expect(page.getByTestId("plan-canvas")).toBeVisible();
@@ -51,7 +51,7 @@ test("layout switcher: single → quad exposes per-pane view selectors → back 
   await page.getByRole("button", { name: "⊞", exact: true }).click();   // quad
   // 3 aux panes each get a view-picker <select> (pane 0 is the locked "Plan" chip)
   await expect(page.locator("select")).toHaveCount(3);
-  await page.getByRole("button", { name: "▢", exact: true }).click();   // back to single
+  await page.getByRole("button", { name: "Single", exact: true }).click();   // back to single
   await expect(page.locator("select")).toHaveCount(1);
 });
 
@@ -141,9 +141,10 @@ test("selection: click a wall opens the option panel, Escape deselects (Zustand-
 test("layers panel: visibility checkbox + lock toggle (Zustand-backed)", async ({ page }) => {
   await page.goto("/");
 
-  // Lock toggle — nothing locked initially; locking then unlocking is reversible.
-  const unlocked = page.locator('span[title="Lock layer"]');
-  const locked = page.locator('span[title="Locked — click to unlock"]');
+  // Lock toggle — nothing locked initially; locking then unlocking is reversible. The
+  // buttons are named for the action they take ("Lock Zones" / "Unlock Zones").
+  const unlocked = page.locator('button[aria-label^="Lock "]');
+  const locked = page.locator('button[aria-label^="Unlock "]');
   await expect(locked).toHaveCount(0);
   expect(await unlocked.count()).toBeGreaterThan(0);
   await unlocked.first().click();
@@ -152,10 +153,11 @@ test("layers panel: visibility checkbox + lock toggle (Zustand-backed)", async (
   await expect(locked).toHaveCount(0);
 
   // Visibility — the Zones layer row toggles between the eye / eye-off glyph.
-  const zonesRow = page.getByText("Zones", { exact: true }).locator("xpath=..");
-  await expect(zonesRow.locator('span[title="Hide layer"]')).toHaveCount(1); // visible
-  await zonesRow.locator('span[title="Hide layer"]').click();
-  await expect(zonesRow.locator('span[title="Show layer"]')).toHaveCount(1); // hidden
+  const zonesRow = page.getByTestId("plan-layer-row-zones");
+  await expect(zonesRow.getByRole("button", { name: "Hide Zones" })).toHaveCount(1); // visible
+  await zonesRow.getByRole("button", { name: "Hide Zones" }).click();
+  await expect(zonesRow.getByRole("button", { name: "Show Zones" })).toHaveCount(1); // hidden
+  await expect(zonesRow).toHaveAttribute("data-visible", "false");
 });
 
 // ── onDown/onMove coverage: these guard the canvas-interaction handlers so their
@@ -392,7 +394,7 @@ test("elevation annotation: a dimension is stored under elevAnnotations[front]",
   await page.keyboard.press("Escape");
 
   // split, set the aux pane to the Front elevation
-  await page.getByRole("button", { name: "◫", exact: true }).click();
+  await page.getByRole("button", { name: "Split", exact: true }).click();
   await page.locator("select").filter({ has: page.locator('option[value="front"]') }).first().selectOption("front");
   const elev = page.locator("svg").filter({ hasText: "FRONT ELEVATION" });
   await expect(elev).toBeVisible();
@@ -429,7 +431,7 @@ test("elevation: a door flagged New construction shows a NEW tag", async ({ page
   await page.getByTestId("new-construction").check();
 
   // Front elevation carries the NEW tag for the flagged opening.
-  await page.getByRole("button", { name: "◫", exact: true }).click();
+  await page.getByRole("button", { name: "Split", exact: true }).click();
   await page.locator("select").filter({ has: page.locator('option[value="front"]') }).first().selectOption("front");
   const elev = page.locator("svg").filter({ hasText: "FRONT ELEVATION" });
   await expect(elev).toBeVisible();
@@ -450,7 +452,7 @@ test("isometric view: locked ortho corners, and saves as an iso slide", async ({
   };
   await page.addInitScript((s) => localStorage.setItem("testfit-autosave", JSON.stringify(s)), seed);
   await page.goto("/");
-  await page.getByRole("button", { name: "◫", exact: true }).click();
+  await page.getByRole("button", { name: "Split", exact: true }).click();
   await page.locator("select").last().selectOption("iso");
   await page.waitForTimeout(1500);
 
@@ -502,7 +504,7 @@ test("demo wall keeps its openings in 3D and tags them DEMO in elevation", async
   await page.goto("/");
   await page.waitForTimeout(300);
 
-  await page.getByRole("button", { name: "◫", exact: true }).click();
+  await page.getByRole("button", { name: "Split", exact: true }).click();
   await page.locator("select").filter({ has: page.locator('option[value="front"]') }).first().selectOption("front");
   const elev = page.locator("svg").filter({ hasText: "FRONT ELEVATION" });
   await expect(elev).toBeVisible();
@@ -526,7 +528,7 @@ test("elevation dims scope to the section cut: only the active cut's measurement
   await page.addInitScript((s) => localStorage.setItem("testfit-autosave", JSON.stringify(s)), seed);
   await page.goto("/");
 
-  await page.getByRole("button", { name: "◫", exact: true }).click();
+  await page.getByRole("button", { name: "Split", exact: true }).click();
   await page.locator("select").filter({ has: page.locator('option[value="front"]') }).first().selectOption("front");
   const elev = page.locator("svg").filter({ hasText: "FRONT ELEVATION" });
   await expect(elev).toBeVisible();
@@ -555,7 +557,7 @@ test("elevation dim anchored to a wall + a marker follows the marker when it mov
   const wallId = m0.walls[0].id, markerId = m0.markers[0].id;
 
   // Split to the Front elevation, where both the wall and the marker project.
-  await page.getByRole("button", { name: "◫", exact: true }).click();
+  await page.getByRole("button", { name: "Split", exact: true }).click();
   await page.locator("select").filter({ has: page.locator('option[value="front"]') }).first().selectOption("front");
   const elev = page.locator("svg").filter({ hasText: "FRONT ELEVATION" });
   await expect(elev).toBeVisible();
@@ -580,7 +582,7 @@ test("elevation dim anchored to a wall + a marker follows the marker when it mov
 
   // Move the marker 5ft further along the wall (via the sidebar + arrow-nudge — precise,
   // and independent of plan-canvas drag hit-testing).
-  await page.getByRole("button", { name: "▢", exact: true }).click();
+  await page.getByRole("button", { name: "Single", exact: true }).click();
   await page.getByText("Wall Speaker", { exact: false }).first().click();
   for (let i = 0; i < 5; i++) await page.keyboard.press("Shift+ArrowRight");
   await page.keyboard.press("Escape");
@@ -589,7 +591,7 @@ test("elevation dim anchored to a wall + a marker follows the marker when it mov
 
   // Back to the elevation: the SAME dimension now reads a different, larger length — it
   // followed the marker instead of freezing at the position it was drawn at.
-  await page.getByRole("button", { name: "◫", exact: true }).click();
+  await page.getByRole("button", { name: "Split", exact: true }).click();
   await page.locator("select").filter({ has: page.locator('option[value="front"]') }).first().selectOption("front");
   await expect(page.getByTestId("elev-dim-label-" + dim.id)).not.toHaveText(labelBefore);
   await expect(page.getByTestId("elev-dim-label-" + dim.id)).toHaveText("11'-2\""); // 5' further → exact geometry
@@ -611,7 +613,7 @@ test("dragging a dimension's endpoint directly detaches it from its anchor", asy
   await page.addInitScript((s) => localStorage.setItem("testfit-autosave", JSON.stringify(s)), seed);
   await page.goto("/");
 
-  await page.getByRole("button", { name: "◫", exact: true }).click();
+  await page.getByRole("button", { name: "Split", exact: true }).click();
   await page.locator("select").filter({ has: page.locator('option[value="front"]') }).first().selectOption("front");
   const elev = page.locator("svg").filter({ hasText: "FRONT ELEVATION" });
   await expect(elev).toBeVisible();
@@ -647,7 +649,7 @@ test("elevation labels: place + commit, abandoned editor leaves nothing, drag ma
   await page.keyboard.press("Escape");
 
   // split, set the aux pane to the Front elevation
-  await page.getByRole("button", { name: "◫", exact: true }).click();
+  await page.getByRole("button", { name: "Split", exact: true }).click();
   await page.locator("select").filter({ has: page.locator('option[value="front"]') }).first().selectOption("front");
   const elev = page.locator("svg").filter({ hasText: "FRONT ELEVATION" });
   await expect(elev).toBeVisible();
@@ -701,7 +703,7 @@ test("elevation revision cloud: click-to-draw closes at the first point and is s
   await page.keyboard.press("Escape");
 
   // split, set the aux pane to the Front elevation
-  await page.getByRole("button", { name: "◫", exact: true }).click();
+  await page.getByRole("button", { name: "Split", exact: true }).click();
   await page.locator("select").filter({ has: page.locator('option[value="front"]') }).first().selectOption("front");
   const elev = page.locator("svg").filter({ hasText: "FRONT ELEVATION" });
   await expect(elev).toBeVisible();
@@ -742,7 +744,7 @@ test("door types in elevation: Case Opening renders dashed and stays clickable",
   await page.keyboard.press("Escape"); // deselect
 
   // split, set the aux pane to the Front elevation
-  await page.getByRole("button", { name: "◫", exact: true }).click();
+  await page.getByRole("button", { name: "Split", exact: true }).click();
   await page.locator("select").filter({ has: page.locator('option[value="front"]') }).first().selectOption("front");
   const elev = page.locator("svg").filter({ hasText: "FRONT ELEVATION" });
   await expect(elev).toBeVisible();
@@ -862,18 +864,22 @@ test("planning-view layer presets mirror Docs: one click sets the layer visibili
   await page.mouse.click(cx + 140, cy + 90);
   await page.keyboard.press("v");
 
-  const active = (id) => page.getByTestId("plan-layer-preset-" + id);
+  // The preset is a Select (six options is one past a segmented control's five); its value
+  // reads back the preset the live layers currently match, or "" (Custom) when none.
+  const preset = page.getByTestId("plan-layer-preset");
+  const active = (id) => ({ click: () => preset.selectOption(id) });
+  const expectPreset = (id) => expect(preset).toHaveValue(id);
   const rowEyeOff = (key) => page.getByTestId("plan-layer-row-" + key).locator("svg.lucide-eye-off");
   const rowEyeOn = (key) => page.getByTestId("plan-layer-row-" + key).locator("svg.lucide-eye");
 
   // Default: everything on → "All" is the active preset.
-  await expect(active("all")).toHaveAttribute("data-active", "true");
+  await expectPreset("all");
   await expect(rowEyeOn("zones")).toHaveCount(1);
 
   // Dimensioned: grid + dims + floors + labels + revClouds ON; zones + flowPaths + rulers OFF.
   await active("dimensioned").click();
-  await expect(active("dimensioned")).toHaveAttribute("data-active", "true");
-  await expect(active("all")).not.toHaveAttribute("data-active", "true");
+  await expectPreset("dimensioned");
+  await expect(preset).not.toHaveValue("all");
   await expect(rowEyeOn("dims")).toHaveCount(1);
   await expect(rowEyeOn("floorRegions")).toHaveCount(1);
   await expect(rowEyeOff("zones")).toHaveCount(1);
@@ -881,20 +887,20 @@ test("planning-view layer presets mirror Docs: one click sets the layer visibili
 
   // Electrical: master IT/MEP comes on (device layers shown); dims + zones off.
   await active("electrical").click();
-  await expect(active("electrical")).toHaveAttribute("data-active", "true");
+  await expectPreset("electrical");
   await expect(rowEyeOn("itmep")).toHaveCount(1);
   await expect(rowEyeOff("dims")).toHaveCount(1);
 
   // Clean: floors only — Zones/Dimensions/Grid/IT-MEP all off.
   await active("clean").click();
-  await expect(active("clean")).toHaveAttribute("data-active", "true");
+  await expectPreset("clean");
   await expect(rowEyeOn("floorRegions")).toHaveCount(1);
   await expect(rowEyeOff("itmep")).toHaveCount(1);
   await expect(rowEyeOff("grid")).toHaveCount(1);
 
   // All: restores every layer.
   await active("all").click();
-  await expect(active("all")).toHaveAttribute("data-active", "true");
+  await expectPreset("all");
   await expect(rowEyeOn("zones")).toHaveCount(1);
   await expect(rowEyeOn("itmep")).toHaveCount(1);
   await expect(rowEyeOn("grid")).toHaveCount(1);
@@ -2527,7 +2533,7 @@ const CHROME_ROOM = {
 async function splitPlanAnd3D(page) {
   await page.addInitScript((b) => localStorage.setItem("testfit-autosave", JSON.stringify(b)), CHROME_ROOM);
   await page.goto("/");
-  await page.getByRole("button", { name: "◫", exact: true }).click();
+  await page.getByRole("button", { name: "Split", exact: true }).click();
   await expect(page.getByRole("button", { name: "Clay", exact: true })).toBeVisible();
 }
 
@@ -2607,7 +2613,7 @@ test("the ceiling toggle also explains itself when the plan has no closed run of
     walls: [{ id: "w1", n1: "a", n2: "b", kind: "existing" }],
   })));
   await page.goto("/");
-  await page.getByRole("button", { name: "◫", exact: true }).click();
+  await page.getByRole("button", { name: "Split", exact: true }).click();
   await expect(page.getByRole("button", { name: "Clay", exact: true })).toBeVisible();
 
   const ceiling = page.getByTestId("pane-ceiling");

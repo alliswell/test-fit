@@ -5,7 +5,7 @@
 // when zoomed out; `T` is the CANVAS theme (mono-aware), never the chrome theme.
 import { dst } from "../../imports/model";
 
-export const FONT = "'IBM Plex Mono','SF Mono','Consolas','Monaco',monospace";
+export const FONT = "'Geist Mono',ui-monospace,'SF Mono',Menlo,monospace"; // Yardstick: dimensions are mono
 
 export function DimLbl({ cx, cy, text, angle, off = -14, color, textZoom = 1, font = FONT }) {
   let a = angle; if (a > 90) a -= 180; if (a < -90) a += 180;
