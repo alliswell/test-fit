@@ -26,6 +26,12 @@ export function FurnitureFlag({ f, flag, pxPerFoot, warn, halo = "#fff", textZoo
   );
 }
 
+// The apron's line is ONE weight and ONE dash at every clearance and in both states — it
+// used to thicken and switch to long dashes once a neighbour sat inside it, which read as
+// the stroke changing as the clearance was adjusted. The violation is carried by the
+// colour, the "· n inside" text and a stronger fill instead.
+const APRON_STROKE = 1, APRON_DASH = "2 3";
+
 export function FurnitureApron({ f, clearanceFt, hits, pxPerFoot, warn, ok, halo = "#fff", textZoom = 1 }) {
   if (!(clearanceFt > 0)) return null;
   const c = furnitureCorners(f, pxPerFoot, clearanceFt * pxPerFoot);
@@ -33,7 +39,7 @@ export function FurnitureApron({ f, clearanceFt, hits, pxPerFoot, warn, ok, halo
   const fs = 9 * textZoom;
   return (
     <g style={{ pointerEvents: "none" }} data-testid="furniture-apron" data-hits={hits}>
-      <polygon points={pts(c)} fill={col + "12"} stroke={col} strokeWidth={bad ? 1.5 : 1} strokeDasharray={bad ? "6 3" : "2 3"} />
+      <polygon points={pts(c)} fill={col + (bad ? "22" : "12")} stroke={col} strokeWidth={APRON_STROKE} strokeDasharray={APRON_DASH} />
       {tag(c[3].x + 3 * textZoom, c[3].y + fs + 2 * textZoom, fs, col, halo, `${Math.round(clearanceFt * 12)}″ clearance${bad ? ` · ${hits} inside` : ""}`)}
     </g>
   );
