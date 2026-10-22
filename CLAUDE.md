@@ -40,7 +40,37 @@ instead of growing `testfit.jsx`:**
 
 ```
 src/
-  app/                 App.tsx entry → renders <TestfitTool/>; shadcn ui/ (Tooltip…)
+  app/                 App.tsx entry → renders <TestfitTool/>; shadcn ui/ (Tooltip — restyled
+                       to the Yardstick ink plate via the .ys-tip class; it portals to <body>, so
+                       it reads the theme from the :root custom properties, not `T`)
+  styles/
+    index.css          Tailwind import + body/scrollbar + .tf-const-stroke (plan strokes)
+    yardstick.css      THE CHROME'S DESIGN SYSTEM (Yardstick — the Club Design Suite system).
+                       Plain `ys-*` classes against CSS custom properties (--paper, --ink,
+                       --ink-muted, --rule-soft, --tint, --selected, state fills, fonts) that
+                       testfit.jsx writes onto :root from the active THEMES entry (ysVars) on
+                       every theme change, so portaled surfaces (tooltips, toasts) follow it
+                       too. Rules the chrome lives by: the grid is DRAWN (1px ink hairlines,
+                       no shadows, no radii — only what you press takes 4px: `button`); colour
+                       means STATE (the one blue, `selected`, is the thing you are working on,
+                       drawn as a 2px frame; a pressed tool / chosen option stays INK — fill
+                       ink, glyph paper); two weights, 400 and 500; `plate` (12px 500 caps
+                       +14% tracking) names things, `label` (11px mono caps) keys fields,
+                       `data` (13px mono tabular) is anything lined up; hover is `tint`, focus
+                       a 2px ink ring 2px off. Components used: ys-btn (--primary/--quiet/
+                       --destroy/--icon/--sm/--block/--armed for a two-step confirm), ys-seg
+                       (segmented; max five, else a ys-select), ys-input/ys-unit/ys-select/
+                       ys-field, ys-section (<details> with a plate summary + mono end slot),
+                       ys-list/ys-row (chip · title · meta · end; aria-pressed = active tool,
+                       aria-current = selected on the canvas), ys-fact(s), ys-chip (a SQUARE
+                       swatch with an ink border — hue is never the only edge; --hidden hatches
+                       it), ys-num, ys-layers/ys-layer, ys-rail/ys-rail__group/ys-tool, ys-menu
+                       (popovers), ys-tip, ys-ibtn. The "Yardstick is square" block at the end
+                       squares EVERY non-SVG element in the app root with !important (the long
+                       tail of inline radii in Inspector/ToolOptions/DocsView) and re-rounds
+                       buttons to 4px — new chrome needs no radius of its own. Native ranges
+                       are restyled (hairline track, square paper handle) and native selects
+                       get a themed chevron per [data-theme] on the root div.
   imports/
     testfit.jsx        TestfitTool — main editor: undo/redo, persistence, plan-canvas SVG
                        composition, pane layout. (~3.9k lines) Geometry/interaction state
@@ -192,10 +222,25 @@ src/
                        floating zones with no walls on their edges render no overlay)
     *.test.js          Vitest specs for model/geometry
   constants/
-    theme.js           THEMES (light=Vellum / dark=Blueprint / print=white paper+black
-                       ink) + MONO, cadCrosshair, WALL_KINDS(_LIGHT/_PRINT/_MONO), WALL_MATERIALS(_HATCHES),
-                       DOOR_TYPE_STYLES, WINDOW_TYPE_STYLES (per-type elevation + 3D material
-                       styling; pinned by theme.test.js).
+    theme.js           THEMES (light / dark / print — the Yardstick paper-and-ink palettes:
+                       light = paper #fbf9f4 + ink #211d18, dark = the two swapped with
+                       `selected` lightened, print = white + black; state fills YS_STATE are
+                       the same in all three) + MONO, cadCrosshair, WALL_KINDS(_LIGHT/_PRINT/
+                       _MONO), WALL_MATERIALS(_HATCHES), DOOR_TYPE_STYLES, WINDOW_TYPE_STYLES
+                       (per-type elevation + 3D material styling; pinned by theme.test.js).
+                       The legacy chrome keys are kept and MAPPED (the header comment lists it):
+                       bg0/bg1 → paper, bg2 → tint, bg3 → rule-soft, border → ink, text/
+                       textBright/accent → ink, textMuted/textDim/textFaint/accentDim →
+                       ink-muted (Yardstick has ONE secondary gray — hierarchy comes from size,
+                       weight and position, never more grays), brand/selBorder → selected,
+                       brandDim → proposed navy, panelShadow → "none", delBg/delText → the
+                       `problem` fill + cream. `ysVars(T)` emits the CSS custom properties.
+                       YS_FONT_SANS (Host Grotesk) / YS_FONT_MONO (Geist Mono) are the `font`
+                       / `mono` the editor threads to components (`display` = the sans too;
+                       plate lettering is 500 caps, not a condensed cut); Dims.jsx FONT is
+                       the mono (dimensions are figures). The plan's layer colours (walls by
+                       kind, zones, IT/MEP layers, ui* tokens) are DATA and untouched; the
+                       canvas paper, grid (rule-soft) and selection (blue) follow the theme.
                        PRINT theme (themeMode "print", topbar Light/Dark/Print segmented
                        control): a printer-friendly style spanning all three surfaces at once.
                        2D → THEMES.print + WALL_KINDS_PRINT (grayscale, value+dash not hue).
@@ -402,6 +447,36 @@ src/
     ToolOptions.jsx    option panel (all `sel*` / `upd*` come in as props); ToolOptions = the
                        active placement tool's settings. Both are plain (not memo): their
                        upd* props are re-created per render by design.
+                       SIDEBAR (Yardstick): every block is a <details class="ys-section">
+                       with a plate head and a mono count in its end slot (a long palette folds
+                       away instead of pushing Layers off the bottom); catalog entries and
+                       placed items are ys-row list rows — the Furnish palette carries a real
+                       glyph of the piece (FurnitureGlyph), zone types / IT-MEP layers a colour
+                       chip; the ACTIVE placement tool is a pressed row (ink ring), the item
+                       SELECTED on the canvas a blue frame. Clearance / calibration are
+                       ys-unit fields (input + FT suffix). The LAYERS panel: a plate head with
+                       "shown/total", the preset as a ys-select (six presets is one past a
+                       segmented control's five; "Custom" appears when the live layers match
+                       none — data-testid plan-layer-preset, value = preset id or ""), rows
+                       data-testid plan-layer-row-<key> with data-visible/data-locked, a chip
+                       (hatched when hidden), name, mono count and two icon BUTTONS whose
+                       aria-labels name the action ("Hide Zones" / "Show Zones", "Lock Zones"
+                       / "Unlock Zones" — the e2e selects on those). Nothing reads by colour
+                       alone: hidden = hatched chip + muted name, locked = closed lock + muted
+                       name. Accessible names the e2e relies on: zone-type rows carry
+                       aria-label = the zone name exactly; furniture rows' text includes the
+                       piece name (getByRole button /Desk/); IT-MEP layer rows keep the layer
+                       name as exact text.
+                       TOOL RAIL: each group is a vertical segmented control (one ink frame,
+                       hairline dividers, pressed = ink fill + paper glyph); glyphs come from
+                       icons.jsx, or MarkerSymbol for the AV/IT/MEP/Security catalogs — those
+                       are drawn with the OTHER theme's colour mapping while pressed
+                       (glyphTheme) so the plan colours keep contrast on the ink fill. Every
+                       tool has an aria-label; the tooltip repeats it with a <kbd> key.
+                       INSPECTOR / TOOL OPTIONS keep their inline styles; they read the system
+                       through `S` (inp/lbl/del/det re-tokened) and `T`, panel heads are ink
+                       (an accent is never a text colour), weights are 400/500 only, and the
+                       wall-kind chooser is a ys-btn row with the kind's colour on a swatch.
     MarkerSymbol.jsx   the IT/MEP plan glyphs (see the MarkerSymbol notes under constants/)
                        + uiColor(c, themeMode, T); props T = CHROME theme, tool, mode, pxPerFoot.
     plan/              memoized layers of the plan SVG, each props-only and skipped by
@@ -413,7 +488,15 @@ src/
       PlanOpeningsLayer doors / windows / columns; OpeningSymbols.jsx holds DoorSvg/WindowSvg
       PlanMarkersLayer IT/MEP markers (+ rotate handle, NEW badge; lod 2 → dots)
       Dims.jsx         DimLbl / WallDim / DimString primitives + FONT
-    icons.jsx          tool-rail SVG icons (Wall/Window/Column…)
+    icons.jsx          the UI icon set, Yardstick construction: drawn on a 24 grid at 1.25
+                       with SQUARE caps and MITRED joins, built only from circles, squares
+                       and lines at 0/45/90, currentColor. Tools (Select, Dim, Label,
+                       RevCloud, FlowPath, Floor, Wall, RectRoom, Door, Window, Column,
+                       Calibrate, Outlet, Lighting) + chrome (Chevron, Undo/Redo, Gear,
+                       Single/Split/Quad layout, Plus, Close, Pencil…). lucide glyphs still
+                       used (Eye/EyeOff/Lock/Unlock, PanelLeft, Undo2/Redo2) take the same
+                       rule via props: strokeWidth 1.25 absoluteStrokeWidth, strokeLinecap
+                       "square", strokeLinejoin "miter" (the ICON const in each component).
     Furniture2D.jsx    one placed furniture piece as a top-down parametric symbol (props-
                        only). Draws the base footprint (rect or ellipse) + the catalog
                        draw() details, translated to (x,y) and rotated by angle; takes a `tt`
@@ -436,6 +519,10 @@ src/
                        its canvas+plane expand by spec.padFt so table chairs aren't clipped) —
                        a future pass could extrude these (the height scale handle waits on that).
     ui.jsx             SliderInput, LabelAnnotation, AlignBtn
+                       Furniture2D.jsx also exports FurnitureGlyph({type,size,color}): the
+                       catalog draw() primitives scaled to fit a `size` box (padFt included so
+                       a table's chairs show), one ink, non-scaling stroke — the Furnish
+                       palette's thumbnails.
     ElevationView.jsx  one elevation pane (own pan/zoom camera + dim/label/revcloud tools);
                        doors/windows/columns flagged `isNew` render a brand "NEW" tag +
                        heavier outline (as-built items read plainly). DEMO walls render a red
@@ -468,7 +555,17 @@ src/
                        instead sits to its left, same row.
     ZoneLibraryModal.jsx  zone catalog editor
     TopBar.jsx         props-only top chrome (wordmark, snapshot switcher, stage dropdown,
-                       undo/redo, save/load/new, layout switcher, theme + settings)
+                       undo/redo, save/load/new, layout switcher, theme + settings). A 52px
+                       bar of 40px Yardstick controls: ink-bordered ys-btn in plate lettering,
+                       quiet icon buttons for undo/redo/panel/settings, ys-seg for Light/Dark/
+                       Print (text), Mono (split: toggle + skin chevron) and the layout
+                       (aria-labels Single/Split/Quad — the e2e clicks by those names); the
+                       stage shows as an inverted number in a square (ys-num). Menus are
+                       ys-menu popovers (paper, 1px ink, no shadow; items are 40px buttons
+                       with a tint hover). NO window.confirm anywhere — the artifact viewer
+                       swallows native dialogs — so New, Delete project, Delete snapshot and
+                       "switch snapshot with unsaved changes" are all two-step inline confirms
+                       (the armed button goes ys-btn--armed, problem-red, with its question).
     DocsView.jsx       props-only Docs stage (workflow stage 5): deck strip + printable
                        sheet (title block, slide-local notes) + inspector; also exports
                        PrintDeck (the @media print root). Model content arrives via the
@@ -496,7 +593,7 @@ src/
                        userZoom (chip buttons or ctrl/⌘+wheel — native non-passive listener;
                        plain wheel scrolls the zoomed sheet, crop-edit wheel stops
                        propagation so it never double-zooms).
-                       Slides are always Vellum (light), regardless of the app's dark/light
+                       Slides are always the light (paper) theme, regardless of the app's dark/light
                        theme — dark colors would print wrong. Three separate T-shadows make
                        this hold everywhere a slide renders: renderPlanCanvas (testfit.jsx)
                        shadows T/wallKinds to THEMES.light only when interactive:false (the
@@ -826,6 +923,27 @@ e2e/docs.spec.js       Playwright Docs-stage tests (save view → slide, live re
   captureModel, applyProjectData) with a Sidebar control in the Furnish section. NOT ported:
   chair-to-table docking — Test Fit's tables carry their own chairs, so counts, not
   arrangement, is the answer here. e2e: features.spec.js "furnish checks".
+- **Touch and pen drive the plan through the mouse handlers** (testfit.jsx, "Touch & pen
+  input", + the pure `utils/touch.js`). The canvas handlers in useCanvasEvents read clientX/Y,
+  button, detail and the modifier keys — a finger never produced those (touch only yields
+  compatibility mouse events for a tap, never a drag), so a phone could tap but not pan,
+  drag or draw. The live svg now also binds onPointerDown/Move/Up/Cancel, which return early
+  for `pointerType === "mouse"` (the desktop path is untouched) and otherwise feed
+  onDown/onMove/onUp a synthetic mouse-shaped event. Meaning of a gesture: one finger on an
+  object = the ordinary drag/draw/place; one finger on EMPTY paper with Select = PAN (onDown
+  is handed button 1, the middle-drag path — a finger has no marquee; a tap that never moved
+  clears the selection like a click on paper); two fingers = pinch zoom about the midpoint +
+  pan (pinchStep/anchorViewOff, the same anchoring as wheel zoom, nested setZoom/setViewOff
+  updaters so fast moves never compound on a stale render); double-tap is reconstructed by
+  tapCount because PointerEvent.detail is always 0. preventDefault on pointerdown suppresses
+  the compatibility mouse events (no double onDown) and `touchAction: "none"` on the svg
+  stops the browser scrolling/zooming the page. Rotate/scale handles (furniture, marker)
+  claim a touch via `grabTouch` (passed to PlanMarkersLayer as `onTouchGrab`) from their own
+  onPointerDown, so a finger on a handle rotates instead of dragging the piece under it.
+  Not done: edge-resize of zones/floors (it keys off hover state a finger never sets).
+  Layout: the option panel becomes a bottom sheet under 640px (`.tf-det`), and
+  `@media (pointer: coarse)` grows rail tools / icon buttons to Yardstick's 44px. e2e:
+  features.spec.js "touch" (CDP Input.dispatchTouchEvent — Playwright's touchscreen only taps).
 - **Selection is mode-scoped**: you can only select items that belong to the current
   mode's tool set. hitTest branches are already mode-gated (build/zone/itmep/furnish),
   but floorRegions + flowPaths ALSO carry per-element `<g onClick>` handlers (a second,

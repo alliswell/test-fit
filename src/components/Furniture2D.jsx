@@ -55,3 +55,35 @@ export default function Furniture2D({ f, pxPerFoot, sel = false, tt, tier = null
     </g>
   );
 }
+
+// A catalog piece as a thumbnail for the Furnish palette: the same draw() primitives,
+// scaled to fit a `size`px box (padFt included, so a table's chairs show), stroked in one
+// ink at a constant screen weight. Pure presentation — no selection, no hit target.
+export function FurnitureGlyph({ type, size = 36, color = "currentColor" }) {
+  const spec = FURNITURE_CATALOG[type];
+  if (!spec) return null;
+  const pad = spec.padFt || 0;
+  const extentFt = Math.max(spec.w, spec.d) + pad * 2;
+  const ppf = (size - 4) / extentFt;            // px per foot that fits the longest side
+  const W = spec.w * ppf, D = spec.d * ppf;
+  const prims = spec.draw(W, D, spec.w, spec.d) || [];
+  const common = { stroke: color, strokeWidth: 1.25, fill: "none", vectorEffect: "non-scaling-stroke", strokeLinejoin: "miter", strokeLinecap: "square" };
+  const shape = (p, i) => {
+    switch (p.t) {
+      case "rect": return <rect key={i} {...common} x={p.x} y={p.y} width={p.w} height={p.h} />;
+      case "circle": return <circle key={i} {...common} cx={p.cx} cy={p.cy} r={p.r} />;
+      case "ellipse": return <ellipse key={i} {...common} cx={p.cx} cy={p.cy} rx={p.rx} ry={p.ry} />;
+      case "line": return <line key={i} {...common} x1={p.x1} y1={p.y1} x2={p.x2} y2={p.y2} />;
+      case "path": return <path key={i} {...common} d={p.d} />;
+      default: return null;
+    }
+  };
+  return (
+    <svg width={size} height={size} viewBox={`${-size / 2} ${-size / 2} ${size} ${size}`} aria-hidden="true" style={{ display: "block", overflow: "visible" }}>
+      {spec.round
+        ? <ellipse {...common} cx={0} cy={0} rx={W / 2} ry={D / 2} />
+        : <rect {...common} x={-W / 2} y={-D / 2} width={W} height={D} />}
+      {prims.map(shape)}
+    </svg>
+  );
+}

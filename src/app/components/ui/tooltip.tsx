@@ -3,6 +3,10 @@
 import * as React from "react";
 import * as TooltipPrimitive from "@radix-ui/react-tooltip";
 
+// Yardstick tooltip: an ink plate with paper lettering, square, no shadow. It portals to
+// <body>, outside the app root, so it reads the theme through the :root custom properties
+// (constants/theme.js ysVars) rather than the `T` object. Styling lives in
+// styles/yardstick.css (.ys-tip) so a <kbd> inside can be styled too.
 function TooltipProvider({
   delayDuration = 400,
   ...props
@@ -31,6 +35,7 @@ function TooltipTrigger({
 function TooltipContent({
   sideOffset = 6,
   children,
+  className,
   style,
   ...props
 }: React.ComponentProps<typeof TooltipPrimitive.Content>) {
@@ -39,35 +44,12 @@ function TooltipContent({
       <TooltipPrimitive.Content
         data-slot="tooltip-content"
         sideOffset={sideOffset}
-        style={{
-          zIndex: 9999,
-          background: "rgba(28, 26, 22, 0.95)",
-          color: "#E8E0D0",
-          fontSize: "11px",
-          fontFamily: "inherit",
-          fontWeight: 500,
-          lineHeight: 1.4,
-          padding: "5px 10px",
-          borderRadius: "6px",
-          border: "1px solid rgba(255,255,255,0.08)",
-          boxShadow: "0 4px 16px rgba(0,0,0,0.4)",
-          pointerEvents: "none",
-          userSelect: "none",
-          whiteSpace: "nowrap",
-          backdropFilter: "blur(8px)",
-          ...style,
-        }}
+        className={["ys-tip", className].filter(Boolean).join(" ")}
+        style={style}
         {...props}
       >
         {children}
-        <TooltipPrimitive.Arrow
-          style={{
-            fill: "rgba(28, 26, 22, 0.95)",
-            filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.3))",
-          }}
-          width={10}
-          height={5}
-        />
+        <TooltipPrimitive.Arrow style={{ fill: "var(--ink, #211d18)" }} width={10} height={5} />
       </TooltipPrimitive.Content>
     </TooltipPrimitive.Portal>
   );

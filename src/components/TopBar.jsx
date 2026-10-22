@@ -1,11 +1,27 @@
 // ─── Top bar (chrome) ────────────────────────────────────────────────────────
 // Props-only component extracted from testfit.jsx: wordmark, snapshot switcher,
 // stage dropdown, undo/redo, save/load/new, layout switcher, theme + settings.
+//
+// YARDSTICK: a 52px toolbar of 40px controls — ink-bordered buttons in plate lettering,
+// quiet (borderless) icon buttons for undo/redo/panel/settings, segmented controls for
+// Light/Dark/Print, Mono and the layout, and the stage shown as an inverted number in a
+// square. Menus are paper panels with a 1px ink frame, no shadow, no blur, rows 40px with
+// a tint hover (styles/yardstick.css .ys-menu). Nothing here uses window.confirm — the
+// artifact viewer swallows native dialogs — so every destructive step is a two-step inline
+// confirm: New, Delete project, Delete snapshot and "switch away from unsaved changes".
 import { useState, useEffect, useRef } from "react";
 import { Tooltip, TooltipTrigger, TooltipContent } from "../app/components/ui/tooltip";
-import { ChevronDown, PanelLeft, PanelLeftClose, Plus, Redo2, RotateCcw, Settings, Undo2, X } from "lucide-react";
+import { PanelLeft, PanelLeftClose, Redo2, Undo2 } from "lucide-react";
+import { ChevronIcon, CloseIcon, GearIcon, PencilIcon, PlusIcon, QuadIcon, SingleIcon, SplitIcon } from "./icons";
 import MonoSkinPanel from "./MonoSkinPanel";
 import { historySummary, relativeTime } from "../utils/autosaveHistory";
+
+const ICON = { size: 18, strokeWidth: 1.25, absoluteStrokeWidth: true, strokeLinecap: "square", strokeLinejoin: "miter" };
+const Sep = () => <div style={{ width: 1, height: 24, background: "var(--rule-soft)", margin: "0 2px", flex: "none" }} aria-hidden="true" />;
+// Popovers hang 4px under their trigger; right-anchored ones keep their right edge on screen.
+const menuPos = (rect, right = false) => right
+  ? { top: (rect?.bottom ?? 52) + 4, right: Math.max(8, window.innerWidth - (rect?.right ?? 0)) }
+  : { top: (rect?.bottom ?? 52) + 4, left: rect?.left ?? 12 };
 
 export default function TopBar({
   $, MODES, S, T, activeSnapshotId, canRedo, canUndo, cost, deleteSnapshot, display, exportPdf, exportPng, exportSvg, exportDxf, exportDxfSlide = null, activeSlideName = "", exportProject, font, readAutosaveHistory, restoreAutosave, importProject, projects = [], projectsKind = null, projectsCanWrite = true, projectsBusy = false, saveToProjects, openProject, deleteProject, renameProject, activeProjectId = null, projectName = "", liveDirty, loadRef, markers, mode, modeMenuRect, newProject, newSnapMode, redo, renameSnapshot, renamingSnapId, saveMenuRect, setMode, setModeMenuRect, setNewSnapMode, setRenamingSnapId, setSaveMenuRect, setShowModeMenu, setShowSaveMenu, setShowSettings, setShowSnapMenu, setSidebarOpen, setSnapDraftName, setSnapMenuRect, setT, setMonoDraw, monoDraw, monoSkin, setMonoSkin, monoTiers = [], setThemeMode, showModeMenu, showSaveMenu, showSnapMenu, sidebarOpen, slidesCount = 0, snapDraftName, snapMenuRect, snapshot, snapshots, switchSnapshot, takeSnapshot, themeMode, undo, updateSnapshot, walls, zones, furnitureCount = 0, panes, setLayout, setSelType, setSelectedId, setSelectedIds,
@@ -39,141 +55,126 @@ export default function TopBar({
   const activeProject = activeProjectId ? projects.find(p => p.id === activeProjectId) || null : null;
   const [loadRect, setLoadRect] = useState(null);
   const [history, setHistory] = useState([]);
+  // Snapshot menu two-step confirms (replacing window.confirm): which row is armed.
+  const [confirmSnapDel, setConfirmSnapDel] = useState(null);
+  const [confirmSwitch, setConfirmSwitch] = useState(null);
+  const closeSnapMenu = () => { setShowSnapMenu(false); setNewSnapMode(false); setRenamingSnapId(null); setConfirmSnapDel(null); setConfirmSwitch(null); };
   return (
-      <div style={S.bar}>
-        {/* Wordmark — simple monospace logotype */}
-        <div style={{ display: "flex", alignItems: "center", padding: "0 14px", flexShrink: 0, alignSelf: "stretch", borderRight: "1px solid " + T.border }}>
-          <span style={{ fontFamily: font, fontWeight: 600, fontSize: 14, letterSpacing: "0.02em", color: T.textBright, whiteSpace: "nowrap" }}>
-            TestFit <span style={{ color: T.textMuted }}>v2</span>
-          </span>
+      <div style={S.bar} className="ys-bar">
+        {/* Wordmark — plate lettering in its own cell */}
+        <div className="ys-plate" style={{ display: "flex", alignItems: "center", gap: 8, padding: "0 16px", flexShrink: 0, alignSelf: "stretch", borderRight: "1px solid " + T.border, whiteSpace: "nowrap" }}>
+          Test Fit <span className="ys-label">v2</span>
         </div>
         <Tooltip>
           <TooltipTrigger asChild>
-            <button style={{ ...S.smBtn, padding: "5px 6px", marginLeft: 8 }} onClick={() => setSidebarOpen(v => !v)}>
-              {sidebarOpen ? <PanelLeftClose size={15} /> : <PanelLeft size={15} />}
+            <button type="button" className="ys-btn ys-btn--quiet ys-btn--icon" style={{ marginLeft: 4 }} onClick={() => setSidebarOpen(v => !v)} aria-label={sidebarOpen ? "Hide panel" : "Show panel"}>
+              {sidebarOpen ? <PanelLeftClose {...ICON} /> : <PanelLeft {...ICON} />}
             </button>
           </TooltipTrigger>
           <TooltipContent>{sidebarOpen ? "Hide panel" : "Show panel"}</TooltipContent>
         </Tooltip>
-        <div style={{ width: 1, height: 20, background: T.border, margin: "0 3px" }} />
+        <Sep />
         {/* Snapshot switcher */}
         {(() => {
           const activeSnap = snapshots.find(s => s.id === activeSnapshotId);
           const dirty = liveDirty();
-          const ac = T.accent;
           const openSwitcher = e => {
             setSnapMenuRect(e.currentTarget.getBoundingClientRect());
-            setShowSnapMenu(v => !v); setNewSnapMode(false); setRenamingSnapId(null);
+            setShowSnapMenu(v => !v); setNewSnapMode(false); setRenamingSnapId(null); setConfirmSnapDel(null); setConfirmSwitch(null);
           };
-          return <div style={{ position: "relative", marginRight: 4 }}>
-            <button
-              onClick={openSwitcher}
-              title="Snapshots"
-              style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 10px", maxWidth: 200, background: showSnapMenu ? ac + "28" : ac + "14", border: "1px solid " + ac + (showSnapMenu ? "88" : "40"), borderRadius: 6, cursor: "pointer", color: ac, fontWeight: 600, fontSize: 10, fontFamily: "inherit", transition: "all 0.12s ease", height: 28 }}
-            >
-              <span style={{ width: 7, height: 7, borderRadius: "50%", background: dirty ? ac : "transparent", border: "1.5px solid " + ac, flexShrink: 0 }} />
-              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{activeSnap ? activeSnap.name : "Draft"}{dirty && activeSnap ? " •" : ""}</span>
-              <ChevronDown size={10} style={{ opacity: 0.7, flexShrink: 0, transition: "transform 0.15s", transform: showSnapMenu ? "rotate(180deg)" : "none" }} />
+          return <div style={{ position: "relative" }}>
+            <button type="button" className="ys-btn" onClick={openSwitcher} title="Snapshots" aria-haspopup="menu" aria-expanded={showSnapMenu} style={{ maxWidth: 220 }}>
+              {/* a square chip: filled when the live state has drifted from the snapshot */}
+              <span className="ys-chip ys-chip--sm" aria-hidden="true" style={{ background: dirty ? "var(--ink)" : "transparent" }} />
+              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{activeSnap ? activeSnap.name : "Draft"}{dirty && activeSnap ? " ·" : ""}</span>
+              <ChevronIcon open={showSnapMenu} />
             </button>
             {showSnapMenu && <>
-              <div style={{ position: "fixed", inset: 0, zIndex: 999 }} onClick={() => { setShowSnapMenu(false); setNewSnapMode(false); setRenamingSnapId(null); }} />
-              <div style={{ position: "fixed", top: (snapMenuRect?.bottom ?? 44) + 6, left: snapMenuRect?.left ?? 12, background: T.panelBg, border: "1px solid " + T.border, borderRadius: 8, padding: 6, zIndex: 1000, minWidth: 230, maxWidth: 300, boxShadow: T.panelShadow, backdropFilter: "blur(16px)" }}>
-                <div style={{ fontSize: 8, color: T.textDim, textTransform: "uppercase", letterSpacing: "0.08em", padding: "4px 8px 6px", fontWeight: 600 }}>Snapshots</div>
-                {snapshots.length === 0 && <div style={{ padding: "8px 10px", fontSize: 10, color: T.textFaint, fontStyle: "italic" }}>None yet — save one below.</div>}
+              <div className="ys-backdrop" onClick={closeSnapMenu} />
+              <div className="ys-menu" style={{ ...menuPos(snapMenuRect), minWidth: 260 }}>
+                <div className="ys-menu__head"><span>Snapshots</span><span className="ys-data">{snapshots.length}</span></div>
+                {snapshots.length === 0 && <div className="ys-menu__note">None yet — save one below.</div>}
                 {snapshots.map(s => {
                   const isActive = s.id === activeSnapshotId;
-                  return <div key={s.id}
-                    style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 8px", borderRadius: 6, background: isActive ? ac + "18" : "transparent", marginBottom: 2, cursor: "pointer", transition: "background 0.12s" }}
-                    onMouseEnter={e => { if (!isActive) e.currentTarget.style.background = T.border + "44"; }}
-                    onMouseLeave={e => { if (!isActive) e.currentTarget.style.background = "transparent"; }}>
-                    <span style={{ width: 8, height: 8, borderRadius: "50%", background: isActive ? ac : T.textFaint, flexShrink: 0 }} />
+                  const armedSwitch = confirmSwitch === s.id;
+                  const armedDel = confirmSnapDel === s.id;
+                  return <div key={s.id} className="ys-menu__item" aria-current={isActive ? "true" : undefined}>
+                    <span className={"ys-num" + (isActive ? "" : " ys-num--outline")} aria-hidden="true">{snapshots.indexOf(s) + 1}</span>
                     {renamingSnapId === s.id ? (
-                      <input autoFocus defaultValue={s.name}
+                      <input autoFocus defaultValue={s.name} className="ys-input" style={{ flex: 1, minHeight: 32 }}
                         onClick={e => e.stopPropagation()}
                         onBlur={e => { renameSnapshot(s.id, e.target.value); setRenamingSnapId(null); }}
-                        onKeyDown={e => { if (e.key === "Enter") { renameSnapshot(s.id, e.target.value); setRenamingSnapId(null); } if (e.key === "Escape") setRenamingSnapId(null); }}
-                        style={{ flex: 1, background: T.bg2, border: "1px solid " + ac, borderRadius: 4, color: T.textBright, fontSize: 10, fontFamily: "inherit", padding: "2px 6px", outline: "none" }} />
+                        onKeyDown={e => { if (e.key === "Enter") { renameSnapshot(s.id, e.target.value); setRenamingSnapId(null); } if (e.key === "Escape") setRenamingSnapId(null); }} />
                     ) : (
-                      <span style={{ flex: 1, fontSize: 10, color: isActive ? ac : T.textMuted, fontWeight: isActive ? 600 : 400, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
-                        onClick={() => { if (!isActive) { if (liveDirty() && !window.confirm("Switch snapshots? Unsaved changes to the current state will be lost.")) return; } switchSnapshot(s.id); setShowSnapMenu(false); }}
+                      <span className="ys-menu__main" style={{ cursor: isActive ? "default" : "pointer" }}
+                        onClick={() => {
+                          if (isActive) return;
+                          if (liveDirty() && !armedSwitch) { setConfirmSwitch(s.id); setConfirmSnapDel(null); return; }
+                          switchSnapshot(s.id); closeSnapMenu();
+                        }}
                         onDoubleClick={() => setRenamingSnapId(s.id)}
-                        title="Click to switch · double-click to rename">{s.name}</span>
+                        title="Click to switch · double-click to rename">
+                        <span className="ys-menu__title">{s.name}</span>
+                        {armedSwitch && <span className="ys-menu__sub">Unsaved changes will be lost — click again to switch</span>}
+                      </span>
                     )}
-                    {isActive && <span style={{ fontSize: 8, color: ac, opacity: 0.75 }}>active</span>}
-                    <button onClick={e => { e.stopPropagation(); if (window.confirm(`Delete snapshot "${s.name}"?`)) deleteSnapshot(s.id); }}
-                      style={{ background: "none", border: "none", cursor: "pointer", color: T.textFaint, padding: 2, display: "flex" }}><X size={11} /></button>
+                    {isActive && <span className="ys-menu__end">active</span>}
+                    {armedDel
+                      ? <button type="button" className="ys-btn ys-btn--sm ys-btn--armed" onClick={e => { e.stopPropagation(); setConfirmSnapDel(null); deleteSnapshot(s.id); }}>Delete?</button>
+                      : <button type="button" className="ys-ibtn" aria-label={`Delete snapshot ${s.name}`} onClick={e => { e.stopPropagation(); setConfirmSnapDel(s.id); setConfirmSwitch(null); }}><CloseIcon size={16} /></button>}
                   </div>;
                 })}
-                <div style={{ height: 1, background: T.border, margin: "6px 4px" }} />
                 {activeSnap && (
-                  <div onClick={() => { updateSnapshot(activeSnap.id); setShowSnapMenu(false); }}
-                    style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 8px", borderRadius: 6, cursor: "pointer", fontSize: 10, color: dirty ? ac : T.textMuted, fontWeight: 500 }}
-                    onMouseEnter={e => e.currentTarget.style.background = T.border + "44"}
-                    onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
-                    <RotateCcw size={12} /> Update "{activeSnap.name}"
-                  </div>
+                  <button type="button" className="ys-menu__item" onClick={() => { updateSnapshot(activeSnap.id); closeSnapMenu(); }}>
+                    <span className="ys-menu__main"><span className="ys-menu__title">Update "{activeSnap.name}"</span>{dirty && <span className="ys-menu__sub">Overwrite it with the live state</span>}</span>
+                  </button>
                 )}
                 {newSnapMode ? (
-                  <div style={{ display: "flex", gap: 6, padding: "6px 8px" }} onClick={e => e.stopPropagation()}>
-                    <input autoFocus placeholder="Snapshot name…" value={snapDraftName}
+                  <div className="ys-menu__pad" style={{ flexDirection: "row", borderBottom: 0 }} onClick={e => e.stopPropagation()}>
+                    <input autoFocus placeholder="Snapshot name" value={snapDraftName} className="ys-input" style={{ flex: 1 }}
                       onChange={e => setSnapDraftName(e.target.value)}
-                      onKeyDown={e => { if (e.key === "Enter") { takeSnapshot(snapDraftName); setSnapDraftName(""); setNewSnapMode(false); setShowSnapMenu(false); } if (e.key === "Escape") { setNewSnapMode(false); setSnapDraftName(""); } }}
-                      style={{ flex: 1, background: T.bg2, border: "1px solid " + ac, borderRadius: 5, color: T.textBright, fontSize: 10, fontFamily: "inherit", padding: "5px 8px", outline: "none" }} />
-                    <button onClick={() => { takeSnapshot(snapDraftName); setSnapDraftName(""); setNewSnapMode(false); setShowSnapMenu(false); }}
-                      style={{ padding: "4px 10px", background: ac + "22", border: "1px solid " + ac + "55", borderRadius: 5, color: ac, fontSize: 10, cursor: "pointer", fontFamily: "inherit", fontWeight: 500 }}>Save</button>
+                      onKeyDown={e => { if (e.key === "Enter") { takeSnapshot(snapDraftName); setSnapDraftName(""); closeSnapMenu(); } if (e.key === "Escape") { setNewSnapMode(false); setSnapDraftName(""); } }} />
+                    <button type="button" className="ys-btn ys-btn--primary" onClick={() => { takeSnapshot(snapDraftName); setSnapDraftName(""); closeSnapMenu(); }}>Save</button>
                   </div>
                 ) : (
-                  <div onClick={() => { setNewSnapMode(true); setSnapDraftName(""); }}
-                    style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 8px", borderRadius: 6, cursor: "pointer", fontSize: 10, color: T.textMuted, fontWeight: 500 }}
-                    onMouseEnter={e => e.currentTarget.style.background = T.border + "44"}
-                    onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
-                    <Plus size={12} /> Save as new snapshot
-                  </div>
+                  <button type="button" className="ys-menu__item" onClick={() => { setNewSnapMode(true); setSnapDraftName(""); }}>
+                    <PlusIcon size={16} /> <span className="ys-menu__title">Save as new snapshot</span>
+                  </button>
                 )}
               </div>
             </>}
           </div>;
         })()}
-        <div style={{ width: 1, height: 20, background: T.border, margin: "0 6px 0 2px" }} />
+        <Sep />
         {/* Workflow-stage dropdown — same trigger+popover pattern as the snapshot switcher above */}
         {(() => {
           const cur = MODES[mode];
           // Live per-stage content counts so the menu shows which stages have work in them
           const n = (c, w) => `${c} ${w}${c === 1 ? "" : "s"}`;
           const HINTS = { build: n(walls.length, "wall"), itmep: n(markers.length, "marker"), zone: n(zones.length, "zone"), furnish: n(furnitureCount, "piece"), budget: $(cost.total), docs: n(slidesCount, "slide") };
-          const badge = (m, active) => (
-            <span style={{ width: 16, height: 16, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, fontSize: 9, fontWeight: 700, fontFamily: "inherit",
-              background: active ? m.color : "transparent", color: active ? T.bg1 : T.textMuted, border: active ? "none" : "1.5px solid " + T.textFaint }}>{m.num}</span>
-          );
           return <div style={{ position: "relative" }}>
-            <button
+            <button type="button" className="ys-btn"
               onClick={e => { setModeMenuRect(e.currentTarget.getBoundingClientRect()); setShowModeMenu(v => !v); }}
-              title="Workflow stage (1–6)"
-              style={{ display: "flex", alignItems: "center", gap: 7, padding: "4px 10px", background: cur.color + (showModeMenu ? "30" : "1C"), border: "1px solid " + cur.color + (showModeMenu ? "88" : "55"), borderRadius: 6, cursor: "pointer", color: T.textBright, fontWeight: 600, fontSize: 11, fontFamily: "inherit", transition: "all 0.12s ease", height: 28 }}
-            >
-              {badge(cur, true)}
+              title="Workflow stage (1–6)" aria-label={`Stage ${cur.num} of 6: ${cur.name}`} aria-haspopup="menu" aria-expanded={showModeMenu}>
+              <span className="ys-num" aria-hidden="true">{cur.num}</span>
               <span>{cur.name}</span>
-              <ChevronDown size={10} style={{ opacity: 0.7, flexShrink: 0, transition: "transform 0.15s", transform: showModeMenu ? "rotate(180deg)" : "none" }} />
+              <ChevronIcon open={showModeMenu} />
             </button>
             {showModeMenu && <>
-              <div style={{ position: "fixed", inset: 0, zIndex: 999 }} onClick={() => setShowModeMenu(false)} />
-              <div style={{ position: "fixed", top: (modeMenuRect?.bottom ?? 44) + 6, left: modeMenuRect?.left ?? 12, background: T.panelBg, border: "1px solid " + T.border, borderRadius: 8, padding: 6, zIndex: 1000, minWidth: 250, boxShadow: T.panelShadow, backdropFilter: "blur(16px)" }}>
-                <div style={{ fontSize: 8, color: T.textDim, textTransform: "uppercase", letterSpacing: "0.08em", padding: "4px 8px 6px", fontWeight: 600 }}>Workflow Stage</div>
+              <div className="ys-backdrop" onClick={() => setShowModeMenu(false)} />
+              <div className="ys-menu" style={{ ...menuPos(modeMenuRect), minWidth: 300 }}>
+                <div className="ys-menu__head"><span>Workflow stage</span><span className="ys-data">1–6</span></div>
                 {Object.entries(MODES).map(([k, m]) => {
                   const isActive = k === mode;
-                  return <div key={k} role="button" aria-label={m.name}
-                    style={{ display: "flex", alignItems: "center", gap: 9, padding: "7px 8px", borderRadius: 6, background: isActive ? m.color + "18" : "transparent", marginBottom: 2, cursor: "pointer", transition: "background 0.12s" }}
-                    onMouseEnter={e => { if (!isActive) e.currentTarget.style.background = T.border + "44"; }}
-                    onMouseLeave={e => { if (!isActive) e.currentTarget.style.background = "transparent"; }}
+                  return <button type="button" key={k} className="ys-menu__item" aria-label={m.name} aria-current={isActive ? "true" : undefined}
                     onClick={() => { setMode(k); setT("select"); setSelectedId(null); setSelType(null); setSelectedIds([]); setShowModeMenu(false); }}>
-                    {badge(m, isActive)}
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontSize: 11, fontWeight: isActive ? 600 : 500, color: isActive ? T.textBright : T.textMuted }}>{m.name}</div>
-                      <div style={{ fontSize: 9, color: T.textDim, marginTop: 1 }}>{m.desc}</div>
-                    </div>
-                    <span style={{ fontSize: 9, color: T.textDim, flexShrink: 0 }}>{HINTS[k]}</span>
-                    <span style={{ fontSize: 8, color: T.textFaint, border: "1px solid " + T.border, borderRadius: 3, padding: "1px 5px", flexShrink: 0 }}>{m.num}</span>
-                  </div>;
+                    <span className={"ys-num" + (isActive ? "" : " ys-num--outline")} aria-hidden="true">{m.num}</span>
+                    <span className="ys-menu__main">
+                      <span className="ys-menu__title">{m.name}</span>
+                      <span className="ys-menu__sub">{m.desc}</span>
+                    </span>
+                    <span className="ys-menu__end">{HINTS[k]}</span>
+                  </button>;
                 })}
               </div>
             </>}
@@ -182,186 +183,163 @@ export default function TopBar({
         <div style={{ flex: 1 }} />
         <Tooltip>
           <TooltipTrigger asChild>
-            <button style={{ ...S.smBtn, opacity: canUndo ? 1 : 0.35, cursor: canUndo ? "pointer" : "default" }} onClick={undo} disabled={!canUndo}><Undo2 size={13} /></button>
+            <button type="button" className="ys-btn ys-btn--quiet ys-btn--icon" onClick={undo} disabled={!canUndo} aria-label="Undo"><Undo2 {...ICON} /></button>
           </TooltipTrigger>
-          <TooltipContent>Undo (⌘Z)</TooltipContent>
+          <TooltipContent>Undo <kbd>⌘Z</kbd></TooltipContent>
         </Tooltip>
         <Tooltip>
           <TooltipTrigger asChild>
-            <button style={{ ...S.smBtn, opacity: canRedo ? 1 : 0.35, cursor: canRedo ? "pointer" : "default" }} onClick={redo} disabled={!canRedo}><Redo2 size={13} /></button>
+            <button type="button" className="ys-btn ys-btn--quiet ys-btn--icon" onClick={redo} disabled={!canRedo} aria-label="Redo"><Redo2 {...ICON} /></button>
           </TooltipTrigger>
-          <TooltipContent>Redo (⌘⇧Z / ⌘Y)</TooltipContent>
+          <TooltipContent>Redo <kbd>⌘⇧Z</kbd></TooltipContent>
         </Tooltip>
-        <div style={{ width: 1, height: 20, background: T.border, margin: "0 3px" }} />
-        {/* Theme: Vellum (light) · Blueprint (dark) · Print (white paper / black ink,
-            for exporting and printing). Print restyles the 2D canvas, docs sheets, and
-            the 3D view together. */}
-        <div style={{ display: "flex", gap: 2, alignItems: "center", background: T.bg2, borderRadius: 6, padding: 2 }}>
+        <Sep />
+        {/* Theme: Light · Dark · Print (white paper / black ink, for exporting and
+            printing). Print restyles the 2D canvas, docs sheets, and the 3D view together. */}
+        <div className="ys-seg" role="group" aria-label="Theme">
           {[["light", "Light"], ["dark", "Dark"], ["print", "Print"]].map(([m, label]) => (
-            <button key={m} onClick={() => setThemeMode(m)}
-              style={{ padding: "3px 8px", borderRadius: 4, border: "none", cursor: "pointer", fontFamily: "inherit",
-                fontSize: 10, fontWeight: themeMode === m ? 600 : 500,
-                background: themeMode === m ? T.brand + "22" : "transparent",
-                color: themeMode === m ? T.textBright : T.textMuted,
-                outline: themeMode === m ? "1px solid " + T.brand : "none" }}>{label}</button>
+            <button type="button" key={m} onClick={() => setThemeMode(m)} aria-pressed={themeMode === m}>{label}</button>
           ))}
         </div>
         {/* Mono is a DRAWING style, not a UI theme — it restyles the canvas (plan,
             elevation, isometric, 3D, sheets) and leaves the chrome on Light/Dark/Print.
             Split button: left toggles it, the chevron opens the skin options popover. */}
-        <div style={{ display: "flex", marginLeft: 4, position: "relative" }}>
+        <div className="ys-seg" style={{ marginLeft: 4, position: "relative" }}>
           <Tooltip><TooltipTrigger asChild>
-            <button data-testid="mono-toggle" data-mono={monoDraw ? "on" : "off"} onClick={() => setMonoDraw(v => !v)}
-              style={{ ...S.smBtn, border: undefined, borderStyle: "solid",
-                borderWidth: "1.5px 0 1.5px 1.5px", borderColor: monoDraw ? T.brand : T.bg3,
-                borderRadius: "5px 0 0 5px",
-                background: monoDraw ? T.brand + "22" : undefined, color: monoDraw ? T.textBright : undefined,
-                fontWeight: monoDraw ? 600 : undefined }}>Mono</button>
+            <button type="button" data-testid="mono-toggle" data-mono={monoDraw ? "on" : "off"} aria-pressed={monoDraw} onClick={() => setMonoDraw(v => !v)}>Mono</button>
           </TooltipTrigger><TooltipContent>Monochrome drawing style (canvas only)</TooltipContent></Tooltip>
-          <button data-testid="mono-menu" aria-label="Mono skin options"
-            onClick={e => { setMonoRect(e.currentTarget.getBoundingClientRect()); setShowMono(v => !v); }}
-            style={{ ...S.smBtn, border: undefined, borderStyle: "solid", borderWidth: "1.5px",
-              borderColor: monoDraw ? T.brand : T.bg3,
-              borderRadius: "0 5px 5px 0", padding: "5px 5px", display: "flex", alignItems: "center",
-              background: monoDraw ? T.brand + "22" : (showMono ? T.bg3 + "80" : undefined),
-              color: monoDraw ? T.textBright : undefined }}>
-            <ChevronDown size={11} style={{ opacity: 0.7, transition: "transform 0.15s", transform: showMono ? "rotate(180deg)" : "none" }} />
+          <button type="button" data-testid="mono-menu" aria-label="Mono skin options" aria-haspopup="dialog" aria-expanded={showMono} style={{ padding: "0 8px" }}
+            onClick={e => { setMonoRect(e.currentTarget.getBoundingClientRect()); setShowMono(v => !v); }}>
+            <ChevronIcon open={showMono} />
           </button>
           {showMono && <>
-            <div style={{ position: "fixed", inset: 0, zIndex: 999 }} onClick={() => setShowMono(false)} />
-            <div style={{ position: "fixed", top: (monoRect?.bottom ?? 44) + 6, left: monoRect?.left ?? 12, width: 236, background: T.panelBg, border: "1px solid " + T.border, borderRadius: 8, padding: "10px 12px 4px", zIndex: 1000, boxShadow: T.panelShadow, backdropFilter: "blur(16px)", maxHeight: "calc(100vh - 90px)", overflowY: "auto" }}>
+            <div className="ys-backdrop" onClick={() => setShowMono(false)} />
+            <div className="ys-menu" style={{ ...menuPos(monoRect, true), width: 260, padding: "12px 14px 6px", maxHeight: "calc(100vh - 90px)", overflowY: "auto" }}>
               {/* Tweaking a skin option turns Mono on so the effect is visible immediately. */}
               <MonoSkinPanel skin={monoSkin} onChange={(sk) => { setMonoSkin(sk); if (!monoDraw) setMonoDraw(true); }} T={T} tiers={monoTiers} S={S} />
             </div>
           </>}
         </div>
-        <div style={{ width: 1, height: 20, background: T.border, margin: "0 3px" }} />
+        <Sep />
         <div style={{ position: "relative" }}>
-          <button data-testid="save-menu" style={{ ...S.smBtn, display: "flex", alignItems: "center", gap: 4 }} onClick={e => { setSaveMenuRect(e.currentTarget.getBoundingClientRect()); setProjDraft(projectName || ""); setShowSaveMenu(v => !v); }}>
-            Save<ChevronDown size={11} style={{ opacity: 0.7, transition: "transform 0.15s", transform: showSaveMenu ? "rotate(180deg)" : "none" }} />
+          <button type="button" data-testid="save-menu" className="ys-btn" aria-haspopup="menu" aria-expanded={showSaveMenu}
+            onClick={e => { setSaveMenuRect(e.currentTarget.getBoundingClientRect()); setProjDraft(projectName || ""); setShowSaveMenu(v => !v); }}>
+            Save<ChevronIcon open={showSaveMenu} />
           </button>
           {showSaveMenu && <>
-            <div style={{ position: "fixed", inset: 0, zIndex: 999 }} onClick={() => setShowSaveMenu(false)} />
-            <div style={{ position: "fixed", top: (saveMenuRect?.bottom ?? 44) + 6, right: Math.max(8, window.innerWidth - (saveMenuRect?.right ?? 0)), background: T.panelBg, border: "1px solid " + T.border, borderRadius: 8, padding: 6, zIndex: 1000, minWidth: 236, boxShadow: T.panelShadow, backdropFilter: "blur(16px)" }}>
-              {saveToProjects && <div data-testid="project-save-block" style={{ padding: "2px 4px 8px", borderBottom: "1px solid " + T.border, marginBottom: 4 }}>
-                <div style={{ fontSize: 8, color: T.textDim, textTransform: "uppercase", letterSpacing: "0.08em", padding: "4px 6px 6px", fontWeight: 600 }}>Save to projects{backendLabel}</div>
-                <div style={{ display: "flex", gap: 4 }}>
-                  <input data-testid="project-name-input" value={projDraft} placeholder="Project name" onChange={e => setProjDraft(e.target.value)}
-                    onKeyDown={e => { if (e.key === "Enter" && canSaveProject) { setShowSaveMenu(false); saveToProjects(projDraft); } }}
-                    style={{ ...S.inp, flex: 1, padding: "5px 8px" }} />
-                  <button data-testid="project-save" disabled={!canSaveProject}
-                    onClick={() => { setShowSaveMenu(false); saveToProjects(projDraft); }}
-                    style={{ ...S.smBtn, opacity: canSaveProject ? 1 : 0.5, cursor: canSaveProject ? "pointer" : "default" }}>
-                    {activeProject ? "Update" : "Save"}
-                  </button>
+            <div className="ys-backdrop" onClick={() => setShowSaveMenu(false)} />
+            <div className="ys-menu" style={{ ...menuPos(saveMenuRect, true), minWidth: 280 }}>
+              {saveToProjects && <div data-testid="project-save-block">
+                <div className="ys-menu__head"><span>Save to projects</span><span className="ys-data">{backendLabel.replace(" · ", "")}</span></div>
+                <div className="ys-menu__pad">
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <input data-testid="project-name-input" className="ys-input" value={projDraft} placeholder="Project name" aria-label="Project name" onChange={e => setProjDraft(e.target.value)}
+                      onKeyDown={e => { if (e.key === "Enter" && canSaveProject) { setShowSaveMenu(false); saveToProjects(projDraft); } }} />
+                    <button type="button" data-testid="project-save" className="ys-btn ys-btn--primary" disabled={!canSaveProject}
+                      onClick={() => { setShowSaveMenu(false); saveToProjects(projDraft); }}>
+                      {activeProject ? "Update" : "Save"}
+                    </button>
+                  </div>
+                  {activeProject && <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+                    <span className="ys-small ys-muted" style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", minWidth: 0 }}>Open: {activeProject.name}</span>
+                    <button type="button" data-testid="project-save-as-new" className="ys-btn ys-btn--quiet ys-btn--sm" disabled={!canSaveProject}
+                      onClick={() => { setShowSaveMenu(false); saveToProjects(projDraft, { asNew: true }); }}>Save as new</button>
+                  </div>}
+                  {!projectsCanWrite && <div className="ys-small ys-muted">View-only here — you can open projects, not save them.</div>}
+                  {!projectsKind && <div className="ys-small ys-muted">Connecting…</div>}
                 </div>
-                {activeProject && <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, padding: "6px 6px 0", fontSize: 10 }}>
-                  <span style={{ color: T.textFaint, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", minWidth: 0 }}>Open: {activeProject.name}</span>
-                  <span data-testid="project-save-as-new" onClick={() => { if (!canSaveProject) return; setShowSaveMenu(false); saveToProjects(projDraft, { asNew: true }); }}
-                    style={{ color: canSaveProject ? T.textMuted : T.textFaint, textDecoration: "underline", cursor: canSaveProject ? "pointer" : "default", whiteSpace: "nowrap" }}>Save as new instead</span>
-                </div>}
-                {!projectsCanWrite && <div style={{ padding: "6px 6px 0", fontSize: 10, color: T.textFaint, fontStyle: "italic" }}>View-only here — you can open projects, not save them.</div>}
-                {!projectsKind && <div style={{ padding: "6px 6px 0", fontSize: 10, color: T.textFaint, fontStyle: "italic" }}>Connecting…</div>}
               </div>}
+              <div className="ys-menu__head"><span>Export</span></div>
               {[
-                { label: "Save Project (.json)", fn: exportProject },
+                { label: "Save project (.json)", fn: exportProject },
                 { label: "Export PNG", fn: exportPng },
                 { label: "Export SVG", fn: exportSvg },
                 { label: "Export DXF (CAD)", fn: exportDxf },
                 ...(exportDxfSlide ? [{ label: `Export DXF · this sheet${activeSlideName ? ` (${activeSlideName})` : ""}`, fn: exportDxfSlide }] : []),
                 { label: "Export PDF", fn: exportPdf },
               ].map(({ label, fn }) => (
-                <div key={label} onClick={() => { setShowSaveMenu(false); fn(); }}
-                  style={{ padding: "7px 10px", borderRadius: 6, cursor: "pointer", fontSize: 11, color: T.textMuted, fontFamily: "inherit", transition: "background 0.12s" }}
-                  onMouseEnter={e => e.currentTarget.style.background = T.border + "60"}
-                  onMouseLeave={e => e.currentTarget.style.background = "transparent"}>{label}</div>
+                <button type="button" key={label} className="ys-menu__item" onClick={() => { setShowSaveMenu(false); fn(); }}>{label}</button>
               ))}
             </div>
           </>}
         </div>
         <div style={{ position: "relative" }}>
-          <button data-testid="load-menu" style={{ ...S.smBtn, display: "flex", alignItems: "center", gap: 4 }}
+          <button type="button" data-testid="load-menu" className="ys-btn" aria-haspopup="menu" aria-expanded={showLoad}
             onClick={e => { setLoadRect(e.currentTarget.getBoundingClientRect()); setHistory(readAutosaveHistory ? readAutosaveHistory() : []); setConfirmDel(null); setShowLoad(v => !v); }}>
-            Load<ChevronDown size={11} style={{ opacity: 0.7, transition: "transform 0.15s", transform: showLoad ? "rotate(180deg)" : "none" }} />
+            Load<ChevronIcon open={showLoad} />
           </button>
           {showLoad && <>
-            <div style={{ position: "fixed", inset: 0, zIndex: 999 }} onClick={() => setShowLoad(false)} />
-            <div style={{ position: "fixed", top: (loadRect?.bottom ?? 44) + 6, left: loadRect?.left ?? 12, background: T.panelBg, border: "1px solid " + T.border, borderRadius: 8, padding: 6, zIndex: 1000, minWidth: 230, maxWidth: 320, boxShadow: T.panelShadow, backdropFilter: "blur(16px)" }}>
+            <div className="ys-backdrop" onClick={() => setShowLoad(false)} />
+            <div className="ys-menu" style={{ ...menuPos(loadRect, true), minWidth: 300 }}>
               {openProject && <>
-                <div style={{ fontSize: 8, color: T.textDim, textTransform: "uppercase", letterSpacing: "0.08em", padding: "4px 10px 4px", fontWeight: 600 }}>Projects{backendLabel}</div>
-                {projects.length === 0 && <div style={{ padding: "2px 10px 8px", fontSize: 10, color: T.textFaint, fontStyle: "italic" }}>{projectsKind ? "None saved yet — Save ▾ › Save to projects." : "Connecting…"}</div>}
+                <div className="ys-menu__head"><span>Projects</span><span className="ys-data">{backendLabel.replace(" · ", "") || "—"}</span></div>
+                {projects.length === 0 && <div className="ys-menu__note">{projectsKind ? "None saved yet — Save ▾ › Save to projects." : "Connecting…"}</div>}
                 {projects.map(p => {
                   const editing = renamingId === p.id;
                   const isOpen = p.id === activeProjectId;
                   return (
-                  <div key={p.id} data-testid="project-entry" title={p.summary} onClick={() => { if (projectsBusy || editing) return; setShowLoad(false); openProject(p.id); }}
-                    style={{ padding: "6px 10px", borderRadius: 6, cursor: editing ? "default" : "pointer", fontSize: 11, color: T.textMuted, fontFamily: "inherit", transition: "background 0.12s", display: "flex", alignItems: "center", gap: 8 }}
-                    onMouseEnter={e => e.currentTarget.style.background = T.border + "60"}
-                    onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
+                  <div key={p.id} data-testid="project-entry" title={p.summary} tabIndex={editing ? -1 : 0}
+                    className={"ys-menu__item" + (editing ? " ys-menu__item--static" : "")} aria-current={isOpen ? "true" : undefined}
+                    onClick={() => { if (projectsBusy || editing) return; setShowLoad(false); openProject(p.id); }}
+                    onKeyDown={e => { if (!editing && (e.key === "Enter" || e.key === " ") && e.target === e.currentTarget) { e.preventDefault(); setShowLoad(false); openProject(p.id); } }}>
                     {editing ? (
-                      <input data-testid="project-rename-input" autoFocus value={renameDraft} onChange={e => setRenameDraft(e.target.value)}
+                      <input data-testid="project-rename-input" autoFocus value={renameDraft} className="ys-input" style={{ flex: 1, minWidth: 0, minHeight: 32 }} aria-label="Project name" onChange={e => setRenameDraft(e.target.value)}
                         onClick={e => e.stopPropagation()}
                         onKeyDown={e => { if (e.key === "Enter") commitRename(p); else if (e.key === "Escape") { renameDoneRef.current = true; setRenamingId(null); } }}
-                        onBlur={() => commitRename(p)}
-                        style={{ ...S.inp, flex: 1, minWidth: 0, padding: "3px 6px" }} />
+                        onBlur={() => commitRename(p)} />
                     ) : (
-                      <span style={{ color: T.textBright, fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", flex: 1, minWidth: 0 }}>
-                        {p.name}{isOpen && <span style={{ color: T.textDim, fontWeight: 400 }}> · open</span>}
+                      <span className="ys-menu__main">
+                        <span className="ys-menu__title">{p.name}{isOpen && <span className="ys-muted"> · open</span>}</span>
+                        <span className="ys-menu__sub">{relativeTime(p.savedAt)}</span>
                       </span>
                     )}
-                    <span style={{ fontSize: 10, color: T.textDim, whiteSpace: "nowrap" }}>{relativeTime(p.savedAt)}</span>
-                    {projectsCanWrite && !editing && <span data-testid="project-rename" title="Rename project"
-                      onClick={e => { e.stopPropagation(); setConfirmDel(null); renameDoneRef.current = false; setRenameDraft(p.name); setRenamingId(p.id); }}
-                      style={{ fontSize: 10, color: T.textFaint, whiteSpace: "nowrap", padding: "0 2px" }}>✎</span>}
-                    {projectsCanWrite && !editing && <span data-testid="project-delete" title={confirmDel === p.id ? "Click again to delete" : "Delete project"}
-                      onClick={e => { e.stopPropagation(); if (confirmDel === p.id) { setConfirmDel(null); deleteProject(p.id); } else setConfirmDel(p.id); }}
-                      style={{ fontSize: 10, color: confirmDel === p.id ? T.brand : T.textFaint, fontWeight: confirmDel === p.id ? 600 : 400, whiteSpace: "nowrap", padding: "0 2px" }}>
-                      {confirmDel === p.id ? "Delete?" : "✕"}
-                    </span>}
+                    {projectsCanWrite && !editing && <button type="button" data-testid="project-rename" className="ys-ibtn" title="Rename project" aria-label={`Rename ${p.name}`}
+                      onClick={e => { e.stopPropagation(); setConfirmDel(null); renameDoneRef.current = false; setRenameDraft(p.name); setRenamingId(p.id); }}><PencilIcon size={16} /></button>}
+                    {projectsCanWrite && !editing && (confirmDel === p.id
+                      ? <button type="button" data-testid="project-delete" className="ys-btn ys-btn--sm ys-btn--armed" title="Click again to delete"
+                          onClick={e => { e.stopPropagation(); setConfirmDel(null); deleteProject(p.id); }}>Delete?</button>
+                      : <button type="button" data-testid="project-delete" className="ys-ibtn" title="Delete project" aria-label={`Delete ${p.name}`}
+                          onClick={e => { e.stopPropagation(); setConfirmDel(p.id); }}><CloseIcon size={16} /></button>)}
                   </div>
                   );
                 })}
-                <div style={{ borderTop: "1px solid " + T.border, marginTop: 4, paddingTop: 4 }} />
               </>}
-              <div onClick={() => { setShowLoad(false); loadRef.current?.click(); }}
-                style={{ padding: "7px 10px", borderRadius: 6, cursor: "pointer", fontSize: 11, color: T.textMuted, fontFamily: "inherit", transition: "background 0.12s" }}
-                onMouseEnter={e => e.currentTarget.style.background = T.border + "60"}
-                onMouseLeave={e => e.currentTarget.style.background = "transparent"}>Load Project (.json)…</div>
-              <div style={{ fontSize: 8, color: T.textDim, textTransform: "uppercase", letterSpacing: "0.08em", padding: "8px 10px 4px", fontWeight: 600, borderTop: "1px solid " + T.border, marginTop: 4 }}>Restore earlier autosave</div>
-              {history.length === 0 && <div style={{ padding: "6px 10px 8px", fontSize: 10, color: T.textFaint, fontStyle: "italic" }}>None yet — a copy is kept every ~2 minutes of editing.</div>}
+              <div className="ys-menu__head"><span>File</span></div>
+              <button type="button" className="ys-menu__item" onClick={() => { setShowLoad(false); loadRef.current?.click(); }}>Load project (.json)…</button>
+              <div className="ys-menu__head"><span>Restore earlier autosave</span><span className="ys-data">{history.length}</span></div>
+              {history.length === 0 && <div className="ys-menu__note">None yet — a copy is kept every ~2 minutes of editing.</div>}
               {history.map(h => (
-                <div key={h.ts} data-testid="autosave-entry" onClick={() => { setShowLoad(false); restoreAutosave?.(h); }}
-                  style={{ padding: "6px 10px", borderRadius: 6, cursor: "pointer", fontSize: 11, color: T.textMuted, fontFamily: "inherit", transition: "background 0.12s", display: "flex", justifyContent: "space-between", gap: 10 }}
-                  onMouseEnter={e => e.currentTarget.style.background = T.border + "60"}
-                  onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
-                  <span style={{ color: T.textBright, fontWeight: 500, whiteSpace: "nowrap" }}>{relativeTime(h.ts)}</span>
-                  <span style={{ fontSize: 10, color: T.textDim, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{historySummary(h.data)}</span>
-                </div>
+                <button type="button" key={h.ts} data-testid="autosave-entry" className="ys-menu__item" onClick={() => { setShowLoad(false); restoreAutosave?.(h); }}>
+                  <span className="ys-menu__main">
+                    <span className="ys-menu__title">{relativeTime(h.ts)}</span>
+                    <span className="ys-menu__sub">{historySummary(h.data)}</span>
+                  </span>
+                </button>
               ))}
             </div>
           </>}
         </div>
-        <button data-testid="new-project" style={{ ...S.smBtn, ...(newArmed ? { color: T.brand, fontWeight: 600 } : null) }}
+        <button type="button" data-testid="new-project" className={"ys-btn" + (newArmed ? " ys-btn--armed" : "")}
           onClick={() => {
             if ((walls.length || zones.length || markers.length || furnitureCount) && !newArmed) { setNewArmed(true); return; }
             setNewArmed(false); newProject();
           }}>{newArmed ? "New? Click again" : "New"}</button>
         <input ref={loadRef} type="file" accept=".json" style={{ display: "none" }} onChange={e => { const f = e.target.files?.[0]; if (f) importProject(f); e.target.value = ""; }} />
-        <div style={{ width: 1, height: 20, background: T.border, margin: "0 3px" }} />
+        <Sep />
         {/* Layout switcher (single / split / quad) — always visible in the top bar */}
-        <div style={{ display: "flex", gap: 2, alignItems: "center" }}>
-          {[[1, "▢", "Single"], [2, "◫", "Split"], [4, "⊞", "Quad"]].map(([n, g, label]) => (
+        <div className="ys-seg ys-seg--icon" role="group" aria-label="Layout">
+          {[[1, SingleIcon, "Single"], [2, SplitIcon, "Split"], [4, QuadIcon, "Quad"]].map(([n, Icon, label]) => (
             <Tooltip key={n}><TooltipTrigger asChild>
-              <button onClick={() => setLayout(n)} style={{ padding: "4px 9px", borderRadius: 5, border: "none", cursor: "pointer", background: panes.length === n ? T.accent : "transparent", color: panes.length === n ? "#fff" : T.textMuted, fontSize: 13, fontWeight: 600, fontFamily: "inherit", lineHeight: 1 }}>{g}</button>
+              <button type="button" onClick={() => setLayout(n)} aria-pressed={panes.length === n} aria-label={label}><Icon /></button>
             </TooltipTrigger><TooltipContent>{label} layout</TooltipContent></Tooltip>
           ))}
         </div>
-        <div style={{ width: 1, height: 20, background: T.border, margin: "0 3px" }} />
+        <Sep />
         <Tooltip>
           <TooltipTrigger asChild>
-            <button style={S.smBtn} onClick={() => setShowSettings(true)}><Settings size={13} /></button>
+            <button type="button" className="ys-btn ys-btn--quiet ys-btn--icon" onClick={() => setShowSettings(true)} aria-label="Zone library settings"><GearIcon /></button>
           </TooltipTrigger>
-          <TooltipContent>Zone Library Settings</TooltipContent>
+          <TooltipContent>Zone library settings</TooltipContent>
         </Tooltip>
       </div>
   );

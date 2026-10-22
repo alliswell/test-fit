@@ -16,7 +16,7 @@ import MarkerSymbol from "../MarkerSymbol";
 import { SPEC_COMPONENTS, SPEC_LAYERS } from "../../constants/specs";
 import { markerDrawPos } from "../../imports/geometry";
 
-function PlanMarkersLayer({ markers, chromeT, themeMode, tool, mode, pxPerFoot, zoom, selectedId, selType, selectedIds, markerVisible, visibleLayers, visibleBuildElectrical, visibleBuildLighting, resolvePos, setRotatingMarker, lod = 0 }) {
+function PlanMarkersLayer({ markers, chromeT, themeMode, tool, mode, pxPerFoot, zoom, selectedId, selType, selectedIds, markerVisible, visibleLayers, visibleBuildElectrical, visibleBuildLighting, resolvePos, setRotatingMarker, onTouchGrab = null, lod = 0 }) {
   return markers.map(p => {
     if (!markerVisible(p)) return null;
     const rp = resolvePos(p);
@@ -54,7 +54,8 @@ function PlanMarkersLayer({ markers, chromeT, themeMode, tool, mode, pxPerFoot, 
         onMouseDown={ev => {
           ev.stopPropagation();
           setRotatingMarker({ id: p.id, cx: p_r.x, cy: p_r.y });
-        }}>
+        }}
+        onPointerDown={ev => { if (onTouchGrab?.(ev)) setRotatingMarker({ id: p.id, cx: p_r.x, cy: p_r.y }); }}>
         <line x1={dp.x} y1={dp.y} x2={hx} y2={hy} stroke="#50A0E0" strokeWidth={1.5} strokeDasharray="3 2" style={{ pointerEvents: "none" }} />
         <circle cx={hx} cy={hy} r={5 / zoom} fill="#50A0E0" stroke="#fff" strokeWidth={1.5} style={{ cursor: "grab" }} />
       </g>;

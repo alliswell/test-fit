@@ -60,8 +60,8 @@ test("elevation slide: save a Front pane view → readonly elevation renders on 
   await drawWall(page, cx - 120, cy, cx + 120, cy);
 
   // Split layout → pane 1 → Front elevation → save its view.
-  await page.getByRole("button", { name: "◫", exact: true }).click();
-  await page.locator("select").first().selectOption("front");
+  await page.getByRole("button", { name: "Split", exact: true }).click();
+  await page.locator("select:not([data-testid='plan-layer-preset'])").first().selectOption("front");
   await expect(page.getByText("FRONT ELEVATION")).toBeVisible();
   await page.getByTestId("save-to-docs-1").click();
   await page.keyboard.press("6");
@@ -156,8 +156,8 @@ test("3D slide camera is locked until Edit view; Save/Reset controls appear", as
   const { cx, cy } = await planCenter(page);
   await drawWall(page, cx - 120, cy, cx + 120, cy);
 
-  await page.getByRole("button", { name: "◫", exact: true }).click();
-  await page.locator("select").first().selectOption("3d");
+  await page.getByRole("button", { name: "Split", exact: true }).click();
+  await page.locator("select:not([data-testid='plan-layer-preset'])").first().selectOption("3d");
   await page.waitForTimeout(2000); // lazy 3D chunk
   await page.getByTestId("save-to-docs-1").click();
   await page.keyboard.press("6");
@@ -353,7 +353,7 @@ test("budget: an as-built door is excluded from construction", async ({ page }) 
   const { cx, cy } = await planCenter(page);
   await drawWall(page, cx - 120, cy, cx + 120, cy); // "existing" kind → footage, $0
   // Place a door; it defaults to as-built (part of the existing plan → $0).
-  await page.locator("button:has(svg.lucide-door-open)").click();
+  await page.getByRole("button", { name: "Door", exact: true }).click();
   await page.mouse.click(cx - 20, cy);
   await page.keyboard.press("Escape");
 
@@ -372,7 +372,7 @@ test("budget: flagging a door \"New\" rolls its cost into the total", async ({ p
   const { cx, cy } = await planCenter(page);
   await drawWall(page, cx - 120, cy, cx + 120, cy);
   // Place a door — it stays selected, so the inspector shows its New-construction toggle.
-  await page.locator("button:has(svg.lucide-door-open)").click();
+  await page.getByRole("button", { name: "Door", exact: true }).click();
   await page.mouse.click(cx - 20, cy);
   await page.getByTestId("new-construction").check(); // flag it new construction
   await page.mouse.click(cx, cy - 150); // blur the checkbox so the stage shortcut fires
@@ -610,9 +610,9 @@ test("slides stay Vellum (light) for correct printing even when the app is in Da
   // The on-screen sheet (paper background + title block) renders Vellum, not the dark
   // canvas color — while the surrounding chrome (deck strip) stays dark as expected.
   const sheetBg = await page.evaluate(() => getComputedStyle(document.querySelector('[data-testid="docs-sheet"]')).backgroundColor);
-  expect(sheetBg).toBe("rgb(236, 228, 213)"); // Vellum canvas #ECE4D5
+  expect(sheetBg).toBe("rgb(251, 249, 244)"); // light paper #fbf9f4
   const deckBg = await page.evaluate(() => getComputedStyle(document.querySelector('[data-testid="docs-view"]')).backgroundColor);
-  expect(deckBg).not.toBe("rgb(236, 228, 213)"); // chrome still follows the dark theme
+  expect(deckBg).not.toBe("rgb(251, 249, 244)"); // chrome still follows the dark theme
 });
 
 test("Print theme renders docs sheets on pure-white paper", async ({ page }) => {
@@ -649,7 +649,7 @@ test("print output stays Vellum (light) even when the app is in Dark mode", asyn
     const el = document.querySelector(".docs-print-root .docs-sheet-page");
     return el ? getComputedStyle(el).backgroundColor : null;
   });
-  expect(bg).toBe("rgb(236, 228, 213)"); // Vellum canvas #ECE4D5
+  expect(bg).toBe("rgb(251, 249, 244)"); // light paper #fbf9f4
 });
 
 test("printing every slide at once can't cross the plan grid masks", async ({ page }) => {

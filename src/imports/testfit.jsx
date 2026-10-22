@@ -23,13 +23,14 @@ import Furniture2D from "../components/Furniture2D";
 import { FurnitureFlag, FurnitureApron } from "../components/plan/FurnitureChecks";
 import { FURNITURE_CATALOG, FURNITURE_CATEGORIES, ZONE_FURNISH_PLAN, layoutZoneFurniture, newFurniture } from "../constants/furniture";
 import { sheetDims, sheetInches, sheetBodyDims, fitRectToViewport, fitStandardScale, scaledRectCam, defaultSlideName, viewTitle, resolveSlideVis, SLIDE_VIS_PRESETS, matchSlidePreset } from "../utils/docs";
+import { anchorViewOff, clampZoom, pinchStep, tapCount } from "../utils/touch";
 import { useInteractionStore } from "../store/interactionStore";
 import { useHoverStore } from "../store/hoverStore";
 import HoverSubscriber from "../components/HoverSubscriber";
 import { useCanvasEvents } from "./useCanvasEvents";
 import { useProjectList } from "./useProjectList";
 // Extracted modules — see CLAUDE.md → "Code structure" for what belongs where.
-import { THEMES, cadCrosshair, tierOf, WALL_KINDS, WALL_KINDS_LIGHT, WALL_KINDS_PRINT, WALL_KINDS_MONO, WALL_MATERIALS, WALL_MATERIAL_HATCHES, buildMonoTheme, MONO_DEFAULT_SKIN } from "../constants/theme";
+import { THEMES, cadCrosshair, tierOf, WALL_KINDS, WALL_KINDS_LIGHT, WALL_KINDS_PRINT, WALL_KINDS_MONO, WALL_MATERIALS, WALL_MATERIAL_HATCHES, buildMonoTheme, MONO_DEFAULT_SKIN, ysVars, YS_FONT_SANS, YS_FONT_MONO } from "../constants/theme";
 import { SPEC_COMPONENTS, SPEC_LAYERS, DOOR_TYPES, WINDOW_TYPES, FLOW_PATH_COLORS, PROX_DRAG_TYPES, SNAP_R, LABEL_MAX_W, DEFAULT_PHASES, COMPONENT_FINISHES, FINISH_COLORS, FLOOR_MATERIALS, FLOOR_MATERIAL_HEX, FLOOR_MATERIAL_HATCHES, ACCESS_READER_COST, WALL_COST_PER_FT, DOOR_COST, WINDOW_COST, COLUMN_COST, isWallMounted } from "../constants/specs";
 import { wrapLabelLines, labelBounds } from "../utils/labels";
 import { WallIcon, WindowIcon, ColumnIcon, RectRoomIcon } from "../components/icons";
@@ -1574,10 +1575,11 @@ export default function TestfitTool() {
   };
   // "New construction" toggle shared by the door/window/column inspectors — an unchecked
   // item is part of the as-built plan (priced $0); checking it rolls the item into the budget.
-  const newToggle = (on, onToggle, accent = T.brand) => (
-    <label style={{ display: "flex", alignItems: "center", gap: 7, cursor: "pointer", marginBottom: 8, padding: "7px 9px", background: on ? accent + "18" : T.panelBg, borderRadius: 6, border: "1px solid " + (on ? accent : T.border) }}>
-      <input type="checkbox" data-testid="new-construction" checked={on} onChange={e => onToggle(e.target.checked)} style={{ width: 14, height: 14, accentColor: accent, cursor: "pointer" }} />
-      <span style={{ fontSize: 10, color: on ? T.textBright : T.textMuted, fontWeight: on ? 600 : 400 }}>New construction <span style={{ color: T.textFaint, fontWeight: 400 }}>· adds to budget</span></span>
+  const newToggle = (on, onToggle, accent = T.text) => (
+    <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", marginBottom: 12, minHeight: 40, padding: "0 12px", background: on ? T.bg2 : T.panelBg, border: "1px solid " + T.border, boxShadow: on ? "inset 0 0 0 2px " + accent : "none" }}>
+      <input type="checkbox" data-testid="new-construction" checked={on} onChange={e => onToggle(e.target.checked)} style={{ width: 16, height: 16, accentColor: accent, cursor: "pointer", margin: 0 }} />
+      <span style={{ flex: 1, fontSize: 13, color: T.text }}>New construction <span style={{ color: T.textMuted }}>· adds to budget</span></span>
+      <span style={{ fontFamily: font, fontSize: 12, fontWeight: 500, letterSpacing: "0.14em", textTransform: "uppercase", color: on ? T.text : T.textMuted }}>{on ? "On" : "Off"}</span>
     </label>
   );
   const updElevLabel = (u) => setElevAnnotations(prev => Object.fromEntries(Object.entries(prev).map(([dir, a]) =>
@@ -2020,9 +2022,12 @@ export default function TestfitTool() {
     return () => { window.removeEventListener("keydown", down); window.removeEventListener("keyup", up); };
   }, []);
 
-  const font = "'IBM Plex Mono','SF Mono','Consolas','Monaco',monospace";
-  // Condensed architectural display face — wordmark, section headers, big readouts.
-  const display = "'Saira Condensed','IBM Plex Sans',system-ui,sans-serif";
+  // Yardstick type: Host Grotesk for everything a person reads (`display` is the same face —
+  // plate lettering is 500 caps with tracking, not a condensed cut), Geist Mono for what
+  // you look up or line up: dimensions, counts, money, IDs.
+  const font = YS_FONT_SANS;
+  const display = YS_FONT_SANS;
+  const mono = YS_FONT_MONO;
   const nodeConns = useMemo(() => { const c = {}; walls.forEach(w => { c[w.n1] = (c[w.n1] || 0) + 1; c[w.n2] = (c[w.n2] || 0) + 1; }); return c; }, [walls]);
 
   // 3D data — only resolved when 3D or split view is active
@@ -2058,6 +2063,13 @@ export default function TestfitTool() {
   // The chrome theme, captured for leaf symbols rendered INSIDE renderPlanCanvas — where `T`
   // is shadowed by the canvas theme — so their ui* colour tokens keep coming from the chrome.
   const chromeT = T;
+  // Yardstick tokens → :root custom properties, so the stylesheet (styles/yardstick.css)
+  // and PORTALED surfaces (Radix tooltips, sonner toasts — rendered outside the app root)
+  // follow the theme. Written once per theme change.
+  useEffect(() => {
+    const st = document.documentElement.style;
+    Object.entries(ysVars(T)).forEach(([k, v]) => st.setProperty(k, v));
+  }, [T]);
 
   // ── Mode system ─────────────────────────────────────────────────────
   // Selection and flow paths are read from their stores at CALL time rather than closed
@@ -2084,6 +2096,107 @@ export default function TestfitTool() {
     activeComponentType, activeFurnitureType, activePhase, activeSpecLayer, activeZoneType, bgImage, bgOffset, canvasRotation, columnLabel, columnNotes, columnShape, columnSize, commitWallSegment, commitRectRoom, cvs, cvsContainer, doorFlipped, doorHingeRight, doorType, doorWidth, findDimSnap, findNear, findProxHover, floorMaterial, gn, htrackAngle, inToPx, isWallTool, lastCopyInfo, layerLocked, lightingIsNew, lightingType, markerFinish, markerLocked, markerNotes, markerVisible, mode, outletIsNew, outletType, phaseVisible, pxPerFoot, resolveDimEndpoints, resolveLeaderTip, resolvePoints, resolvePos, s2c, setBgOffset, setDimInput, setEditingLabelId, setEditingLabelText, setGuideScrub, setHoverGuideId, setLastCopyInfo, setT, setTool, setViewOff, setZoneEdge, snapGrid, snapGuide, snapLabelAnchor, snapToWall, themeMode, tool, viewOff, visibleFurniture, wallKind, wallHalfT, wc, windowHeight, windowSill, windowType, windowWidth, zoneEdge, zoneLibrary, zoneNotes, zonePaintColor, zonePaintFinish, zoom,
   });
 
+  // ── Touch & pen input ───────────────────────────────────────────────────────
+  // The canvas handlers above were written for the mouse: onDown/onMove/onUp read clientX/Y,
+  // button, detail and the modifier keys. A finger never produced those — touch yields
+  // compatibility MOUSE events only for a tap, never for a drag — so a phone could tap but
+  // not pan, drag or draw. Pointer events carry touch and pen through the SAME handlers via
+  // a synthetic mouse-shaped event (synthPointer):
+  //  · one finger on an object → the ordinary down/move/up (drag, draw, place);
+  //  · one finger on EMPTY paper with Select → PAN, by handing onDown button 1 (the
+  //    middle-drag pan path): a finger has no marquee. Yardstick: "In Select, drag pans and
+  //    a tap selects, on mouse and finger alike". A tap that never moved clears the
+  //    selection, as a click on empty paper does;
+  //  · two fingers → pinch zoom about the fingers' midpoint + pan (utils/touch.js), with
+  //    the same anchoring as wheel zoom; the first finger's gesture is ended first, and the
+  //    finger left behind after a pinch is inert until it lifts;
+  //  · double-tap is reconstructed with tapCount, since PointerEvent.detail is always 0.
+  // preventDefault on pointerdown suppresses the compatibility mouse events, so a tap never
+  // reaches onDown twice; touch-action: none on the svg keeps the browser from scrolling or
+  // zooming the page instead. Mouse pointers return early — the desktop path is untouched.
+  // Rotate/scale HANDLES claim their touch through grabTouch (below) from their own
+  // onPointerDown, so a finger on a handle rotates instead of dragging the piece under it.
+  const touchRef = useRef({ pts: new Map(), lastTap: null, mode: null, last: null, panTap: false, downAt: null });
+  // A pointer's position in the SVG viewport's own pixels — container-relative and
+  // un-rotated when the canvas is CSS-rotated — the space wheel-zoom anchors in.
+  const svgPt = useCallback((cx, cy) => {
+    const r = (cvsContainer.current ?? cvs.current)?.getBoundingClientRect();
+    if (!r) return { x: cx, y: cy };
+    let dx = cx - (r.left + r.width / 2), dy = cy - (r.top + r.height / 2);
+    if (canvasRotation !== 0) {
+      const rad = -canvasRotation * Math.PI / 180, cos = Math.cos(rad), sin = Math.sin(rad);
+      [dx, dy] = [dx * cos - dy * sin, dx * sin + dy * cos];
+    }
+    return { x: dx + r.width / 2, y: dy + r.height / 2 };
+  }, [canvasRotation]);
+  const synthPointer = (e, over) => ({
+    clientX: e.clientX, clientY: e.clientY, button: 0, detail: 1,
+    shiftKey: !!e.shiftKey, altKey: !!e.altKey, ctrlKey: !!e.ctrlKey, metaKey: !!e.metaKey,
+    target: e.target, currentTarget: e.currentTarget, preventDefault() {}, stopPropagation() {}, ...over,
+  });
+  const capturePointer = (id) => { try { cvs.current?.setPointerCapture(id); } catch { /* unsupported */ } };
+  const grabTouch = useCallback((ev) => {
+    if (ev.pointerType === "mouse") return false;
+    ev.stopPropagation(); ev.preventDefault();
+    const t = touchRef.current;
+    t.pts.set(ev.pointerId, svgPt(ev.clientX, ev.clientY));
+    t.mode = "single"; t.last = { x: ev.clientX, y: ev.clientY }; t.panTap = false;
+    capturePointer(ev.pointerId);
+    return true;
+  }, [svgPt]);
+  const onPointerDownTouch = (e) => {
+    if (e.pointerType === "mouse") return;
+    e.preventDefault();
+    const t = touchRef.current;
+    t.pts.set(e.pointerId, svgPt(e.clientX, e.clientY));
+    capturePointer(e.pointerId);
+    if (t.pts.size === 2) {
+      if (t.mode === "single") onUp(synthPointer(e, { clientX: t.last?.x ?? e.clientX, clientY: t.last?.y ?? e.clientY }));
+      t.mode = "pinch"; t.panTap = false;
+      return;
+    }
+    if (t.pts.size > 2) return;
+    const now = { t: performance.now(), x: e.clientX, y: e.clientY };
+    const count = tapCount(t.lastTap, now);
+    t.lastTap = { ...now, count };
+    t.mode = "single"; t.last = { x: e.clientX, y: e.clientY }; t.downAt = { x: e.clientX, y: e.clientY };
+    const empty = tool === "select" && !hitTest(s2c(e.clientX, e.clientY));
+    t.panTap = empty;
+    onDown(synthPointer(e, { button: empty ? 1 : 0, detail: count }));
+  };
+  const onPointerMoveTouch = (e) => {
+    if (e.pointerType === "mouse") return;
+    const t = touchRef.current;
+    if (!t.pts.has(e.pointerId)) return;
+    if (t.mode === "pinch") {
+      const ids = [...t.pts.keys()].slice(0, 2);
+      if (!ids.includes(e.pointerId)) return;
+      const prev = ids.map(id => t.pts.get(id));
+      t.pts.set(e.pointerId, svgPt(e.clientX, e.clientY));
+      const { ratio, mid0, mid1 } = pinchStep(prev, ids.map(id => t.pts.get(id)));
+      setZoom(z => { const nz = clampZoom(z * ratio); setViewOff(v => anchorViewOff(v, mid0, mid1, nz / z)); return nz; });
+      return;
+    }
+    t.pts.set(e.pointerId, svgPt(e.clientX, e.clientY));
+    if (t.mode !== "single") return;
+    t.last = { x: e.clientX, y: e.clientY };
+    onMove(synthPointer(e));
+  };
+  const onPointerEndTouch = (e) => {
+    if (e.pointerType === "mouse") return;
+    const t = touchRef.current;
+    if (!t.pts.has(e.pointerId)) return;
+    t.pts.delete(e.pointerId);
+    if (t.mode === "single") {
+      onUp(synthPointer(e));
+      if (t.panTap && t.downAt && Math.hypot(e.clientX - t.downAt.x, e.clientY - t.downAt.y) < 8) {
+        setSelectedId(null); setSelType(null); setSelectedIds([]);
+      }
+    }
+    t.mode = t.pts.size ? "settle" : null;
+    t.panTap = false;
+  };
+
   // ── Docs stage plumbing ─────────────────────────────────────────────
   // renderSlideBody: the render prop DocsView uses to draw a slide's model content.
   // Slides render the LIVE model at the slide's saved crop — planning edits show up
@@ -2098,7 +2211,7 @@ export default function TestfitTool() {
     return slideStdScale(slide, body.w, body.h)?.label ?? null;
   };
   // Shared "Edit view / Reset / Save view" chrome for slide cameras.
-  const camBtnStyle = (accent) => ({ display: "flex", alignItems: "center", gap: 5, padding: "5px 10px", borderRadius: 6, border: "1px solid " + (accent ? T.brand : T.border), background: accent ? T.brand + "22" : T.panelBg, color: accent ? T.textBright : T.textMuted, fontFamily: font, fontSize: 10, fontWeight: 600, cursor: "pointer", backdropFilter: "blur(8px)", boxShadow: T.panelShadow });
+  const camBtnStyle = (accent) => ({ display: "flex", alignItems: "center", gap: 6, padding: "0 10px", minHeight: 32, borderRadius: 4, border: "1px solid " + T.border, background: accent ? T.text : T.panelBg, color: accent ? T.bg1 : T.text, fontFamily: font, fontSize: 11, fontWeight: 500, letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer" });
   const slideCamControls = ({ editing, onEdit, onReset, onSave }) => (
     <div style={{ position: "absolute", top: 10, right: 10, zIndex: 10, display: "flex", gap: 6 }}>
       {!editing
@@ -2322,119 +2435,65 @@ export default function TestfitTool() {
 
   // Memoized on its inputs so the sidebar / tool rail (React.memo) keep a stable `S`.
   const S = useMemo(() => ({
-    root: { display: "flex", flexDirection: "column", height: "100vh", fontFamily: font, fontSize: 11, background: T.bg0, color: T.text, overflow: "hidden" },
-    bar: { display: "flex", alignItems: "center", background: T.bg2, borderBottom: "1px solid " + T.border, boxShadow: "inset 0 -2px 0 " + T.brand + "00", padding: "0 10px 0 0", height: "46px", flexShrink: 0, gap: "6px", overflowX: "auto", overflowY: "hidden" },
+    // YARDSTICK: paper ground, ink hairlines, no shadows; only buttons take a 4px radius.
+    // Type: `font` (Host Grotesk) for anything read, `mono` (Geist Mono) for figures.
+    root: { display: "flex", flexDirection: "column", height: "100vh", fontFamily: font, fontSize: 13, background: T.bg0, color: T.text, overflow: "hidden" },
+    bar: { display: "flex", alignItems: "center", background: T.bg1, borderBottom: "1px solid " + T.border, padding: "0 8px 0 0", height: "52px", flexShrink: 0, gap: "6px", overflowX: "auto", overflowY: "hidden" },
     main: { display: "flex", flex: 1, overflow: "hidden" },
-    side: { width: sidebarOpen ? "clamp(190px, 18vw, 240px)" : "0px", backgroundColor: T.bg1, backgroundImage: `linear-gradient(${T.gridSub}12 1px, transparent 1px), linear-gradient(90deg, ${T.gridSub}12 1px, transparent 1px)`, backgroundSize: "18px 18px", borderRight: sidebarOpen ? "1px solid " + T.border : "none", display: "flex", flexDirection: "column", flexShrink: 0, overflow: "hidden", transition: "width 0.2s cubic-bezier(0.4,0,0.2,1)" },
-    body: { flex: 1, overflow: "auto", padding: "12px" },
+    side: { width: sidebarOpen ? "clamp(248px, 21vw, 300px)" : "0px", background: T.bg1, borderRight: sidebarOpen ? "1px solid " + T.border : "none", display: "flex", flexDirection: "column", flexShrink: 0, overflow: "hidden", transition: "width 0.2s cubic-bezier(0.4,0,0.2,1)" },
+    body: { flex: 1, overflow: "auto", padding: 0 },
     cv: { flex: 1, position: "relative", overflow: "hidden", background: canvasT.canvas },
-    sb: { position: "absolute", bottom: 0, left: 0, right: 0, background: T.bg1, borderTop: "1px solid " + T.bg3, padding: "4px 12px", display: "flex", justifyContent: "space-between", fontSize: "10px", color: T.textDim, zIndex: 10 },
-    btn: (a, c) => ({
-      display: "flex",
-      alignItems: "center",
-      gap: "8px",
-      padding: "8px 12px",
-      background: a ? (c || T.border) + "25" : "transparent",
-      border: a ? "1.5px solid " + (c || T.border) + "60" : "1.5px solid transparent",
-      borderRadius: "5px",
-      cursor: "pointer",
-      width: "100%",
-      textAlign: "left",
-      color: a ? T.textBright : T.accent,
-      fontSize: "11px",
-      fontFamily: "inherit",
-      transition: "all 0.12s ease",
-      fontWeight: a ? 500 : 400
-    }),
-    dot: c => ({ width: "10px", height: "10px", borderRadius: "3px", background: c, flexShrink: 0 }),
-    lr: { display: "flex", alignItems: "center", gap: "10px", padding: "6px 0", cursor: "pointer" },
-    chk: (on, c) => ({
-      width: "16px",
-      height: "16px",
-      borderRadius: "4px",
-      border: on ? "2px solid " + c : "2px solid " + T.border,
-      background: on ? c + "20" : "transparent",
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "center",
-      fontSize: "9px",
-      color: on ? c : T.border,
-      flexShrink: 0,
-      cursor: "pointer",
-      transition: "all 0.12s ease"
-    }),
+    sb: { position: "absolute", bottom: 0, left: 0, right: 0, background: T.bg1, borderTop: "1px solid " + T.border, padding: "0 12px", height: 28, display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: 11, fontFamily: mono, color: T.textMuted, zIndex: 10 },
+    btn: (a, c) => ({ display: "flex", alignItems: "center", gap: 8, padding: "0 12px", minHeight: 40, background: a ? T.bg2 : T.bg1, border: "1px solid " + T.border, boxShadow: a ? "inset 0 0 0 2px " + T.text : "none", borderRadius: 4, cursor: "pointer", width: "100%", textAlign: "left", color: T.text, fontSize: 13, fontFamily: "inherit", fontWeight: a ? 500 : 400 }),
+    // a colour swatch: a square chip with an ink border, so the hue is never the only edge
+    dot: c => ({ width: 14, height: 14, border: "1px solid " + T.border, background: c, flexShrink: 0, display: "inline-block" }),
+    lr: { display: "flex", alignItems: "center", gap: 10, padding: "6px 0", cursor: "pointer" },
+    chk: (on, c) => ({ width: 16, height: 16, border: "1px solid " + T.border, background: on ? T.text : "transparent", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, color: T.bg1, flexShrink: 0, cursor: "pointer" }),
     det: {
-      // Fixed to the viewport's top-right (under the 44px top bar) so the option panel
+      // Fixed to the viewport's top-right (under the 52px top bar) so the option panel
       // is always in the screen corner, not trapped in the (small, in split/quad) plan pane.
       position: "fixed",
-      top: "52px",
+      top: "60px",
       right: "12px",
-      width: "clamp(190px, 20vw, 230px)",
-      maxHeight: "calc(100vh - 64px)",
+      width: "clamp(240px, 22vw, 300px)",
+      maxHeight: "calc(100vh - 72px)",
       overflow: "auto",
       background: T.panelBg,
       border: "1px solid " + T.border,
-      borderRadius: "8px",
-      padding: "12px",
+      padding: "12px 16px 16px",
       zIndex: 50,
-      backdropFilter: "blur(12px)",
-      boxShadow: T.panelShadow
     },
-    inp: { background: T.bg3, border: "1.5px solid " + T.border, borderRadius: "5px", padding: "6px 10px", color: T.textBright, fontSize: "11px", fontFamily: "inherit", width: "100%", outline: "none", boxSizing: "border-box", transition: "border-color 0.15s ease" },
-    lbl: { fontSize: "10px", fontFamily: display, color: T.textMuted, textTransform: "uppercase", letterSpacing: "0.12em", marginBottom: "5px", fontWeight: 600 },
-    del: { background: T.delBg, border: "none", borderRadius: "5px", padding: "8px 12px", color: T.delText, fontSize: "10px", fontFamily: "inherit", cursor: "pointer", width: "100%", marginTop: "10px", fontWeight: 500, transition: "all 0.15s ease" },
-    cr: { display: "flex", justifyContent: "space-between", padding: "6px 0", borderBottom: "1px solid " + T.bg3 + "33", fontSize: "10px" },
-    ct: { display: "flex", justifyContent: "space-between", padding: "10px 0", borderTop: "1.5px solid " + T.border, marginTop: "8px", fontWeight: 600, color: T.textBright, fontSize: "13px" },
-    sec: { marginBottom: "14px" },
-    sh: { fontSize: "12px", fontFamily: display, color: T.textMuted, textTransform: "uppercase", letterSpacing: "0.16em", marginBottom: "9px", paddingBottom: "5px", borderBottom: "1px solid " + T.border, fontWeight: 600, display: "flex", alignItems: "center", gap: "7px" },
-    smBtn: { padding: "5px 9px", background: "transparent", color: T.accent, border: "1.5px solid " + T.bg3, borderRadius: "5px", cursor: "pointer", fontSize: "10px", fontFamily: "inherit", transition: "all 0.15s ease", fontWeight: 500 },
-    bg: { position: "absolute", bottom: "92px", left: "16px", display: "flex", gap: "8px", alignItems: "center", background: T.panelBg, border: "1px solid " + T.border, borderRadius: "6px", padding: "6px 12px", zIndex: 10, fontSize: "10px", backdropFilter: "blur(12px)", boxShadow: T.panelShadow },
+    inp: { background: T.bg1, border: "1px solid " + T.border, borderRadius: 0, padding: "8px 12px", minHeight: 40, lineHeight: "22px", color: T.text, fontSize: 14, fontFamily: "inherit", width: "100%", outline: "none", boxSizing: "border-box" },
+    // `label` type: 11px mono caps, ink-muted — the key above a field
+    lbl: { fontSize: 11, lineHeight: "14px", fontFamily: mono, color: T.textMuted, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 8, fontWeight: 400 },
+    // the destructive button: Yardstick `problem` fill, cream lettering, ink border
+    del: { background: T.delBg, border: "1px solid " + T.border, borderRadius: 4, minHeight: 40, padding: "0 16px", color: T.delText, fontSize: 12, fontFamily: font, fontWeight: 500, letterSpacing: "0.14em", textTransform: "uppercase", cursor: "pointer", width: "100%", marginTop: 12 },
+    cr: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, padding: "6px 0", borderBottom: "1px solid " + T.bg3, fontSize: 13 },
+    ct: { display: "flex", justifyContent: "space-between", padding: "10px 0 0", borderTop: "1px solid " + T.border, marginTop: 8, fontWeight: 500, color: T.text, fontSize: 15, fontFamily: mono },
+    sec: { marginBottom: 16 },
+    // `plate` lettering over a hairline: the block head
+    sh: { fontSize: 12, lineHeight: "16px", fontFamily: font, color: T.text, textTransform: "uppercase", letterSpacing: "0.14em", marginBottom: 10, paddingBottom: 6, borderBottom: "1px solid " + T.border, fontWeight: 500, display: "flex", alignItems: "center", gap: 8 },
+    smBtn: { minHeight: 40, padding: "0 12px", background: T.bg1, color: T.text, border: "1px solid " + T.border, borderRadius: 4, cursor: "pointer", fontSize: 12, fontFamily: font, fontWeight: 500, letterSpacing: "0.14em", textTransform: "uppercase", display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6 },
+    bg: { position: "absolute", bottom: "92px", left: "16px", display: "flex", gap: 10, alignItems: "center", background: T.panelBg, border: "1px solid " + T.border, padding: "4px 12px", zIndex: 10, fontSize: 11, fontFamily: mono, textTransform: "uppercase", letterSpacing: "0.04em", color: T.textMuted },
     toolRail: {
-      width: 52,
+      width: 56,
       flexShrink: 0,
       background: T.bg1,
-      borderRight: "1px solid " + T.bg3,
+      borderRight: "1px solid " + T.border,
       display: "flex",
       flexDirection: "column",
       alignItems: "center",
-      gap: 4,
+      gap: 8,
       padding: "8px 0",
       overflowY: "auto",
       overflowX: "hidden",
     },
     toolSepH: { height: 1, width: 28, background: T.border, margin: "4px 0", flexShrink: 0 },
-    toolBtn: (a, c) => ({
-      width: "44px",
-      height: "44px",
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "center",
-      background: a ? (c || T.brand) + "1F" : "transparent",
-      border: a ? "1.5px solid " + (c || T.brand) : "1.5px solid transparent",
-      borderRadius: "7px",
-      cursor: "pointer",
-      color: a ? (c || T.brand) : T.accent,
-      boxShadow: a ? "0 0 0 3px " + (c || T.brand) + "14, 0 2px 10px " + (c || T.brand) + "24" : "none",
-      transition: "all 0.15s ease",
-      position: "relative"
-    }),
+    // a pressed tool stays INK (fill ink, glyph paper) — blue is for the thing you selected
+    toolBtn: (a, c) => ({ width: 38, height: 38, display: "flex", alignItems: "center", justifyContent: "center", background: a ? T.text : "transparent", border: "none", borderRadius: 0, cursor: "pointer", color: a ? T.bg1 : T.text, position: "relative" }),
     toolSep: { width: "1px", height: "32px", background: T.border, margin: "0 4px" },
-    tbtn: (a, c) => ({
-      padding: "6px 12px",
-      background: a ? (c || T.border) + "30" : "transparent",
-      color: a ? (c || T.textBright) : T.accentDim,
-      border: "none",
-      borderRadius: "5px",
-      cursor: "pointer",
-      fontSize: "10px",
-      fontFamily: "inherit",
-      display: "flex",
-      alignItems: "center",
-      gap: "5px",
-      transition: "all 0.12s ease",
-      fontWeight: a ? 500 : 400
-    }),
-  }), [T, sidebarOpen, canvasT, font, display]);
+    tbtn: (a, c) => ({ padding: "0 12px", minHeight: 32, background: a ? T.text : "transparent", color: a ? T.bg1 : T.text, border: "none", borderRadius: 4, cursor: "pointer", fontSize: 12, fontFamily: "inherit", display: "flex", alignItems: "center", gap: 6, fontWeight: 500 }),
+  }), [T, sidebarOpen, canvasT, font, display, mono]);
 
   const isDrawing = drawChain || drawPolyZone || drawRevCloud || drawFlowPath || drawFloorRegion;
 
@@ -2442,10 +2501,9 @@ export default function TestfitTool() {
   const inspSel = !!(selZone || selMarker || selFurniture || selWall || selNode || selDoor || selWindow || selColumn || selLabel || selElevLabel || selRevCloud || selElevRevCloud || selFlowPath || selFloorRegion || selType === "floor" || (selectedIds.length > 1 && multiSelType));
   const inspTool = !selectedId && ((mode === "build" && (isWallTool(tool) || tool === "door" || tool === "window" || tool === "column")) || (mode === "itmep" && (tool === "marker" || tool === "outlet" || tool === "lighting")) || (mode === "zone" && tool === "zone") || (mode === "furnish" && tool === "furniture"));
   const inspectorToggle = (
-    <div style={{ position: "sticky", top: -12, zIndex: 2, display: "flex", justifyContent: "flex-end", marginTop: -12, marginBottom: 2, paddingTop: 8, background: T.panelBg }}>
-      <button onClick={() => setInspectorOpen(false)} title="Collapse panel"
-        style={{ width: 20, height: 20, display: "flex", alignItems: "center", justifyContent: "center", border: "none", background: "transparent", cursor: "pointer", color: T.textMuted, padding: 0 }}>
-        <ChevronRight size={15} />
+    <div style={{ position: "sticky", top: -12, zIndex: 2, display: "flex", justifyContent: "flex-end", marginTop: -12, marginBottom: 4, paddingTop: 6, background: T.panelBg }}>
+      <button type="button" className="ys-ibtn" onClick={() => setInspectorOpen(false)} title="Collapse panel" aria-label="Collapse panel">
+        <ChevronRight size={16} strokeWidth={1.25} absoluteStrokeWidth strokeLinecap="square" strokeLinejoin="miter" />
       </button>
     </div>
   );
@@ -2799,9 +2857,10 @@ export default function TestfitTool() {
           <svg ref={interactive ? cvs : undefined} data-testid={interactive ? "plan-canvas" : "docs-slide-canvas"}
             width={interactive ? "100%" : width} height={interactive ? "100%" : height}
             style={interactive
-              ? { cursor: (panning || spaceHeld) ? "grabbing" : resize ? ({ n:"ns-resize",s:"ns-resize",e:"ew-resize",w:"ew-resize",ne:"nesw-resize",sw:"nesw-resize",nw:"nwse-resize",se:"nwse-resize" }[resize.edge] || "nwse-resize") : (drag?.type === "zone-edge" && drag.cursor) ? drag.cursor : (drag?.type === "revcloud-edge" && drag.cursor) ? drag.cursor : (drag?.type === "floorRegion-edge" && drag.cursor) ? drag.cursor : zoneEdge ? zoneEdge.cursor : cadCrosshair(T.crosshairColor), userSelect: "none", display: (view3d && !splitView) ? "none" : undefined, transform: canvasRotation ? `rotate(${canvasRotation}deg)` : undefined, transformOrigin: "center", transition: canvasRotNoTransition ? "none" : "transform 0.25s cubic-bezier(0.4,0,0.2,1)" }
+              ? { cursor: (panning || spaceHeld) ? "grabbing" : resize ? ({ n:"ns-resize",s:"ns-resize",e:"ew-resize",w:"ew-resize",ne:"nesw-resize",sw:"nesw-resize",nw:"nwse-resize",se:"nwse-resize" }[resize.edge] || "nwse-resize") : (drag?.type === "zone-edge" && drag.cursor) ? drag.cursor : (drag?.type === "revcloud-edge" && drag.cursor) ? drag.cursor : (drag?.type === "floorRegion-edge" && drag.cursor) ? drag.cursor : zoneEdge ? zoneEdge.cursor : cadCrosshair(T.crosshairColor), userSelect: "none", touchAction: "none", display: (view3d && !splitView) ? "none" : undefined, transform: canvasRotation ? `rotate(${canvasRotation}deg)` : undefined, transformOrigin: "center", transition: canvasRotNoTransition ? "none" : "transform 0.25s cubic-bezier(0.4,0,0.2,1)" }
               : { pointerEvents: "none", display: "block", background: T.canvas }}
-            onMouseDown={interactive ? onDown : undefined} onMouseMove={interactive ? onMove : undefined} onMouseUp={interactive ? onUp : undefined} onMouseLeave={interactive ? onUp : undefined} onWheel={interactive ? onWheel : undefined}>
+            onMouseDown={interactive ? onDown : undefined} onMouseMove={interactive ? onMove : undefined} onMouseUp={interactive ? onUp : undefined} onMouseLeave={interactive ? onUp : undefined} onWheel={interactive ? onWheel : undefined}
+            onPointerDown={interactive ? onPointerDownTouch : undefined} onPointerMove={interactive ? onPointerMoveTouch : undefined} onPointerUp={interactive ? onPointerEndTouch : undefined} onPointerCancel={interactive ? onPointerEndTouch : undefined}>
             <defs>
               <filter id="glow-budget" x="-50%" y="-50%" width="200%" height="200%">
                 <feGaussianBlur stdDeviation="4" result="coloredBlur"/>
@@ -3053,7 +3112,8 @@ export default function TestfitTool() {
                 const rotHandle = editable ? (() => {
                   const R = hd + 22 / zoom;                        // above the top (−depth) edge
                   const hx = f.x - uy[0] * R, hy = f.y - uy[1] * R;
-                  return <g onMouseDown={ev => { ev.stopPropagation(); setRotatingFurniture({ id: f.id, cx: f.x, cy: f.y }); }}>
+                  return <g onMouseDown={ev => { ev.stopPropagation(); setRotatingFurniture({ id: f.id, cx: f.x, cy: f.y }); }}
+                    onPointerDown={ev => { if (grabTouch(ev)) setRotatingFurniture({ id: f.id, cx: f.x, cy: f.y }); }}>
                     <line x1={f.x} y1={f.y} x2={hx} y2={hy} stroke="#C07840" strokeWidth={1.5} strokeDasharray="3 2" style={{ pointerEvents: "none" }} />
                     <circle cx={hx} cy={hy} r={5 / zoom} fill="#C07840" stroke="#fff" strokeWidth={1.5} style={{ cursor: "grab" }} />
                   </g>;
@@ -3068,12 +3128,11 @@ export default function TestfitTool() {
                     const hx = f.x + sx * hw * ux[0] + sy * hd * uy[0];
                     const hy = f.y + sx * hw * ux[1] + sy * hd * uy[1];
                     const cur = (sx && sy) ? (sx * sy > 0 ? "nwse-resize" : "nesw-resize") : (sx ? "ew-resize" : "ns-resize");
+                    const rz = { id: f.id, sx, sy, ux, uy, ax: f.x - sx * hw * ux[0] - sy * hd * uy[0], ay: f.y - sx * hw * ux[1] - sy * hd * uy[1] };
                     handles.push(<rect key={`h${sx}_${sy}`} x={hx - S / 2} y={hy - S / 2} width={S} height={S}
                       fill="#fff" stroke="#C07840" strokeWidth={1.5} style={{ cursor: cur }}
-                      onMouseDown={ev => { ev.stopPropagation();
-                        setFurnitureResize({ id: f.id, sx, sy, ux, uy,
-                          ax: f.x - sx * hw * ux[0] - sy * hd * uy[0], ay: f.y - sx * hw * ux[1] - sy * hd * uy[1] });
-                      }} />);
+                      onMouseDown={ev => { ev.stopPropagation(); setFurnitureResize(rz); }}
+                      onPointerDown={ev => { if (grabTouch(ev)) setFurnitureResize(rz); }} />);
                   }
                 }
 
@@ -3149,7 +3208,7 @@ export default function TestfitTool() {
                     <circle cx={ghostPos.x} cy={ghostPos.y} r={3} fill={T.accent} />
                   </>}
                   <text x={ghostPos.x} y={ghostPos.y} textAnchor="middle" dominantBaseline="middle"
-                    fontSize={12} fill={T.textBright} fontFamily="'Inter', system-ui, sans-serif">Label…</text>
+                    fontSize={12} fill={T.textBright} fontFamily={font}>Label…</text>
                 </g>
               ))}</HoverSubscriber>
               {/* Label callout drag preview */}
@@ -3168,7 +3227,7 @@ export default function TestfitTool() {
                     <circle cx={ghostPos.x} cy={ghostPos.y} r={3} fill={T.accent} />
                   </>}
                   <text x={ghostPos.x} y={ghostPos.y} textAnchor="middle" dominantBaseline="middle"
-                    fontSize={12} fill={T.textBright} fontFamily="'Inter', system-ui, sans-serif">Label…</text>
+                    fontSize={12} fill={T.textBright} fontFamily={font}>Label…</text>
                 </g>
               ))}</HoverSubscriber>
               {/* Leader tip drag snap indicator */}
@@ -3478,7 +3537,7 @@ export default function TestfitTool() {
               })())}</HoverSubscriber>
 
               {/* Markers (top) */}
-              <PlanMarkersLayer markers={markers} chromeT={chromeT} themeMode={themeMode} tool={tool} mode={mode} pxPerFoot={pxPerFoot} zoom={zoom} selectedId={selectedId} selType={selType} selectedIds={selectedIds} markerVisible={markerVisible} visibleLayers={visibleLayers} visibleBuildElectrical={visibleBuildElectrical} visibleBuildLighting={visibleBuildLighting} resolvePos={resolvePos} setRotatingMarker={setRotatingMarker} lod={lod} />
+              <PlanMarkersLayer onTouchGrab={grabTouch} markers={markers} chromeT={chromeT} themeMode={themeMode} tool={tool} mode={mode} pxPerFoot={pxPerFoot} zoom={zoom} selectedId={selectedId} selType={selType} selectedIds={selectedIds} markerVisible={markerVisible} visibleLayers={visibleLayers} visibleBuildElectrical={visibleBuildElectrical} visibleBuildLighting={visibleBuildLighting} resolvePos={resolvePos} setRotatingMarker={setRotatingMarker} lod={lod} />
 
               {/* Proximity-hover preview ring — fades in as cursor approaches a hoverable */}
               <HoverSubscriber>{({ ghostPos, cursorPos, proxHover, smartGuides, hoverNid }) => (proxHover && !marquee && tool === "select" && (!drag || PROX_DRAG_TYPES.has(drag.type)) && (() => {
@@ -3545,11 +3604,11 @@ export default function TestfitTool() {
 
   return (
     <TooltipProvider>
-    <div className="tf-app-root" style={S.root}>
+    <div className="tf-app-root ys" data-theme={themeMode} style={S.root}>
       {/* Brief confirmations for actions with no other visible feedback (copy, paste, delete…). */}
       <Toaster position="bottom-center" duration={1800} toastOptions={{ style: {
-        background: T.panelBg, border: "1px solid " + T.border, color: T.textBright,
-        fontFamily: font, fontSize: 11, backdropFilter: "blur(12px)" } }} />
+        background: T.panelBg, border: "1px solid " + T.border, color: T.text, borderRadius: 0, boxShadow: "none",
+        fontFamily: font, fontSize: 13 } }} />
       {showShortcuts && <ShortcutSheet T={T} S={S} font={font} display={display} onClose={() => setShowShortcuts(false)} />}
       {/* ── Top Mode Bar ──────────────────────────────────────────── */}
       <TopBar $={$} MODES={MODES} S={S} T={T} activeSnapshotId={activeSnapshotId} canRedo={canRedo} canUndo={canUndo} cost={cost} deleteSnapshot={deleteSnapshot} display={display} exportPdf={exportPdf} exportPng={exportPng} exportSvg={exportSvg} exportDxf={exportDxf} exportProject={exportProject} exportDxfSlide={mode === "docs" && activeDocsSlide?.view === "plan" && activeDocsSlide.rect ? exportDxfSlide : null} activeSlideName={activeDocsSlide?.title || activeDocsSlide?.name || ""} readAutosaveHistory={readAutosaveHistory} restoreAutosave={restoreAutosave} projects={projectList.projects} projectsKind={projectList.backendKind} projectsCanWrite={projectList.canWrite} projectsBusy={projectList.busy} saveToProjects={projectList.saveProject} openProject={projectList.openProject} deleteProject={projectList.deleteProject} renameProject={projectList.renameProject} activeProjectId={projectList.activeId} projectName={projectName} font={font} importProject={importProject} liveDirty={liveDirty} loadRef={loadRef} markers={markers} mode={mode} modeMenuRect={modeMenuRect} newProject={newProject} newSnapMode={newSnapMode} redo={redo} renameSnapshot={renameSnapshot} renamingSnapId={renamingSnapId} saveMenuRect={saveMenuRect} setMode={setMode} setModeMenuRect={setModeMenuRect} setNewSnapMode={setNewSnapMode} setRenamingSnapId={setRenamingSnapId} setSaveMenuRect={setSaveMenuRect} setShowModeMenu={setShowModeMenu} setShowSaveMenu={setShowSaveMenu} setShowSettings={setShowSettings} setShowSnapMenu={setShowSnapMenu} setSidebarOpen={setSidebarOpen} setSnapDraftName={setSnapDraftName} setSnapMenuRect={setSnapMenuRect} setT={setT} setThemeMode={setThemeMode} monoDraw={monoDraw} setMonoDraw={setMonoDraw} monoSkin={monoSkin} setMonoSkin={setMonoSkin} monoTiers={monoT.tiers} showModeMenu={showModeMenu} showSaveMenu={showSaveMenu} showSnapMenu={showSnapMenu} sidebarOpen={sidebarOpen} snapDraftName={snapDraftName} snapMenuRect={snapMenuRect} snapshot={snapshot} snapshots={snapshots} switchSnapshot={switchSnapshot} takeSnapshot={takeSnapshot} themeMode={themeMode} undo={undo} updateSnapshot={updateSnapshot} walls={walls} zones={zones} furnitureCount={furniture.length} panes={panes} setLayout={setLayout} setSelType={setSelType} setSelectedId={setSelectedId} setSelectedIds={setSelectedIds} slidesCount={slides.length} />
@@ -3706,11 +3765,11 @@ export default function TestfitTool() {
             </div>
           )}
 
-          {drawChain && !view3d && <div style={{ position: "absolute", top: "16px", left: "50%", transform: "translateX(-50%)", background: T.panelBg, border: "1px solid " + T.border, borderRadius: "6px", padding: "6px 14px", fontSize: "10px", color: MODES[mode].color, zIndex: 10, backdropFilter: "blur(12px)", boxShadow: T.panelShadow, fontWeight: 500 }}>
+          {drawChain && !view3d && <div style={{ position: "absolute", top: "16px", left: "50%", transform: "translateX(-50%)", background: T.panelBg, border: "1px solid " + T.border, padding: "8px 14px", fontSize: "12px", color: T.text, zIndex: 10, fontWeight: 500 }}>
             Click to place · Double-click to finish · Shift: 45° snap · Type length to lock
           </div>}
 
-          {drawRect && !view3d && <div style={{ position: "absolute", top: "16px", left: "50%", transform: "translateX(-50%)", background: T.panelBg, border: "1px solid " + T.border, borderRadius: "6px", padding: "6px 14px", fontSize: "10px", color: MODES[mode].color, zIndex: 10, backdropFilter: "blur(12px)", boxShadow: T.panelShadow, fontWeight: 500 }}>
+          {drawRect && !view3d && <div style={{ position: "absolute", top: "16px", left: "50%", transform: "translateX(-50%)", background: T.panelBg, border: "1px solid " + T.border, padding: "8px 14px", fontSize: "12px", color: T.text, zIndex: 10, fontWeight: 500 }}>
             Click the opposite corner · Type a size to lock it (20x30, 20'6"x30') · Alt: off-grid
           </div>}
           
@@ -3844,9 +3903,9 @@ export default function TestfitTool() {
 
           {/* Collapsed option-panel handle — re-expands the panel */}
           {(inspSel || inspTool) && !inspectorOpen && (
-            <button onClick={() => setInspectorOpen(true)} title="Show options panel"
-              style={{ position: "fixed", top: 52, right: 12, zIndex: 50, width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center", background: T.panelBg, border: "1px solid " + T.border, borderRadius: 8, cursor: "pointer", color: T.textMuted, backdropFilter: "blur(12px)", boxShadow: T.panelShadow }}>
-              <ChevronLeft size={16} />
+            <button type="button" className="ys-btn ys-btn--icon" onClick={() => setInspectorOpen(true)} title="Show options panel" aria-label="Show options panel"
+              style={{ position: "fixed", top: 60, right: 12, zIndex: 50 }}>
+              <ChevronLeft size={18} strokeWidth={1.25} absoluteStrokeWidth strokeLinecap="square" strokeLinejoin="miter" />
             </button>
           )}
 
@@ -3854,7 +3913,7 @@ export default function TestfitTool() {
 
           <ToolOptions $={$} S={S} T={T} activeComponentType={activeComponentType} activeSpecLayer={activeSpecLayer} activeZoneType={activeZoneType} chromeT={chromeT} columnLabel={columnLabel} columnNotes={columnNotes} columnShape={columnShape} columnSize={columnSize} doorFlipped={doorFlipped} doorHingeRight={doorHingeRight} doorType={doorType} doorWidth={doorWidth} htrackAngle={htrackAngle} inspTool={inspTool} inspectorOpen={inspectorOpen} inspectorToggle={inspectorToggle} lightingIsNew={lightingIsNew} lightingType={lightingType} markerFinish={markerFinish} markerNotes={markerNotes} mode={mode} outletIsNew={outletIsNew} outletType={outletType} ponyDepth={ponyDepth} ponyHeight={ponyHeight} pxPerFoot={pxPerFoot} setActiveComponentType={setActiveComponentType} setActiveZoneType={setActiveZoneType} setColumnLabel={setColumnLabel} setColumnNotes={setColumnNotes} setColumnShape={setColumnShape} setColumnSize={setColumnSize} setDoorFlipped={setDoorFlipped} setDoorHingeRight={setDoorHingeRight} setDoorType={setDoorType} setDoorWidth={setDoorWidth} setLightingIsNew={setLightingIsNew} setLightingType={setLightingType} setMarkerFinish={setMarkerFinish} setMarkerNotes={setMarkerNotes} setOutletIsNew={setOutletIsNew} setOutletType={setOutletType} setPonyDepth={setPonyDepth} setPonyHeight={setPonyHeight} setT={setT} setWallKind={setWallKind} setWallMaterial={setWallMaterial} setWallNotes={setWallNotes} setWindowHeight={setWindowHeight} setWindowSill={setWindowSill} setWindowType={setWindowType} setWindowWidth={setWindowWidth} setZoneNotes={setZoneNotes} setZonePaintColor={setZonePaintColor} setZonePaintFinish={setZonePaintFinish} themeMode={themeMode} tool={tool} wallKind={wallKind} wallKinds={wallKinds} wallMaterial={wallMaterial} wallNotes={wallNotes} windowHeight={windowHeight} windowSill={windowSill} windowType={windowType} windowWidth={windowWidth} zoneLibrary={zoneLibrary} zoneNotes={zoneNotes} zonePaintColor={zonePaintColor} zonePaintFinish={zonePaintFinish} />
 
-          {bgImage && <div style={S.bg}><span style={{ color: T.textMuted, fontSize: 10, fontWeight: 500 }}>Underlay</span><input type="range" min="0" max="100" value={bgOpacity * 100} onChange={e => setBgOpacity(e.target.value / 100)} style={{ width: 70, accentColor: "#9A9488", height: 4 }} /><span style={{ fontSize: 10, fontWeight: 500 }}>{Math.round(bgOpacity * 100)}%</span></div>}
+          {bgImage && <div style={S.bg}><span>Underlay</span><input type="range" min="0" max="100" aria-label="Underlay opacity" value={bgOpacity * 100} onChange={e => setBgOpacity(e.target.value / 100)} style={{ width: 90 }} /><span style={{ color: T.text, fontVariantNumeric: "tabular-nums" }}>{Math.round(bgOpacity * 100)}%</span></div>}
 
 
         </div>
@@ -3876,29 +3935,30 @@ export default function TestfitTool() {
 
       {/* ── App Status Bar — fixed footer below all panes ───────────── */}
       {(() => {
-        const slbl = { fontFamily: display, fontSize: 9, letterSpacing: "0.18em", color: T.textMuted, fontWeight: 600, textTransform: "uppercase" };
-        const sval = { fontFamily: font, fontSize: 11, color: T.textBright, fontWeight: 500, letterSpacing: "0.02em" };
-        const sdiv = { width: 1, height: 14, background: T.border, flexShrink: 0 };
+        // `label` (mono caps, ink-muted) for the keys, `data` (mono, tabular) for the figures
+        const slbl = { fontFamily: mono, fontSize: 11, letterSpacing: "0.04em", color: T.textMuted, fontWeight: 400, textTransform: "uppercase" };
+        const sval = { fontFamily: mono, fontSize: 13, color: T.text, fontWeight: 400, fontVariantNumeric: "tabular-nums" };
+        const sdiv = { width: 1, height: 14, background: T.bg3, flexShrink: 0 };
         return (
-        <div data-testid="app-statusbar" style={{ background: T.bg2, borderTop: "1px solid " + T.border, padding: "0 16px", height: 30, display: "flex", alignItems: "center", gap: 14, fontSize: 10, color: T.textDim, flexShrink: 0 }}>
+        <div data-testid="app-statusbar" style={{ background: T.bg1, borderTop: "1px solid " + T.border, padding: "0 16px", height: 30, display: "flex", alignItems: "center", gap: 14, fontSize: 11, fontFamily: mono, color: T.textMuted, flexShrink: 0, whiteSpace: "nowrap", overflowX: "auto", overflowY: "hidden" }}>
           {/* Context tick — current workflow stage */}
-          <span style={{ width: 7, height: 7, borderRadius: 1, background: T.brand, flexShrink: 0 }} />
+          <span style={{ width: 8, height: 8, background: T.text, flexShrink: 0 }} aria-hidden="true" />
           <span style={{ ...slbl, color: T.text }}>{mode === "itmep" ? "IT / MEP" : mode}</span>
 
           {mode === "zone" && (
-            <><span style={sdiv} /><span style={{ color: zoneLibrary[activeZoneType]?.color || T.accent, fontSize: 10, fontWeight: 500 }}>
+            <><span style={sdiv} /><span style={{ color: T.text, fontSize: 11, fontWeight: 500 }}>
               {zoneLibrary[activeZoneType]?.name || "—"}
             </span></>
           )}
           {mode === "itmep" && activeSpecLayer !== "power" && (
-            <><span style={sdiv} /><span style={{ color: SPEC_LAYERS[activeSpecLayer]?.color || T.accent, fontSize: 10, fontWeight: 500 }}>
-              {SPEC_COMPONENTS[activeSpecLayer]?.[activeComponentType]?.icon} {SPEC_COMPONENTS[activeSpecLayer]?.[activeComponentType]?.name}
+            <><span style={sdiv} /><span style={{ color: T.text, fontSize: 11, fontWeight: 500 }}>
+              {SPEC_COMPONENTS[activeSpecLayer]?.[activeComponentType]?.name}
             </span></>
           )}
 
           <div style={{ flex: 1 }} />
           {/* Snapping is otherwise invisible — surface it, since Alt turns it off. */}
-          <span data-testid="snap-state" style={{ ...slbl, color: snapOff ? T.brand : T.textDim }}>
+          <span data-testid="snap-state" style={{ ...slbl, color: snapOff ? T.text : T.textMuted, fontWeight: snapOff ? 500 : 400 }}>
             {snapOff ? "Snap off" : "Snap " + (snapGrid >= pxPerFoot ? "1'" : snapGrid >= pxPerFoot / 4 ? '3"' : '1"')}
           </span>
           <span style={sdiv} />
@@ -3909,12 +3969,12 @@ export default function TestfitTool() {
               level of detail kicks in, so a slow frame has a visible explanation. */}
           <span data-testid="plan-load" data-heavy={planLoad.heavy ? "true" : undefined}
             title={planLoad.heavy ? "Large plan — hatching, dimensions and labels simplify below 50% zoom so panning stays fluid" : "Walls · elements on the plan"}
-            style={{ ...slbl, color: planLoad.heavy ? T.brand : T.textDim }}>
+            style={{ ...slbl, color: planLoad.heavy ? T.text : T.textMuted, fontWeight: planLoad.heavy ? 500 : 400 }}>
             {planLoad.walls} walls · {planLoad.elements.toLocaleString()} el{planLoad.heavy ? " · large" : ""}
           </span>
           <span style={sdiv} />
           <span style={slbl}>Budget</span>
-          <span style={{ ...sval, color: T.uiBudget, fontWeight: 600 }}>{$(cost.total)}</span>
+          <span style={{ ...sval, fontWeight: 500 }}>{$(cost.total)}</span>
         </div>
         );
       })()}

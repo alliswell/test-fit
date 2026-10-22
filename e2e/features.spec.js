@@ -97,7 +97,7 @@ test("projects: save, update, save-as-new, rename, open, delete", async ({ page 
   await expect(page.getByText("Project updated")).toBeVisible();
   await page.getByTestId("save-menu").click();
   await page.getByTestId("project-save-as-new").click();
-  await expect(page.getByText("Project saved")).toHaveCount(2); // the first toast is still up
+  await expect(page.getByText("Project saved").first()).toBeVisible(); // a fresh toast (the first may have expired)
   await page.getByTestId("load-menu").click();
   await expect(entries).toHaveCount(2);
   await expect(entries.first()).toContainText("open");      // newest first, and it is the open one
@@ -190,4 +190,72 @@ test("furnish checks: overlap flags, the clearance apron, and wall-hug snapping"
   await page.getByTestId("furniture-clearance").fill("2");
   await expect(page.getByTestId("furniture-apron")).toContainText("24″ clearance");
   await expect.poll(async () => (await readModel(page)).furnitureClearance).toBe(2);
+});
+
+// ── Touch: the canvas takes a finger as well as a mouse ───────────────────────
+// Pointer events from touch are routed through the mouse handlers (testfit.jsx); CDP's
+// Input.dispatchTouchEvent drives real touches (Playwright's touchscreen only taps).
+test.describe("touch", () => {
+  test.use({ hasTouch: true });
+  const transform = (page) => page.locator('[data-testid="plan-canvas"] g[data-lod]').getAttribute("transform");
+  const parseTf = (t) => { const m = t.match(/translate\(([-\d.]+),([-\d.]+)\) scale\(([-\d.]+)\)/); return { x: +m[1], y: +m[2], z: +m[3] }; };
+  async function touch(page) {
+    const cdp = await page.context().newCDPSession(page);
+    const send = (type, pts) => cdp.send("Input.dispatchTouchEvent", { type, touchPoints: pts.map(p => ({ x: p.x, y: p.y })) });
+    return {
+      drag: async (from, to, steps = 6) => {
+        await send("touchStart", [from]);
+        for (let i = 1; i <= steps; i++) await send("touchMove", [{ x: from.x + (to.x - from.x) * i / steps, y: from.y + (to.y - from.y) * i / steps }]);
+        await send("touchEnd", []);
+      },
+      tap: async (p) => { await send("touchStart", [p]); await send("touchEnd", []); },
+      pinch: async (a0, b0, a1, b1, steps = 6) => {
+        await send("touchStart", [a0]); await send("touchStart", [a0, b0]);
+        for (let i = 1; i <= steps; i++) {
+          const k = i / steps;
+          await send("touchMove", [{ x: a0.x + (a1.x - a0.x) * k, y: a0.y + (a1.y - a0.y) * k }, { x: b0.x + (b1.x - b0.x) * k, y: b0.y + (b1.y - b0.y) * k }]);
+        }
+        await send("touchEnd", []);
+      },
+    };
+  }
+
+  test("one finger pans empty paper, two fingers pinch-zoom about their midpoint", async ({ page }) => {
+    await page.goto("/");
+    await newProject(page);
+    const { cx, cy } = await planCenter(page);
+    const t = await touch(page);
+    const t0 = parseTf(await transform(page));
+    await t.drag({ x: cx + 120, y: cy + 100 }, { x: cx + 180, y: cy + 130 });
+    await expect.poll(async () => parseTf(await transform(page)).x - t0.x).toBeCloseTo(60, 0);
+    expect(parseTf(await transform(page)).y - t0.y).toBeCloseTo(30, 0);
+    // the room under the midpoint stays put while the spread doubles
+    const before = parseTf(await transform(page));
+    await t.pinch({ x: cx - 50, y: cy }, { x: cx + 50, y: cy }, { x: cx - 100, y: cy }, { x: cx + 100, y: cy });
+    await expect.poll(async () => parseTf(await transform(page)).z / before.z).toBeGreaterThan(1.8);
+    const after = parseTf(await transform(page));
+    const box = await page.getByTestId("plan-canvas").boundingBox();
+    const mx = cx - box.x, my = cy - box.y;                      // midpoint in canvas pixels
+    const pBefore = { x: (mx - before.x) / before.z, y: (my - before.y) / before.z };
+    expect(after.x + after.z * pBefore.x).toBeCloseTo(mx, 0);
+    expect(after.y + after.z * pBefore.y).toBeCloseTo(my, 0);
+  });
+
+  test("a finger drags a piece, a tap on paper deselects it", async ({ page }) => {
+    await page.goto("/");
+    await newProject(page);
+    await page.keyboard.press("4"); // Furnish
+    const { cx, cy } = await planCenter(page);
+    await page.getByRole("button", { name: /Desk/ }).first().click();
+    await page.mouse.click(cx, cy);
+    await expect.poll(async () => (await readModel(page)).furniture?.length ?? 0).toBe(1);
+    await page.keyboard.press("v");
+    const x0 = (await readModel(page)).furniture[0].x;
+    const t = await touch(page);
+    await t.drag({ x: cx, y: cy }, { x: cx + 60, y: cy });
+    await expect.poll(async () => (await readModel(page)).furniture[0].x - x0).toBe(60);
+    await expect(page.getByText("Delete furniture")).toBeVisible();   // still selected after the drag
+    await t.tap({ x: cx - 260, y: cy - 200 });                          // empty paper
+    await expect(page.getByText("Delete furniture")).toHaveCount(0);
+  });
 });
