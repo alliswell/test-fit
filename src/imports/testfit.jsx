@@ -3940,7 +3940,7 @@ export default function TestfitTool() {
         const sval = { fontFamily: mono, fontSize: 13, color: T.text, fontWeight: 400, fontVariantNumeric: "tabular-nums" };
         const sdiv = { width: 1, height: 14, background: T.bg3, flexShrink: 0 };
         return (
-        <div data-testid="app-statusbar" style={{ background: T.bg1, borderTop: "1px solid " + T.border, padding: "0 16px", height: 30, display: "flex", alignItems: "center", gap: 14, fontSize: 11, fontFamily: mono, color: T.textMuted, flexShrink: 0 }}>
+        <div data-testid="app-statusbar" style={{ background: T.bg1, borderTop: "1px solid " + T.border, padding: "0 16px", height: 30, display: "flex", alignItems: "center", gap: 14, fontSize: 11, fontFamily: mono, color: T.textMuted, flexShrink: 0, whiteSpace: "nowrap", overflowX: "auto", overflowY: "hidden" }}>
           {/* Context tick — current workflow stage */}
           <span style={{ width: 8, height: 8, background: T.text, flexShrink: 0 }} aria-hidden="true" />
           <span style={{ ...slbl, color: T.text }}>{mode === "itmep" ? "IT / MEP" : mode}</span>
