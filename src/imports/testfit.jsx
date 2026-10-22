@@ -23,6 +23,7 @@ import Furniture2D from "../components/Furniture2D";
 import { FurnitureFlag, FurnitureApron } from "../components/plan/FurnitureChecks";
 import { FURNITURE_CATALOG, FURNITURE_CATEGORIES, ZONE_FURNISH_PLAN, layoutZoneFurniture, newFurniture } from "../constants/furniture";
 import { sheetDims, sheetInches, sheetBodyDims, fitRectToViewport, fitStandardScale, scaledRectCam, defaultSlideName, viewTitle, resolveSlideVis, SLIDE_VIS_PRESETS, matchSlidePreset } from "../utils/docs";
+import { anchorViewOff, clampZoom, pinchStep, tapCount } from "../utils/touch";
 import { useInteractionStore } from "../store/interactionStore";
 import { useHoverStore } from "../store/hoverStore";
 import HoverSubscriber from "../components/HoverSubscriber";
@@ -2095,6 +2096,107 @@ export default function TestfitTool() {
     activeComponentType, activeFurnitureType, activePhase, activeSpecLayer, activeZoneType, bgImage, bgOffset, canvasRotation, columnLabel, columnNotes, columnShape, columnSize, commitWallSegment, commitRectRoom, cvs, cvsContainer, doorFlipped, doorHingeRight, doorType, doorWidth, findDimSnap, findNear, findProxHover, floorMaterial, gn, htrackAngle, inToPx, isWallTool, lastCopyInfo, layerLocked, lightingIsNew, lightingType, markerFinish, markerLocked, markerNotes, markerVisible, mode, outletIsNew, outletType, phaseVisible, pxPerFoot, resolveDimEndpoints, resolveLeaderTip, resolvePoints, resolvePos, s2c, setBgOffset, setDimInput, setEditingLabelId, setEditingLabelText, setGuideScrub, setHoverGuideId, setLastCopyInfo, setT, setTool, setViewOff, setZoneEdge, snapGrid, snapGuide, snapLabelAnchor, snapToWall, themeMode, tool, viewOff, visibleFurniture, wallKind, wallHalfT, wc, windowHeight, windowSill, windowType, windowWidth, zoneEdge, zoneLibrary, zoneNotes, zonePaintColor, zonePaintFinish, zoom,
   });
 
+  // ── Touch & pen input ───────────────────────────────────────────────────────
+  // The canvas handlers above were written for the mouse: onDown/onMove/onUp read clientX/Y,
+  // button, detail and the modifier keys. A finger never produced those — touch yields
+  // compatibility MOUSE events only for a tap, never for a drag — so a phone could tap but
+  // not pan, drag or draw. Pointer events carry touch and pen through the SAME handlers via
+  // a synthetic mouse-shaped event (synthPointer):
+  //  · one finger on an object → the ordinary down/move/up (drag, draw, place);
+  //  · one finger on EMPTY paper with Select → PAN, by handing onDown button 1 (the
+  //    middle-drag pan path): a finger has no marquee. Yardstick: "In Select, drag pans and
+  //    a tap selects, on mouse and finger alike". A tap that never moved clears the
+  //    selection, as a click on empty paper does;
+  //  · two fingers → pinch zoom about the fingers' midpoint + pan (utils/touch.js), with
+  //    the same anchoring as wheel zoom; the first finger's gesture is ended first, and the
+  //    finger left behind after a pinch is inert until it lifts;
+  //  · double-tap is reconstructed with tapCount, since PointerEvent.detail is always 0.
+  // preventDefault on pointerdown suppresses the compatibility mouse events, so a tap never
+  // reaches onDown twice; touch-action: none on the svg keeps the browser from scrolling or
+  // zooming the page instead. Mouse pointers return early — the desktop path is untouched.
+  // Rotate/scale HANDLES claim their touch through grabTouch (below) from their own
+  // onPointerDown, so a finger on a handle rotates instead of dragging the piece under it.
+  const touchRef = useRef({ pts: new Map(), lastTap: null, mode: null, last: null, panTap: false, downAt: null });
+  // A pointer's position in the SVG viewport's own pixels — container-relative and
+  // un-rotated when the canvas is CSS-rotated — the space wheel-zoom anchors in.
+  const svgPt = useCallback((cx, cy) => {
+    const r = (cvsContainer.current ?? cvs.current)?.getBoundingClientRect();
+    if (!r) return { x: cx, y: cy };
+    let dx = cx - (r.left + r.width / 2), dy = cy - (r.top + r.height / 2);
+    if (canvasRotation !== 0) {
+      const rad = -canvasRotation * Math.PI / 180, cos = Math.cos(rad), sin = Math.sin(rad);
+      [dx, dy] = [dx * cos - dy * sin, dx * sin + dy * cos];
+    }
+    return { x: dx + r.width / 2, y: dy + r.height / 2 };
+  }, [canvasRotation]);
+  const synthPointer = (e, over) => ({
+    clientX: e.clientX, clientY: e.clientY, button: 0, detail: 1,
+    shiftKey: !!e.shiftKey, altKey: !!e.altKey, ctrlKey: !!e.ctrlKey, metaKey: !!e.metaKey,
+    target: e.target, currentTarget: e.currentTarget, preventDefault() {}, stopPropagation() {}, ...over,
+  });
+  const capturePointer = (id) => { try { cvs.current?.setPointerCapture(id); } catch { /* unsupported */ } };
+  const grabTouch = useCallback((ev) => {
+    if (ev.pointerType === "mouse") return false;
+    ev.stopPropagation(); ev.preventDefault();
+    const t = touchRef.current;
+    t.pts.set(ev.pointerId, svgPt(ev.clientX, ev.clientY));
+    t.mode = "single"; t.last = { x: ev.clientX, y: ev.clientY }; t.panTap = false;
+    capturePointer(ev.pointerId);
+    return true;
+  }, [svgPt]);
+  const onPointerDownTouch = (e) => {
+    if (e.pointerType === "mouse") return;
+    e.preventDefault();
+    const t = touchRef.current;
+    t.pts.set(e.pointerId, svgPt(e.clientX, e.clientY));
+    capturePointer(e.pointerId);
+    if (t.pts.size === 2) {
+      if (t.mode === "single") onUp(synthPointer(e, { clientX: t.last?.x ?? e.clientX, clientY: t.last?.y ?? e.clientY }));
+      t.mode = "pinch"; t.panTap = false;
+      return;
+    }
+    if (t.pts.size > 2) return;
+    const now = { t: performance.now(), x: e.clientX, y: e.clientY };
+    const count = tapCount(t.lastTap, now);
+    t.lastTap = { ...now, count };
+    t.mode = "single"; t.last = { x: e.clientX, y: e.clientY }; t.downAt = { x: e.clientX, y: e.clientY };
+    const empty = tool === "select" && !hitTest(s2c(e.clientX, e.clientY));
+    t.panTap = empty;
+    onDown(synthPointer(e, { button: empty ? 1 : 0, detail: count }));
+  };
+  const onPointerMoveTouch = (e) => {
+    if (e.pointerType === "mouse") return;
+    const t = touchRef.current;
+    if (!t.pts.has(e.pointerId)) return;
+    if (t.mode === "pinch") {
+      const ids = [...t.pts.keys()].slice(0, 2);
+      if (!ids.includes(e.pointerId)) return;
+      const prev = ids.map(id => t.pts.get(id));
+      t.pts.set(e.pointerId, svgPt(e.clientX, e.clientY));
+      const { ratio, mid0, mid1 } = pinchStep(prev, ids.map(id => t.pts.get(id)));
+      setZoom(z => { const nz = clampZoom(z * ratio); setViewOff(v => anchorViewOff(v, mid0, mid1, nz / z)); return nz; });
+      return;
+    }
+    t.pts.set(e.pointerId, svgPt(e.clientX, e.clientY));
+    if (t.mode !== "single") return;
+    t.last = { x: e.clientX, y: e.clientY };
+    onMove(synthPointer(e));
+  };
+  const onPointerEndTouch = (e) => {
+    if (e.pointerType === "mouse") return;
+    const t = touchRef.current;
+    if (!t.pts.has(e.pointerId)) return;
+    t.pts.delete(e.pointerId);
+    if (t.mode === "single") {
+      onUp(synthPointer(e));
+      if (t.panTap && t.downAt && Math.hypot(e.clientX - t.downAt.x, e.clientY - t.downAt.y) < 8) {
+        setSelectedId(null); setSelType(null); setSelectedIds([]);
+      }
+    }
+    t.mode = t.pts.size ? "settle" : null;
+    t.panTap = false;
+  };
+
   // ── Docs stage plumbing ─────────────────────────────────────────────
   // renderSlideBody: the render prop DocsView uses to draw a slide's model content.
   // Slides render the LIVE model at the slide's saved crop — planning edits show up
@@ -2755,9 +2857,10 @@ export default function TestfitTool() {
           <svg ref={interactive ? cvs : undefined} data-testid={interactive ? "plan-canvas" : "docs-slide-canvas"}
             width={interactive ? "100%" : width} height={interactive ? "100%" : height}
             style={interactive
-              ? { cursor: (panning || spaceHeld) ? "grabbing" : resize ? ({ n:"ns-resize",s:"ns-resize",e:"ew-resize",w:"ew-resize",ne:"nesw-resize",sw:"nesw-resize",nw:"nwse-resize",se:"nwse-resize" }[resize.edge] || "nwse-resize") : (drag?.type === "zone-edge" && drag.cursor) ? drag.cursor : (drag?.type === "revcloud-edge" && drag.cursor) ? drag.cursor : (drag?.type === "floorRegion-edge" && drag.cursor) ? drag.cursor : zoneEdge ? zoneEdge.cursor : cadCrosshair(T.crosshairColor), userSelect: "none", display: (view3d && !splitView) ? "none" : undefined, transform: canvasRotation ? `rotate(${canvasRotation}deg)` : undefined, transformOrigin: "center", transition: canvasRotNoTransition ? "none" : "transform 0.25s cubic-bezier(0.4,0,0.2,1)" }
+              ? { cursor: (panning || spaceHeld) ? "grabbing" : resize ? ({ n:"ns-resize",s:"ns-resize",e:"ew-resize",w:"ew-resize",ne:"nesw-resize",sw:"nesw-resize",nw:"nwse-resize",se:"nwse-resize" }[resize.edge] || "nwse-resize") : (drag?.type === "zone-edge" && drag.cursor) ? drag.cursor : (drag?.type === "revcloud-edge" && drag.cursor) ? drag.cursor : (drag?.type === "floorRegion-edge" && drag.cursor) ? drag.cursor : zoneEdge ? zoneEdge.cursor : cadCrosshair(T.crosshairColor), userSelect: "none", touchAction: "none", display: (view3d && !splitView) ? "none" : undefined, transform: canvasRotation ? `rotate(${canvasRotation}deg)` : undefined, transformOrigin: "center", transition: canvasRotNoTransition ? "none" : "transform 0.25s cubic-bezier(0.4,0,0.2,1)" }
               : { pointerEvents: "none", display: "block", background: T.canvas }}
-            onMouseDown={interactive ? onDown : undefined} onMouseMove={interactive ? onMove : undefined} onMouseUp={interactive ? onUp : undefined} onMouseLeave={interactive ? onUp : undefined} onWheel={interactive ? onWheel : undefined}>
+            onMouseDown={interactive ? onDown : undefined} onMouseMove={interactive ? onMove : undefined} onMouseUp={interactive ? onUp : undefined} onMouseLeave={interactive ? onUp : undefined} onWheel={interactive ? onWheel : undefined}
+            onPointerDown={interactive ? onPointerDownTouch : undefined} onPointerMove={interactive ? onPointerMoveTouch : undefined} onPointerUp={interactive ? onPointerEndTouch : undefined} onPointerCancel={interactive ? onPointerEndTouch : undefined}>
             <defs>
               <filter id="glow-budget" x="-50%" y="-50%" width="200%" height="200%">
                 <feGaussianBlur stdDeviation="4" result="coloredBlur"/>
@@ -3009,7 +3112,8 @@ export default function TestfitTool() {
                 const rotHandle = editable ? (() => {
                   const R = hd + 22 / zoom;                        // above the top (−depth) edge
                   const hx = f.x - uy[0] * R, hy = f.y - uy[1] * R;
-                  return <g onMouseDown={ev => { ev.stopPropagation(); setRotatingFurniture({ id: f.id, cx: f.x, cy: f.y }); }}>
+                  return <g onMouseDown={ev => { ev.stopPropagation(); setRotatingFurniture({ id: f.id, cx: f.x, cy: f.y }); }}
+                    onPointerDown={ev => { if (grabTouch(ev)) setRotatingFurniture({ id: f.id, cx: f.x, cy: f.y }); }}>
                     <line x1={f.x} y1={f.y} x2={hx} y2={hy} stroke="#C07840" strokeWidth={1.5} strokeDasharray="3 2" style={{ pointerEvents: "none" }} />
                     <circle cx={hx} cy={hy} r={5 / zoom} fill="#C07840" stroke="#fff" strokeWidth={1.5} style={{ cursor: "grab" }} />
                   </g>;
@@ -3024,12 +3128,11 @@ export default function TestfitTool() {
                     const hx = f.x + sx * hw * ux[0] + sy * hd * uy[0];
                     const hy = f.y + sx * hw * ux[1] + sy * hd * uy[1];
                     const cur = (sx && sy) ? (sx * sy > 0 ? "nwse-resize" : "nesw-resize") : (sx ? "ew-resize" : "ns-resize");
+                    const rz = { id: f.id, sx, sy, ux, uy, ax: f.x - sx * hw * ux[0] - sy * hd * uy[0], ay: f.y - sx * hw * ux[1] - sy * hd * uy[1] };
                     handles.push(<rect key={`h${sx}_${sy}`} x={hx - S / 2} y={hy - S / 2} width={S} height={S}
                       fill="#fff" stroke="#C07840" strokeWidth={1.5} style={{ cursor: cur }}
-                      onMouseDown={ev => { ev.stopPropagation();
-                        setFurnitureResize({ id: f.id, sx, sy, ux, uy,
-                          ax: f.x - sx * hw * ux[0] - sy * hd * uy[0], ay: f.y - sx * hw * ux[1] - sy * hd * uy[1] });
-                      }} />);
+                      onMouseDown={ev => { ev.stopPropagation(); setFurnitureResize(rz); }}
+                      onPointerDown={ev => { if (grabTouch(ev)) setFurnitureResize(rz); }} />);
                   }
                 }
 
@@ -3434,7 +3537,7 @@ export default function TestfitTool() {
               })())}</HoverSubscriber>
 
               {/* Markers (top) */}
-              <PlanMarkersLayer markers={markers} chromeT={chromeT} themeMode={themeMode} tool={tool} mode={mode} pxPerFoot={pxPerFoot} zoom={zoom} selectedId={selectedId} selType={selType} selectedIds={selectedIds} markerVisible={markerVisible} visibleLayers={visibleLayers} visibleBuildElectrical={visibleBuildElectrical} visibleBuildLighting={visibleBuildLighting} resolvePos={resolvePos} setRotatingMarker={setRotatingMarker} lod={lod} />
+              <PlanMarkersLayer onTouchGrab={grabTouch} markers={markers} chromeT={chromeT} themeMode={themeMode} tool={tool} mode={mode} pxPerFoot={pxPerFoot} zoom={zoom} selectedId={selectedId} selType={selType} selectedIds={selectedIds} markerVisible={markerVisible} visibleLayers={visibleLayers} visibleBuildElectrical={visibleBuildElectrical} visibleBuildLighting={visibleBuildLighting} resolvePos={resolvePos} setRotatingMarker={setRotatingMarker} lod={lod} />
 
               {/* Proximity-hover preview ring — fades in as cursor approaches a hoverable */}
               <HoverSubscriber>{({ ghostPos, cursorPos, proxHover, smartGuides, hoverNid }) => (proxHover && !marquee && tool === "select" && (!drag || PROX_DRAG_TYPES.has(drag.type)) && (() => {

@@ -923,6 +923,27 @@ e2e/docs.spec.js       Playwright Docs-stage tests (save view → slide, live re
   captureModel, applyProjectData) with a Sidebar control in the Furnish section. NOT ported:
   chair-to-table docking — Test Fit's tables carry their own chairs, so counts, not
   arrangement, is the answer here. e2e: features.spec.js "furnish checks".
+- **Touch and pen drive the plan through the mouse handlers** (testfit.jsx, "Touch & pen
+  input", + the pure `utils/touch.js`). The canvas handlers in useCanvasEvents read clientX/Y,
+  button, detail and the modifier keys — a finger never produced those (touch only yields
+  compatibility mouse events for a tap, never a drag), so a phone could tap but not pan,
+  drag or draw. The live svg now also binds onPointerDown/Move/Up/Cancel, which return early
+  for `pointerType === "mouse"` (the desktop path is untouched) and otherwise feed
+  onDown/onMove/onUp a synthetic mouse-shaped event. Meaning of a gesture: one finger on an
+  object = the ordinary drag/draw/place; one finger on EMPTY paper with Select = PAN (onDown
+  is handed button 1, the middle-drag path — a finger has no marquee; a tap that never moved
+  clears the selection like a click on paper); two fingers = pinch zoom about the midpoint +
+  pan (pinchStep/anchorViewOff, the same anchoring as wheel zoom, nested setZoom/setViewOff
+  updaters so fast moves never compound on a stale render); double-tap is reconstructed by
+  tapCount because PointerEvent.detail is always 0. preventDefault on pointerdown suppresses
+  the compatibility mouse events (no double onDown) and `touchAction: "none"` on the svg
+  stops the browser scrolling/zooming the page. Rotate/scale handles (furniture, marker)
+  claim a touch via `grabTouch` (passed to PlanMarkersLayer as `onTouchGrab`) from their own
+  onPointerDown, so a finger on a handle rotates instead of dragging the piece under it.
+  Not done: edge-resize of zones/floors (it keys off hover state a finger never sets).
+  Layout: the option panel becomes a bottom sheet under 640px (`.tf-det`), and
+  `@media (pointer: coarse)` grows rail tools / icon buttons to Yardstick's 44px. e2e:
+  features.spec.js "touch" (CDP Input.dispatchTouchEvent — Playwright's touchscreen only taps).
 - **Selection is mode-scoped**: you can only select items that belong to the current
   mode's tool set. hitTest branches are already mode-gated (build/zone/itmep/furnish),
   but floorRegions + flowPaths ALSO carry per-element `<g onClick>` handlers (a second,

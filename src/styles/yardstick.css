@@ -274,3 +274,16 @@ button.ys-fact:focus-visible { outline: 2px solid var(--focus); outline-offset: 
 .tf-app-root .ys-select--sm select { padding-right: 36px !important; }
 .ys-section > summary > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ys-section__end { white-space: nowrap; flex: none; }
+
+/* ── Touch ────────────────────────────────────────────────────────────────────
+   Yardstick: every target is at least 44px under a coarse pointer. */
+@media (pointer: coarse) {
+  .ys-tool { width: 44px; height: 44px; }
+  .ys-ibtn { width: 40px; height: 40px; }
+  .ys-layer { grid-template-columns: 14px minmax(0, 1fr) auto 40px 40px; }
+}
+/* On a phone the option panel (Inspector / ToolOptions, inline S.det) is a bottom sheet
+   over the status bar rather than a fixed column covering the plan. */
+@media (max-width: 640px) {
+  .tf-det { top: auto !important; bottom: 30px !important; left: 0 !important; right: 0 !important; width: auto !important; max-height: 42vh !important; }
+}

@@ -19,7 +19,7 @@ function Inspector({
   return (
     <>
       {/* Detail panel */}
-      {inspSel && inspectorOpen && <div style={S.det}>
+      {inspSel && inspectorOpen && <div className="tf-det" style={S.det}>
         {inspectorToggle}
         {selectedIds.length <= 1 && selNode && <><div style={{ fontSize: 15, lineHeight: "20px", color: T.text, marginBottom: 12, fontWeight: 500 }}>Node · {wallsAt(selNode.id).length} walls</div><button style={S.del} onClick={delSel}>Delete Node + Walls</button></>}
         {selectedIds.length <= 1 && selWall && (() => { const wk = wallKinds[selWall.kind || "existing"]; return <>

@@ -16,7 +16,7 @@ function ToolOptions({
   return (
     <>
       {/* Tool options panel — shown when a placement tool is active */}
-      {inspTool && inspectorOpen && <div style={S.det}>
+      {inspTool && inspectorOpen && <div className="tf-det" style={S.det}>
         {inspectorToggle}
         {mode === "build" && isWallTool(tool) && (() => { const wk = wallKinds[wallKind]; return <>
           {/* Header */}
